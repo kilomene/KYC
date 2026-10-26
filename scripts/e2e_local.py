@@ -4,15 +4,19 @@ a full LEVEL 3 verification end to end in the sandbox:
 
   tenant -> applicant (with address) -> L3 session -> consent -> document
   -> selfie -> proof of address -> submit (prints the full check table,
-  including face_match, liveness, authenticity, PoA and screening) ->
-  reviewer console view (assist block, risk score) -> reviewer approves ->
-  a signed reusable credential is issued -> the credential is verified ->
-  a second tenant reuses the credential for a Level 1 session which
-  auto-approves from the inherited checks.
+  including face_match, face_track, liveness, deepfake, authenticity,
+  verification layers, PoA and screening) -> reviewer console view
+  (assist block, risk score) -> reviewer override approves under
+  four-eyes (two distinct reviewers) -> a signed reusable credential
+  is issued -> the credential is verified -> a second tenant reuses the
+  credential for a Level 1 session which auto-approves from the
+  inherited checks.
 
-Synthetic images cannot pass real face/liveness checks, so the L3 path is
-expected to land in needs_review (fail-closed) — that is the honest
-sandbox outcome, and the reviewer path completes it.
+Synthetic images cannot pass real face/liveness checks, and since the
+2026-10-26 auto-decision build those decisive failures REJECT
+automatically (no human queue in the standard path) — that is the
+honest sandbox outcome. The reviewer console completes the case via a
+four-eyes override, which is what the console is for.
 
 Run:  python3 scripts/e2e_local.py
 Exits non-zero on any failed assertion.
@@ -44,7 +48,7 @@ def main():
         st, sess0 = call(srv, "POST", "/v1/sessions", {"applicant_id": app["id"], "level": 3}, key=key)
         assert st == 201, sess0
         ctx = {"token": sess0["flow_token"], "session": sess0}
-        call(srv, "POST", "/v1/flow/consent", {"text_version": "v1"}, token=ctx["token"])
+        call(srv, "POST", "/v1/flow/consent", {"text_version": "v2"}, token=ctx["token"])
         st, r = multipart(srv, "/v1/flow/document",
                           {"kind": "passport", "issuing_country": "NG", "doc_first_name": "Anna",
                            "doc_last_name": "Eriksson", "doc_dob": "1974-08-12", "doc_expiry": "2032-04-15"},
@@ -64,7 +68,8 @@ def main():
         print_checks(view["checks_summary"])
         assert view["checks_summary"]["poa"] == "pass", view["checks_summary"]
         assert view["checks_summary"]["screening_sanctions"] in ("pass", "unclear"), view["checks_summary"]
-        assert view["status"] == "needs_review", view  # synthetic face/liveness cannot auto-pass — fail-closed
+        assert view["status"] == "rejected", view  # synthetic face/liveness fail decisively -> automatic rejection
+        assert "verification_layers" in view["checks_summary"], view["checks_summary"]
 
         st, detail = call(srv, "GET", f"/v1/cases/{view['case_id']}", key=key)
         assert detail["documents"] and detail["biometrics"], detail
@@ -74,10 +79,22 @@ def main():
         print(f"[e2e] assist: suggested={assist['suggested_disposition']} · mismatches={len(assist['mismatches'])} · '{assist['label']}'")
         assert assist["suggested_disposition"] in ("approve", "reject", "request_more")
 
+        # Four-eyes override: overriding an engine rejection parks at
+        # awaiting_second; a DIFFERENT reviewer confirms it.
+        st, rev_a = call(srv, "POST", "/v1/users", {"name": "Reviewer A", "role": "reviewer"}, key=key)
+        assert st == 201, rev_a
+        st, rev_b = call(srv, "POST", "/v1/users", {"name": "Reviewer B", "role": "reviewer"}, key=key)
+        assert st == 201, rev_b
         st, dec = call(srv, "POST", f"/v1/cases/{view['case_id']}/decide",
-                       {"action": "approve", "reason": "E2E: document, selfie and PoA compared by eye; details match."}, key=key)
+                       {"action": "approve", "reason": "E2E: document, selfie and PoA compared by eye; details match."},
+                       key=key, raw_headers={"X-Reviewer-Key": rev_a["token"]})
+        assert st == 202 and dec["status"] == "awaiting_second", dec
+        print("[e2e] reviewer A approved -> awaiting a second reviewer (four-eyes)")
+        st, dec = call(srv, "POST", f"/v1/cases/{view['case_id']}/confirm",
+                       {"reason": "E2E: second pair of eyes, agreed."},
+                       key=key, raw_headers={"X-Reviewer-Key": rev_b["token"]})
         assert st == 200 and dec["outcome"] == "approved", dec
-        print("[e2e] reviewer approved with reason")
+        print("[e2e] reviewer B confirmed -> approved")
 
         st, sess = call(srv, "GET", f"/v1/sessions/{ctx['session']['id']}", key=key)
         assert sess["status"] == "approved", sess
@@ -96,7 +113,7 @@ def main():
         print("[e2e] credential verified by a second tenant (claims only, no document data)")
         st, sess2 = call(srv, "POST", "/v1/sessions", {"level": 1, "credential": cred}, key=key2)
         assert st == 201 and "ocr" in sess2["inherited_checks"], sess2
-        call(srv, "POST", "/v1/flow/consent", {"text_version": "v1"}, token=sess2["flow_token"])
+        call(srv, "POST", "/v1/flow/consent", {"text_version": "v2"}, token=sess2["flow_token"])
         st, view2 = call(srv, "POST", "/v1/flow/submit", {}, token=sess2["flow_token"])
         assert view2["status"] == "approved" and view2["decision"]["decided_by"] == "engine", view2
         print(f"[e2e] credential-based L1 session auto-approved from inherited checks {sorted(sess2['inherited_checks'])} (biometrics/liveness never inherited)")
