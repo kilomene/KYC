@@ -5,6 +5,14 @@ first live tenant, the platform needs review by a qualified lawyer in each
 launch jurisdiction. The build does not wait for that review to behave
 properly — these rules are how it behaves from day one.*
 
+*STATUS (WS0 audit, 2026-10-26): these are binding rules and targets.
+Implemented and tested today: consent-first with versioned consent
+records, retention CLI, applicant erasure, append-only audit, minimum
+collection in the flow. Not yet built or not yet verified: bulk record
+exports, a published sub-processor/DPA pack, a rehearsed incident
+process, demographic fairness measurement (Phase 4 WS2), and
+document-expiry watch (Phase 4 WS7). See docs/CLAIMS-AUDIT.md.*
+
 ## 1. Why this product is regulated territory
 
 KYC exists because laws (AML/CFT regimes, e.g. the US BSA, EU AML
