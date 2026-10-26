@@ -58,7 +58,64 @@ CREATE TABLE IF NOT EXISTS audit_log(
 CREATE TABLE IF NOT EXISTS deletions(
   id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id TEXT, target_type TEXT, target_id TEXT,
   kind TEXT NOT NULL, detail TEXT, at TEXT NOT NULL);
+-- ---- Phase 2/3 tables ----
+CREATE TABLE IF NOT EXISTS flow_configs(
+  id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, env TEXT NOT NULL, level INTEGER NOT NULL,
+  version INTEGER NOT NULL, config TEXT NOT NULL, created_at TEXT NOT NULL,
+  UNIQUE(tenant_id, env, level, version));
+CREATE TABLE IF NOT EXISTS tenant_users(
+  id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, env TEXT NOT NULL, name TEXT NOT NULL,
+  role TEXT NOT NULL CHECK(role IN ('admin','reviewer')), token_hash TEXT NOT NULL UNIQUE,
+  token_prefix TEXT NOT NULL, created_at TEXT NOT NULL, revoked_at TEXT);
+CREATE TABLE IF NOT EXISTS screening_hits(
+  id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, env TEXT NOT NULL, session_id TEXT,
+  applicant_id TEXT NOT NULL, business_id TEXT, entry_id TEXT, list_source TEXT,
+  matched_name TEXT, matched_dob TEXT, matched_country TEXT, score REAL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','confirmed','false_positive')),
+  disposed_by TEXT, disposed_reason TEXT, origin TEXT NOT NULL DEFAULT 'submit',
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS monitoring_alerts(
+  id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, env TEXT NOT NULL, applicant_id TEXT NOT NULL,
+  hit_id TEXT NOT NULL, case_id TEXT, status TEXT NOT NULL DEFAULT 'open', created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS businesses(
+  id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, env TEXT NOT NULL, legal_name TEXT NOT NULL,
+  registration_number TEXT NOT NULL, country TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending', registry_status TEXT NOT NULL DEFAULT 'not_submitted',
+  registry_reason TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS business_people(
+  id TEXT PRIMARY KEY, business_id TEXT NOT NULL REFERENCES businesses(id), applicant_id TEXT NOT NULL,
+  role TEXT NOT NULL CHECK(role IN ('director','ubo')), ownership_pct REAL,
+  created_at TEXT NOT NULL, UNIQUE(business_id, applicant_id, role));
+CREATE TABLE IF NOT EXISTS business_documents(
+  id TEXT PRIMARY KEY, business_id TEXT NOT NULL REFERENCES businesses(id), storage_path TEXT,
+  kind TEXT NOT NULL DEFAULT 'registration', created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS credentials(
+  id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, env TEXT NOT NULL, applicant_id TEXT NOT NULL,
+  session_id TEXT, claims TEXT NOT NULL, signature TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','revoked')),
+  issued_at TEXT NOT NULL, expires_at TEXT NOT NULL, revoked_at TEXT);
 """
+
+# Columns added after Phase 1 (idempotent migrations, applied in __init__).
+_MIGRATIONS = [
+    ("applicants", "address_line", "TEXT"),
+    ("applicants", "city", "TEXT"),
+    ("sessions", "credential_id", "TEXT"),
+    ("sessions", "liveness_challenge", "TEXT"),  # JSON: server-generated active-liveness challenge
+    ("biometric_captures", "media_kind", "TEXT NOT NULL DEFAULT 'selfie'"),  # selfie | liveness_video
+    ("decisions", "risk_score", "INTEGER"),
+    ("decisions", "risk_band", "TEXT"),
+    ("decisions", "risk_contributions", "TEXT"),  # JSON list from server/risk.py
+    ("decisions", "config_version", "TEXT"),
+    ("cases", "sla_due_at", "TEXT"),
+    ("cases", "assigned_to", "TEXT"),
+    ("cases", "origin_outcome", "TEXT"),  # engine outcome that opened the case (e.g. rejected -> override path)
+    ("cases", "pending_action", "TEXT"),
+    ("cases", "pending_reason", "TEXT"),
+    ("cases", "pending_reviewer", "TEXT"),
+    ("cases", "decided_by_name", "TEXT"),
+    ("cases", "four_eyes_required", "INTEGER NOT NULL DEFAULT 0"),
+]
 
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
@@ -76,6 +133,15 @@ class DB:
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
         self.conn.commit()
+        self._migrate()
+
+    def _migrate(self):
+        with self._lock:
+            for table, col, decl in _MIGRATIONS:
+                cols = [r[1] for r in self.conn.execute(f"PRAGMA table_info({table})").fetchall()]
+                if cols and col not in cols:
+                    self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+            self.conn.commit()
 
     def execute(self, sql, params=()):
         with self._lock:
