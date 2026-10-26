@@ -1,0 +1,104 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Verify your identity — KYC (Nova Inc)</title>
+<style>body{font-family:system-ui,sans-serif;max-width:560px;margin:1rem auto;padding:0 1rem;line-height:1.5}label{display:block;margin:.7rem 0 .2rem}input,select,button{font-size:1rem;padding:.6rem;width:100%;box-sizing:border-box}button{background:#0b5fff;color:#fff;border:0;border-radius:8px;margin-top:1rem}.step{display:none}.step.on{display:block}.msg{padding:.7rem;border-radius:8px;background:#eef3ff;margin:.8rem 0}.err{background:#ffecec}</style></head>
+<body>
+<h1>Verify your identity</h1>
+<div id="out"></div>
+
+<section class="step" id="s-consent">
+<h2>Before we start — your consent</h2>
+<p>We will collect: your name and date of birth, a photo of your government ID, and a selfie. This is used only to verify your identity for the business that sent you here. A human reviewer may look at your document and selfie images side by side. You can ask that business to delete your data. Nothing is collected until you agree.</p>
+<button id="btn-consent">I agree — continue</button>
+</section>
+
+<section class="step" id="s-details">
+<h2>1. Confirm your details</h2>
+<p id="who"></p>
+<h2>2. Your ID document</h2>
+<label>Document type</label>
+<select id="kind"><option value="passport">Passport</option><option value="drivers_licence">Driver's licence</option><option value="national_id">National ID</option></select>
+<label>Issuing country</label>
+<select id="country">
+<option value="NG">Nigeria</option><option value="GB">United Kingdom</option><option value="US">United States</option>
+<option value="CA">Canada</option><option value="AU">Australia</option><option value="DE">Germany</option>
+<option value="GH">Ghana</option><option value="KE">Kenya</option><option value="ZA">South Africa</option>
+<option value="IN">India</option><option value="PH">Philippines</option><option value="SG">Singapore</option>
+<option value="AE">United Arab Emirates</option><option value="FR">France</option><option value="NL">Netherlands</option>
+<option value="IE">Ireland</option></select>
+<p style="font-size:.9em;color:#555">Passports are accepted for every country above. Driver's licence / national ID: Nigeria, United Kingdom, United States, Canada, Australia, Germany, Ghana.</p>
+<label>First name (as printed on the document)</label><input id="dfirst">
+<label>Last name (as printed)</label><input id="dlast">
+<label>Date of birth on document (YYYY-MM-DD)</label><input id="ddob" placeholder="1990-01-31">
+<label>Document expiry (YYYY-MM-DD)</label><input id="dexpiry" placeholder="2030-01-31">
+<label>Document number</label><input id="dnum">
+<label>Photo of the document (front)</label>
+<input type="file" id="front" accept="image/*" capture="environment">
+<label>Photo of the back (if your document has one)</label>
+<input type="file" id="back" accept="image/*" capture="environment">
+<button id="btn-doc">Upload document</button>
+</section>
+
+<section class="step" id="s-selfie">
+<h2>3. Selfie</h2>
+<p>Take a clear selfie in good light. In this Phase 1 build a human reviewer compares it with your document — there is no automated face match yet.</p>
+<input type="file" id="selfie" accept="image/*" capture="user">
+<button id="btn-selfie">Upload selfie</button>
+</section>
+
+<section class="step" id="s-submit">
+<h2>4. Submit for verification</h2>
+<button id="btn-submit">Submit</button>
+</section>
+
+<section class="step" id="s-status">
+<h2>Your verification</h2>
+<p id="status"></p>
+</section>
+
+<script>
+const token = location.pathname.split('/flow/')[1];
+const H = {'Authorization':'Bearer '+token, 'Content-Type':'application/json'};
+const $ = id => document.getElementById(id);
+function show(id){document.querySelectorAll('.step').forEach(s=>s.classList.remove('on')); if(id) $(id).classList.add('on');}
+function msg(t, err){ $('out').innerHTML = '<div class="msg'+(err?' err':'')+'">'+t+'</div>'; }
+async function api(method, path, body, isForm){
+  const opts = {method, headers: isForm ? {'Authorization':'Bearer '+token} : H};
+  if(body) opts.body = isForm ? body : JSON.stringify(body);
+  const r = await fetch(path, opts); const j = await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error((j.error && j.error.message) || ('HTTP '+r.status));
+  return j;
+}
+let info;
+(async()=>{
+  try{ info = await api('GET','/v1/flow/session'); }catch(e){ msg('This link is invalid or has expired. Ask the business to send a new one.', true); return; }
+  $('who').textContent = 'Verifying: '+(info.applicant.first_name||'')+' '+(info.applicant.last_name||'')+' · Level '+info.session.level;
+  if(info.session.status==='approved'||info.session.status==='rejected'||info.session.status==='needs_review'||info.session.status==='needs_more_information'){
+    show('s-status'); $('status').textContent = 'Status: '+info.session.status; return;
+  }
+  // Resumable: reopening an unexpired link continues where you left off —
+  // steps already uploaded stay done, you never restart a verification.
+  const hasDoc = (info.documents||[]).length>0;
+  if(!info.session.consent_at) show('s-consent');
+  else if(!hasDoc) show('s-details');
+  else if(!info.selfie_uploaded){ show('s-selfie'); msg('Welcome back — your document is already uploaded. Just the selfie remains.'); }
+  else { show('s-submit'); msg('Welcome back — document and selfie are uploaded. You can submit now.'); }
+})();
+$('btn-consent').onclick = async()=>{ try{ await api('POST','/v1/flow/consent',{text_version: info.consent_text_version||'v1', locale:'en'}); show('s-details'); }catch(e){ msg(e.message,true);} };
+$('btn-doc').onclick = async()=>{
+  const fd = new FormData();
+  fd.append('kind',$('kind').value); fd.append('issuing_country',$('country').value);
+  fd.append('doc_first_name',$('dfirst').value); fd.append('doc_last_name',$('dlast').value);
+  fd.append('doc_dob',$('ddob').value); fd.append('doc_expiry',$('dexpiry').value); fd.append('doc_number',$('dnum').value);
+  if($('front').files[0]) fd.append('front',$('front').files[0]);
+  if($('back').files[0]) fd.append('back',$('back').files[0]);
+  try{ await api('POST','/v1/flow/document',fd,true); msg('Document uploaded.'); show('s-selfie'); }catch(e){ msg(e.message,true);} };
+$('btn-selfie').onclick = async()=>{
+  const fd = new FormData(); if($('selfie').files[0]) fd.append('selfie',$('selfie').files[0]);
+  try{ await api('POST','/v1/flow/selfie',fd,true); msg('Selfie uploaded.'); show('s-submit'); }catch(e){ msg(e.message,true);} };
+$('btn-submit').onclick = async()=>{
+  try{ const r = await api('POST','/v1/flow/submit',{}); show('s-status');
+    $('status').textContent = 'Status: '+r.status+(r.status==='needs_review' ? ' — a reviewer will check your documents.' : '');
+  }catch(e){ msg(e.message,true);} };
+</script>
+</body></html>
