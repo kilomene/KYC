@@ -1,0 +1,12 @@
+name = "kyc-tunnel"
+main = "worker.js"
+compatibility_date = "2024-11-01"
+workers_dev = true
+routes = [{ pattern = "kyc.novamail.store/*", zone_name = "novamail.store" }]
+
+[durable_objects]
+bindings = [{ name = "TUNNEL_HUB", class_name = "TunnelHub" }]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["TunnelHub"]
