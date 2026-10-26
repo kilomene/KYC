@@ -125,14 +125,16 @@ class TestAPI(unittest.TestCase):
                               {"front": ("f.png", id_image_bytes(), "image/png")}, sess["flow_token"])
             self.assertEqual(st, 422)
 
-    def test_national_id_rejected_for_passport_only_country(self):
-        # FR is in the launch list for passports only (owner-expanded D3).
+    def test_unsupported_kind_country_combo_rejected(self):
+        # A kind that does not exist for the issuing country is a 422
+        # (FR gained a national_id in the Phase 4 WS1 registry merge;
+        # a Nigerian NIN slip is still not a French document).
         with Server() as srv:
             tid, test_key, _ = make_tenant(srv)
             st, app = call(srv, "POST", "/v1/applicants", {"first_name": "A", "last_name": "B", "dob": "1990-01-01", "country": "FR"}, key=test_key)
             st, sess = call(srv, "POST", "/v1/sessions", {"applicant_id": app["id"], "level": 1}, key=test_key)
             call(srv, "POST", "/v1/flow/consent", {"text_version": "v1"}, token=sess["flow_token"])
-            st, r = multipart(srv, "/v1/flow/document", {"kind": "national_id", "issuing_country": "FR"},
+            st, r = multipart(srv, "/v1/flow/document", {"kind": "nin_slip", "issuing_country": "FR"},
                               {"front": ("f.png", id_image_bytes(), "image/png")}, sess["flow_token"])
             self.assertEqual(st, 422)
 
