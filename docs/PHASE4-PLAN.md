@@ -60,6 +60,23 @@ Measured numbers: benchmarks/RESULTS.md and docs/CLAIMS-AUDIT.md §4.
 - Passive-liveness evaluation and a provider-adapter interface so our
   models are benchmarked against specialist providers, not believed.
 
+**Status (2026-10-26): BUILT, with labelled remainders.** FAR/FRR
+measured on the full LFW protocol (EER 1.07%; production threshold
+0.363 kept on the measured curve; high-assurance 0.413 recorded);
+simulated condition slices measured; **demographic slicing
+UNMEASURED** (LFW has no attributes; no lawfully downloadable
+attribute-labelled set was reachable — no fairness claim made).
+Attack suite: replay REAL, print/screen/mask-proxy/deepfake-morph
+SIMULATED; **physical masks and DNN swap corpora UNMEASURED**;
+no artefact auto-approved. rPPG hardened (POS/CHROM/quality gate)
+and re-measured — still evidence-only on 4.5 s clips; flow liveness
+window extended to ~9 s (re-measurement awaits a real longer
+capture). Detection-at-resolution defect found and fixed (1024 px
+work space). Provider adapter built (own pipeline = provider #1;
+external slots fail closed) — the external head-to-head and passive
+liveness remain open (vendor accounts / a passive model are still
+needed). Numbers: benchmarks/BIOMETRICS.md, docs/CLAIMS-AUDIT.md §4.
+
 ## Workstream 3 — Security hardening, verified not described
 - Tenant-isolation test battery (API, DB, files, console) run as tests.
 - Reviewer MFA + secure sessions (today: named tokens), role matrix
