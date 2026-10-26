@@ -1110,10 +1110,20 @@ function makeAutoScanner(cfg){
   }
   function grabFrame(){
     const v = cfg.video;
+    // Captures are downscaled to the step's maxDim before upload. The
+    // camera's native frame (e.g. 3088x2316) makes multi-megabyte
+    // JPEGs — and the selfie step uploads FIVE frames (still + burst),
+    // which at native size produced a ~9MB tunnel frame and killed
+    // the upload outright (owner's live run 2026-10-26 16:49 PDT: the
+    // screen said "captured", the server never received a byte).
+    // 2048px keeps document OCR strong; 1280px is ample for face
+    // detection/matching, which is all the selfie frames are for.
+    const maxDim = cfg.maxDim || 2048;
+    const scale = Math.min(1, maxDim / Math.max(v.videoWidth || 1, v.videoHeight || 1));
     const c = document.createElement('canvas');
-    c.width = v.videoWidth; c.height = v.videoHeight;
-    c.getContext('2d').drawImage(v, 0, 0);
-    return new Promise(res => c.toBlob(res, 'image/jpeg', 0.92));
+    c.width = Math.round((v.videoWidth || 1) * scale); c.height = Math.round((v.videoHeight || 1) * scale);
+    c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
+    return new Promise(res => c.toBlob(res, 'image/jpeg', 0.9));
   }
   async function capture(){
     const main = await grabFrame();
@@ -1139,6 +1149,7 @@ function makeAutoScanner(cfg){
 const docGuide = new Guide($('doc-hint'));
 let docState = {docId:null, entry:null, side:'front', frontBlob:null, backBlob:null};
 const docScanner = makeAutoScanner({
+  maxDim: 2048,
   video: $('doc-video'), frameEl: $('doc-frame'), poly: $('doc-poly'), progressEl: $('doc-progress'),
   guide: docGuide, capturedKey: 'doc_captured',
   evaluate: fr => evaluateDocument(fr, entryGeometry(docState.entry), 'doc_none'),
@@ -1299,6 +1310,7 @@ function enterDocStep(resumeBack){
 // ---------------- selfie step (auto-capture, face-gated) ----------------
 const selfieGuide = new Guide($('selfie-hint'));
 const selfieScanner = makeAutoScanner({
+  maxDim: 1280,
   video: $('selfie-video'), frameEl: $('selfie-oval'), poly: null, progressEl: $('selfie-progress'),
   guide: selfieGuide, capturedKey: 'face_captured', burst: 4,
   evaluate: evaluateFace,
@@ -1385,6 +1397,7 @@ function recordLiveness(stream){
 // ---------------- proof of address (same live scanner, page aspect) ----------------
 const poaGuide = new Guide($('poa-hint'));
 const poaScanner = makeAutoScanner({
+  maxDim: 2048,
   video: $('poa-video'), frameEl: $('poa-frame'), poly: $('poa-poly'), progressEl: $('poa-progress'),
   guide: poaGuide, capturedKey: 'doc_captured',
   // A proof-of-address page is PAPER in portrait (A4/Letter ≈ 0.71):
