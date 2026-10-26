@@ -8,7 +8,8 @@ money, or access. Other companies have built this before (Sumsub, Persona,
 Onfido, Veriff, Jumio). This is our own, original build: our code, our
 design, our rules — informed by what the category does, copying none of it.
 
-> **Status: Phases 1–3 built and tested locally (2026-10-26).**
+> **Status: Phases 1–3 built and tested locally (2026-10-26); hosted
+> flow rebuilt as a LIVE CAMERA SCANNER (2026-10-26, owner spec).**
 > A real, runnable local build: tenant API keys, a hosted applicant
 > flow, checks that actually run (image quality, OCR, MRZ check digits,
 > expiry/age, name/DOB consistency, **face match** (YuNet + SFace),
@@ -21,7 +22,7 @@ design, our rules — informed by what the category does, copying none of it.
 > **four-eyes review with reviewer roles and case SLAs**, a reviewer
 > **assist** pre-read, **reusable signed verified credentials**, human
 > review console, signed webhooks, audit log, erasure and retention.
-> 86 automated tests + a live Level 3 end-to-end run, all green.
+> 97 automated tests + a live Level 3 end-to-end run, all green.
 > It runs **locally only** — not deployed, not on Supabase or
 > Cloudflare yet; the production home will be Cloudflare when the owner
 > is ready (DECISIONS D4/D6), behind this same API contract.
@@ -36,7 +37,7 @@ python3 scripts/fetch_models.py        # one-time: YuNet + SFace ONNX models int
 python3 -m server --port 8765          # data lives in ./data/ (gitignored)
 # Landing:  http://127.0.0.1:8765/
 # Console:  http://127.0.0.1:8765/console   (paste a tenant API key)
-python3 -m unittest discover tests     # 86 tests
+python3 -m unittest discover tests     # 97 tests
 python3 scripts/e2e_local.py           # live Level 3 end-to-end run
 python3 -m server.retention --days 90  # delete images of old decided sessions
 python3 scripts/fetch_ofac.py          # optional: real OFAC SDN list into data/lists/
@@ -64,6 +65,60 @@ and liveness report `error`/`model_missing` — never a fake pass.
 Face models: YuNet `face_detection_yunet_2023mar.onnx` (MIT) and SFace
 `face_recognition_sface_2021dec.onnx` (Apache 2.0) from the OpenCV Zoo
 — the zoo ships SFace as the 2021dec file; there is no 2023dec file.
+
+### The hosted flow is a live camera scanner (2026-10-26)
+
+The applicant flow (`public/flow.html`) is **camera-only**. There is
+**no gallery picker and no file-upload path anywhere in the flow** —
+not for the document, not for the selfie, not for the liveness video,
+not for proof of address. If the browser has no camera or permission
+is denied, the flow shows a plain "a camera is required for live
+verification" state; it never falls back to file upload.
+
+- **Documents** are scanned in a live viewfinder with an animated
+  corner frame (card or passport-page aspect). Lightweight analysis of
+  downscaled frames (~8×/second, built for low-end phones) gives one
+  plain-language hint at a time — too dark, glare, blurry, hold
+  steady, fit the document in the frame. When the frame has been
+  sharp, lit and still for ~700 ms the scanner **captures by itself —
+  there is no shutter button**. A two-sided document automatically
+  prompts "Now scan the BACK of your ID" and repeats; retakes are
+  offered after a capture. Captures carry metadata
+  (`{method: "live_camera", side}`) recorded server-side per side.
+- **Selfie + liveness** are likewise automatic: face in the oval →
+  the selfie captures by itself; the server-issued movement challenge
+  is then recorded from the same live stream automatically (no
+  start/stop buttons, no video-file upload).
+- **Server-side `document_framing` check** (OpenCV contour detection)
+  verifies each captured side actually contains a card-like
+  quadrilateral roughly filling the frame; a blank image or a random
+  photo fails it. It is recorded on every document, a
+  `document_not_detected` failure adds +25 risk points (which routes
+  the session to human review), and a tenant can make it a required
+  check via the flow config.
+- **Honest limits:** the client-side guidance (brightness / glare /
+  blur / stillness / a skin-tone centre heuristic for the selfie) is
+  *guidance heuristics*, not verification — the real checks run
+  server-side (framing, OCR/MRZ, face match, liveness analysis,
+  authenticity). OS-level camera-feed injection (virtual cameras,
+  rooted devices, emulators) is mitigated **only partially** — by the
+  server framing check, the movement-challenge liveness and the
+  authenticity signals — and is **not** claimed to be eliminated.
+
+### Per-country document registry
+
+`server/docregistry.py` is the source of truth: every document type
+carries facts — `sides` (1|2), `has_expiry`, `mrz` — that drive
+validation, the scanner's automatic back-side prompt, and the expiry
+check. Owner-specified: **Nigeria** — passport, driver's licence,
+national ID, voter's card (INEC PVC, *no expiry*), NIN card (*no
+expiry*), NIN slip (*no expiry*); **United States** — passport,
+passport card, driver's license, state ID. Other launch countries
+carry passport (+ driver's licence / national ID for GB/CA/AU/DE/GH)
+with best-known facts pending the owner's per-country research merge.
+A document type with `has_expiry: false` **never** fails or goes
+unclear for a missing expiry date — the expiry check passes with the
+detail "document type has no expiry date" (age is still checked).
 
 ### What this build does NOT do yet (honest list)
 
@@ -118,9 +173,12 @@ A business (the **tenant**) sends a person (the **applicant**) to KYC.
 The applicant completes a short flow on their phone or computer:
 
 1. Enter basic details (legal name, date of birth, country).
-2. Photograph a government ID (passport, driver's licence, national ID).
-3. Take a selfie — checked against the ID photo, with a liveness check so a
-   photo of a photo does not pass.
+2. Live-scan a government ID with the camera (front, and back when the
+   document has one) — the scanner captures automatically when the
+   document is aligned; there is no gallery/upload path.
+3. Live selfie — captured automatically when the face is in the oval,
+   checked against the ID photo, with a live movement-challenge
+   liveness check so a photo of a photo does not pass.
 4. Depending on the level: proof of address, and screening against
    sanctions / PEP / watchlists.
 
@@ -189,10 +247,13 @@ or sellers — come in Phase 2 once it is proven on our own traffic.
 Worldwide in scope. Launch list: **Nigeria, United Kingdom, United
 States, Canada, Australia, Germany, Ghana, Kenya, South Africa, India,
 Philippines, Singapore, United Arab Emirates, France, Netherlands,
-Ireland** (ISO codes in `SUPPORTED_DOCUMENTS` in `server/app.py`).
-**Passports are accepted for every country in that list** (the MRZ is a
-worldwide standard); **driver's licence / national ID** start with
-Nigeria, United Kingdom, United States, Canada, Australia, Germany, and
+Ireland**. **Passports are accepted for every country in that list**
+(the MRZ is a worldwide standard). The full per-country document list
+with per-document facts (sides / expiry / MRZ) lives in the registry,
+`server/docregistry.py` — Nigeria and the United States carry the
+owner-specified document sets (incl. NG voter's card, NIN card and
+NIN slip; US passport card and state ID); driver's licence / national
+ID also start with the United Kingdom, Canada, Australia, Germany and
 Ghana, expanding country by country with tests.
 
 ## Licence / visibility
