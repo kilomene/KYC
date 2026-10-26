@@ -26,7 +26,10 @@ design, our rules — informed by what the category does, copying none of it.
 > **four-eyes review with reviewer roles and case SLAs**, a reviewer
 > **assist** pre-read, **reusable signed verified credentials**, human
 > review console, signed webhooks, audit log, erasure and retention.
-> 273 automated tests + a live Level 3 end-to-end run, all green.
+> 304 automated tests + a live Level 3 end-to-end run. One known
+> failure: `test_fieldtemplates.test_de_national_id_german_labels`
+> (a tesseract build variance after a VM replacement misreads one
+> digit; the misread is correctly flagged `format_valid=False`).
 > The application currently runs on the Nova origin service and is
 > reached publicly through a Cloudflare tunnel; it is not on Supabase.
 > Final Cloudflare-native hosting is Phase 4 WS5 (DECISIONS D4/D6),
@@ -42,7 +45,7 @@ python3 scripts/fetch_models.py        # one-time: YuNet + SFace ONNX models int
 python3 -m server --port 8765          # data lives in ./data/ (gitignored)
 # Landing:  http://127.0.0.1:8765/
 # Console:  http://127.0.0.1:8765/console   (paste a tenant API key)
-python3 -m unittest discover tests     # 273 tests
+python3 -m unittest discover tests     # 304 tests (1 known tesseract-variance failure, see above)
 python3 scripts/e2e_local.py           # live Level 3 end-to-end run
 python3 -m server.retention --days 90  # delete images of old decided sessions
 python3 scripts/fetch_ofac.py          # optional: real OFAC SDN list into data/lists/
@@ -406,6 +409,40 @@ Full write-up with sources and honest limits: `benchmarks/BIOMETRICS.md`
   MFA gate, rate limit, body cap): **32/32 pass, 0 findings**
   (docs/PENTEST.md). An independent external pen test is still open —
   the self-test does not impersonate one.
+
+### Identity is read from the document, never typed (2026-10-26)
+
+The owner's order: the applicant is "not even supposed to fill my
+name my date of birth and all that… i'm only supposed to choose the
+kind of document i want" — "OCR fills everything in that's part of
+what OCR does." Applicants therefore carry an `identity_source`:
+
+- **`declared`** (default, unchanged): the tenant declares name/DOB
+  up front; the document is cross-checked against the declaration.
+- **`document`**: the tenant declares only the country. The applicant
+  picks a document type and scans; the server reads the identity
+  (framing + multi-pass OCR + check-digit-valid MRZ + template field
+  extraction, merged MRZ > extraction > upload) and the hosted flow
+  shows a **read-back** — "We read: NAME · document NUMBER" — to
+  confirm or rescan. **There are no name/DOB/number inputs anywhere
+  in the flow**; rescan is the only correction path, and a required
+  field that could not be read is named plainly ("We could not read
+  your document number") with a closer/sharper rescan asked for.
+  DOB is only ever required where the document type carries an MRZ —
+  paper types that print no DOB (the standard NG NIN slip) are never
+  faulted for it.
+- At decision time the read identity is **adopted** onto the
+  applicant record as the verified identity (only empty fields are
+  filled; a contradicted declaration is never overwritten).
+  Consistency on this path runs across the document's own reads —
+  an applicant mismatch is impossible by construction. Screening,
+  PoA and age checks consume the session identity, so document-path
+  Level 3 sessions are screened on the name the document carried.
+  Covered end-to-end in `tests/test_identity_from_document.py`
+  (a synthetic passport session approves with its identity populated
+  from OCR alone; the synthetic wide NIN slip reads back,
+  self-agrees and is adopted). API contract: docs/API.md,
+  "Identity source".
 
 ### Screen-replay + portrait-substitution defence (2026-10-26)
 
