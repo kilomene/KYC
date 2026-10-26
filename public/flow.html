@@ -1,67 +1,117 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Verify your identity — KYC (Nova Inc)</title>
-<style>body{font-family:system-ui,sans-serif;max-width:560px;margin:1rem auto;padding:0 1rem;line-height:1.5}label{display:block;margin:.7rem 0 .2rem}input,select,button{font-size:1rem;padding:.6rem;width:100%;box-sizing:border-box}button{background:#0b5fff;color:#fff;border:0;border-radius:8px;margin-top:1rem}.step{display:none}.step.on{display:block}.msg{padding:.7rem;border-radius:8px;background:#eef3ff;margin:.8rem 0}.err{background:#ffecec}video{width:100%;border-radius:8px;background:#111}pre{background:#f6f6f6;padding:.6rem;overflow:auto;font-size:.8rem;white-space:pre-wrap;word-break:break-all}.danger{background:#b3261e}</style></head>
+<style>
+body{font-family:system-ui,sans-serif;max-width:560px;margin:1rem auto;padding:0 1rem;line-height:1.5}
+label{display:block;margin:.7rem 0 .2rem}input,select,button{font-size:1rem;padding:.6rem;width:100%;box-sizing:border-box}
+button{background:#0b5fff;color:#fff;border:0;border-radius:8px;margin-top:1rem;cursor:pointer}
+button.ghost{background:#eef3ff;color:#0b5fff}
+.step{display:none}.step.on{display:block}
+.msg{padding:.7rem;border-radius:8px;background:#eef3ff;margin:.8rem 0}.err{background:#ffecec}
+pre{background:#f6f6f6;padding:.6rem;overflow:auto;font-size:.8rem;white-space:pre-wrap;word-break:break-all}
+.danger{background:#b3261e}
+.camwrap{position:relative;width:100%;border-radius:12px;overflow:hidden;background:#111;margin-top:.6rem}
+.camwrap video{width:100%;display:block}
+/* --- document frame overlay: animated corners that react --- */
+.docframe{position:absolute;left:6%;right:6%;top:50%;transform:translateY(-50%);aspect-ratio:1.586/1;pointer-events:none}
+.docframe.page{aspect-ratio:1.42/1;left:10%;right:10%}
+.docframe .corner{position:absolute;width:34px;height:34px;border:5px solid #cfd8ea;transition:border-color .18s ease}
+.docframe .c-tl{left:-4px;top:-4px;border-right:0;border-bottom:0;border-top-left-radius:10px}
+.docframe .c-tr{right:-4px;top:-4px;border-left:0;border-bottom:0;border-top-right-radius:10px}
+.docframe .c-bl{left:-4px;bottom:-4px;border-right:0;border-top:0;border-bottom-left-radius:10px}
+.docframe .c-br{right:-4px;bottom:-4px;border-left:0;border-top:0;border-bottom-right-radius:10px}
+.docframe.good .corner{border-color:#2fbf71}
+.docframe .scanline{position:absolute;left:2%;right:2%;height:3px;border-radius:2px;background:linear-gradient(90deg,transparent,#5b8cff,transparent);opacity:.85;animation:scanmove 1.6s ease-in-out infinite}
+.docframe.good .scanline{background:linear-gradient(90deg,transparent,#2fbf71,transparent)}
+@keyframes scanmove{0%{top:4%}50%{top:94%}100%{top:4%}}
+/* --- face oval overlay --- */
+.faceoval{position:absolute;left:50%;top:50%;width:56%;aspect-ratio:3/3.8;transform:translate(-50%,-52%);border:5px solid #cfd8ea;border-radius:50%;pointer-events:none;transition:border-color .18s ease}
+.faceoval.good{border-color:#2fbf71}
+.hint{min-height:1.6em;font-weight:600;margin:.6rem 0 .2rem}
+.progress{height:8px;background:#e3e9f5;border-radius:4px;overflow:hidden;margin:.3rem 0 .6rem}
+.progress>div{height:100%;width:0%;background:#2fbf71;transition:width .12s linear}
+.thumbs{display:flex;gap:.6rem;flex-wrap:wrap}.thumbs figure{margin:0;text-align:center}
+.thumbs img{width:150px;border:1px solid #ccc;border-radius:8px}
+.bigarrow{font-size:2rem;text-align:center}
+</style></head>
 <body>
 <h1>Verify your identity</h1>
 <div id="out"></div>
 
 <section class="step" id="s-consent">
 <h2>Before we start — your consent</h2>
-<p>We will collect: your name and date of birth, a photo of your government ID, and a selfie. Higher verification levels also ask for a short liveness video and a proof-of-address document. This is used only to verify your identity for the business that sent you here. A human reviewer may look at your document and selfie images side by side. You can ask that business to delete your data. Nothing is collected until you agree.</p>
+<p>We will collect: your name and date of birth, a live camera scan of your government ID, and a live selfie. Higher verification levels also ask for a short live liveness video and a scan of a proof-of-address document. This is used only to verify your identity for the business that sent you here. A human reviewer may look at your document and selfie images side by side. You can ask that business to delete your data. Nothing is collected until you agree.</p>
 <button id="btn-consent">I agree — continue</button>
 </section>
 
-<section class="step" id="s-details">
-<h2>1. Confirm your details</h2>
+<section class="step" id="s-nocamera">
+<h2>A camera is required</h2>
+<p>Live verification needs your camera. It cannot be done with photos from your gallery — the scan has to happen live, here, so we know the document and the person are really present.</p>
+<p id="nocamera-why"></p>
+<button id="btn-retrycam">Try the camera again</button>
+</section>
+
+<section class="step" id="s-doc">
+<h2>Scan your ID document</h2>
 <p id="who"></p>
-<h2>2. Your ID document</h2>
-<label>Document type</label>
-<select id="kind"><option value="passport">Passport</option><option value="drivers_licence">Driver's licence</option><option value="national_id">National ID</option></select>
 <label>Issuing country</label>
-<select id="country">
-<option value="NG">Nigeria</option><option value="GB">United Kingdom</option><option value="US">United States</option>
-<option value="CA">Canada</option><option value="AU">Australia</option><option value="DE">Germany</option>
-<option value="GH">Ghana</option><option value="KE">Kenya</option><option value="ZA">South Africa</option>
-<option value="IN">India</option><option value="PH">Philippines</option><option value="SG">Singapore</option>
-<option value="AE">United Arab Emirates</option><option value="FR">France</option><option value="NL">Netherlands</option>
-<option value="IE">Ireland</option></select>
-<p style="font-size:.9em;color:#555">Passports are accepted for every country above. Driver's licence / national ID: Nigeria, United Kingdom, United States, Canada, Australia, Germany, Ghana.</p>
+<select id="country"></select>
+<label>Document type</label>
+<select id="kind"></select>
+<p id="doc-note" style="font-size:.9em;color:#555"></p>
 <label>First name (as printed on the document)</label><input id="dfirst">
 <label>Last name (as printed)</label><input id="dlast">
 <label>Date of birth on document (YYYY-MM-DD)</label><input id="ddob" placeholder="1990-01-31">
-<label>Document expiry (YYYY-MM-DD)</label><input id="dexpiry" placeholder="2030-01-31">
+<span id="expiry-row"><label>Document expiry (YYYY-MM-DD)</label><input id="dexpiry" placeholder="2030-01-31"></span>
 <label>Document number</label><input id="dnum">
-<label>Photo of the document (front)</label>
-<input type="file" id="front" accept="image/*" capture="environment">
-<label>Photo of the back (if your document has one)</label>
-<input type="file" id="back" accept="image/*" capture="environment">
-<button id="btn-doc">Upload document</button>
+<h3 id="scan-title">Scan the FRONT of your document</h3>
+<p style="font-size:.95em">Hold your document inside the frame. The scanner watches the edges, light and sharpness itself and takes the picture <b>automatically</b> the moment everything is right — there is no button to press.</p>
+<div class="camwrap">
+  <video id="doc-video" autoplay muted playsinline></video>
+  <div class="docframe" id="doc-frame"><span class="corner c-tl"></span><span class="corner c-tr"></span><span class="corner c-bl"></span><span class="corner c-br"></span><div class="scanline"></div></div>
+</div>
+<p class="hint" id="doc-hint">Starting camera…</p>
+<div class="progress"><div id="doc-progress"></div></div>
+<div id="doc-done" style="display:none">
+  <div class="thumbs" id="doc-thumbs"></div>
+  <button id="btn-doc-continue">Continue</button>
+  <button id="btn-doc-retake-front" class="ghost">Retake front</button>
+  <button id="btn-doc-retake-back" class="ghost" style="display:none">Retake back</button>
+</div>
 </section>
 
 <section class="step" id="s-selfie">
-<h2>3. Selfie</h2>
-<p>Take a clear selfie in good light. It is compared automatically with the photo on your document, and a human reviewer can also compare them side by side.</p>
-<input type="file" id="selfie" accept="image/*" capture="user">
-<button id="btn-selfie">Upload selfie</button>
+<h2>Live selfie</h2>
+<p>Put your face in the oval. When your face is centred and still, the picture is taken <b>automatically</b>. It is compared with the photo on your document.</p>
+<div class="camwrap">
+  <video id="selfie-video" autoplay muted playsinline></video>
+  <div class="faceoval" id="selfie-oval"></div>
+</div>
+<p class="hint" id="selfie-hint">Starting camera…</p>
+<div class="progress"><div id="selfie-progress"></div></div>
 </section>
 
 <section class="step" id="s-liveness">
-<h2>4. Liveness check — active liveness (movement challenge)</h2>
-<p id="lv-text">We will ask you to move your head in two directions shown on screen, while recording a short video (about 4 seconds). A still photo or a replayed recording will not pass. You can also upload a short video file instead.</p>
+<h2>Liveness check — you are really here</h2>
+<p>Follow the instruction on screen. The camera records a few seconds by itself as soon as your face is in the oval — just move your head as asked. A still photo or a replayed recording will not pass.</p>
+<div class="bigarrow" id="lv-arrow"></div>
 <p><b id="lv-instruction"></b></p>
-<video id="lv-video" autoplay muted playsinline></video>
-<button id="btn-lv-start">Start challenge &amp; record</button>
-<label>…or upload a short video file (webm/mp4)</label>
-<input type="file" id="lv-file" accept="video/*">
-<button id="btn-lv-upload">Upload video file</button>
+<div class="camwrap">
+  <video id="lv-video" autoplay muted playsinline></video>
+  <div class="faceoval" id="lv-oval"></div>
+</div>
+<p class="hint" id="lv-hint">Starting camera…</p>
 </section>
 
 <section class="step" id="s-poa">
-<h2>5. Proof of address</h2>
-<p>Upload a recent utility bill, bank statement or official letter showing your name and address. It must be dated within the last 90 days.</p>
-<input type="file" id="poa" accept="image/*">
-<button id="btn-poa">Upload proof of address</button>
+<h2>Proof of address</h2>
+<p>Scan a recent utility bill, bank statement or official letter showing your name and address, dated within the last 90 days. Hold it inside the frame — the picture is taken <b>automatically</b>.</p>
+<div class="camwrap">
+  <video id="poa-video" autoplay muted playsinline></video>
+  <div class="docframe" id="poa-frame"><span class="corner c-tl"></span><span class="corner c-tr"></span><span class="corner c-bl"></span><span class="corner c-br"></span><div class="scanline"></div></div>
+</div>
+<p class="hint" id="poa-hint">Starting camera…</p>
+<div class="progress"><div id="poa-progress"></div></div>
 </section>
 
 <section class="step" id="s-submit">
@@ -93,25 +143,369 @@ async function api(method, path, body, isForm){
   if(!r.ok) throw new Error((j.error && j.error.message) || ('HTTP '+r.status));
   return j;
 }
-let info, level = 1;
+const GOOD_MS = 700;              // ~700ms of good frames -> auto-capture (fast when presented properly)
+const TICK_MS = 120;              // guidance analysis tick
+let info, level = 1, registry = {};
+
+// ---------------- camera plumbing ----------------
+let activeStream = null;
+function stopCam(){ if(activeStream){ activeStream.getTracks().forEach(t=>t.stop()); activeStream = null; } }
+let camRetry = null;
+async function startCam(videoEl, facing){
+  stopCam();
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    showNoCamera('This browser or device does not expose a camera to web pages.');
+    throw new Error('no camera api');
+  }
+  try{
+    activeStream = await navigator.mediaDevices.getUserMedia({video:{facingMode:facing}, audio:false});
+  }catch(e){
+    showNoCamera('Camera access was not granted ('+e.name+'). Check the browser permission for this site, then try again.');
+    throw e;
+  }
+  videoEl.srcObject = activeStream;
+  await videoEl.play().catch(()=>{});
+  return activeStream;
+}
+function showNoCamera(why){
+  stopCam(); $('nocamera-why').textContent = why; show('s-nocamera');
+}
+$('btn-retrycam').onclick = ()=>{ if(camRetry) camRetry(); };
+
+// ---------------- frame analysis (cheap, downscaled) ----------------
+const ac = document.createElement('canvas'); ac.width = 160; ac.height = 120;
+const ax = ac.getContext('2d', {willReadFrequently:true});
+function analyseFrame(video){
+  const vw = video.videoWidth, vh = video.videoHeight;
+  if(!vw || !vh) return null;
+  ax.drawImage(video, 0, 0, ac.width, ac.height);
+  const d = ax.getImageData(0, 0, ac.width, ac.height).data;
+  const n = ac.width * ac.height;
+  const grey = new Float32Array(n);
+  let sum = 0, glare = 0;
+  for(let i = 0; i < n; i++){
+    const g = 0.299*d[i*4] + 0.587*d[i*4+1] + 0.114*d[i*4+2];
+    grey[i] = g; sum += g; if(g >= 245) glare++;
+  }
+  const mean = sum / n, glareRatio = glare / n;
+  // Laplacian variance (sharpness) on the small frame
+  let lapSum = 0, lapSq = 0, cnt = 0, edge = 0;
+  const W = ac.width;
+  for(let y = 1; y < ac.height - 1; y++) for(let x = 1; x < W - 1; x++){
+    const i = y * W + x;
+    const lap = 4*grey[i] - grey[i-1] - grey[i+1] - grey[i-W] - grey[i+W];
+    lapSum += lap; lapSq += lap * lap; cnt++; if(Math.abs(lap) > 28) edge++;
+  }
+  const lapMean = lapSum / cnt;
+  const lapVar = lapSq / cnt - lapMean * lapMean;
+  const edgeRatio = edge / cnt;
+  // stability: mean abs diff vs previous small frame
+  let diff = 999;
+  if(analyseFrame.prev && analyseFrame.prev.length === n){
+    let ds = 0; for(let i = 0; i < n; i += 3) ds += Math.abs(grey[i] - analyseFrame.prev[i]);
+    diff = ds / (n / 3);
+  }
+  analyseFrame.prev = grey;
+  return {mean, glareRatio, lapVar, edgeRatio, diff};
+}
+function skinRatioInCentre(video){
+  const vw = video.videoWidth, vh = video.videoHeight; if(!vw) return 0;
+  ax.drawImage(video, 0, 0, ac.width, ac.height);
+  const d = ax.getImageData(0, 0, ac.width, ac.height).data;
+  let skin = 0, total = 0;
+  for(let y = 36; y < 84; y++) for(let x = 48; x < 112; x++){
+    const i = (y * ac.width + x) * 4, r = d[i], g = d[i+1], b = d[i+2];
+    total++;
+    if(r > 60 && g > 30 && b > 15 && r > g && r >= b && (Math.max(r,g,b) - Math.min(r,g,b)) > 12) skin++;
+  }
+  return total ? skin / total : 0;
+}
+
+// ---------------- generic AUTO-CAPTURE scanner ----------------
+// No shutter button exists anywhere in this flow: the scanner analyses
+// the live stream itself and captures by itself the moment the subject
+// has been well-positioned for GOOD_MS of consecutive good frames.
+function makeAutoScanner(cfg){
+  // cfg: {video, frameEl, hintEl, progressEl, judge(stats)->{ok,hint}, onCapture(blob)}
+  let timer = null, goodSince = null, busy = false, lastFacing = 'environment';
+  async function begin(facing){
+    if(facing) lastFacing = facing;
+    stopTimer();
+    await startCam(cfg.video, lastFacing);
+    goodSince = null; busy = false; analyseFrame.prev = null;
+    timer = setInterval(tick, TICK_MS);
+  }
+  function tick(){
+    if(busy) return;
+    const st = analyseFrame(cfg.video);
+    if(!st) return;
+    const verdict = cfg.judge(st);
+    cfg.hintEl.textContent = verdict.hint;
+    cfg.frameEl.classList.toggle('good', !!verdict.ok);
+    if(verdict.ok){
+      if(goodSince === null) goodSince = performance.now();
+      const held = performance.now() - goodSince;
+      cfg.progressEl.style.width = Math.min(100, held / GOOD_MS * 100) + '%';
+      if(held >= GOOD_MS){ busy = true; capture(); }
+    }else{
+      goodSince = null; cfg.progressEl.style.width = '0%';
+    }
+  }
+  function capture(){
+    const v = cfg.video;
+    const c = document.createElement('canvas');
+    c.width = v.videoWidth; c.height = v.videoHeight;
+    c.getContext('2d').drawImage(v, 0, 0);
+    stopTimer();
+    c.toBlob(async blob => {
+      try{ await cfg.onCapture(blob); }
+      catch(e){ msg(e.message, true); begin().catch(()=>{}); }   // graceful auto-retry, never a dead end
+    }, 'image/jpeg', 0.92);
+  }
+  function stopTimer(){ if(timer){ clearInterval(timer); timer = null; } cfg.progressEl.style.width = '0%'; }
+  return { start: begin, stop: stopTimer };
+}
+
+// Document judge: order matters — one plain-language hint at a time.
+function judgeDocument(st){
+  if(st.mean < 45) return {ok:false, hint:'Too dark — move somewhere brighter.'};
+  if(st.glareRatio > 0.15) return {ok:false, hint:'Glare on the document — tilt it slightly.'};
+  if(st.edgeRatio < 0.004) return {ok:false, hint:'Fit your document inside the frame.'};
+  if(st.lapVar < 50) return {ok:false, hint:'Blurry — hold the phone steady.'};
+  if(st.diff > 6) return {ok:false, hint:'Hold steady…'};
+  return {ok:true, hint:'Perfect — hold it right there, scanning…'};
+}
+function judgeFace(st, video){
+  if(st.mean < 45) return {ok:false, hint:'Too dark — face a light.'};
+  if(st.glareRatio > 0.25) return {ok:false, hint:'Too bright — move out of direct light.'};
+  if(st.diff > 7) return {ok:false, hint:'Hold still…'};
+  if(skinRatioInCentre(video) < 0.18) return {ok:false, hint:'Put your face in the oval.'};
+  return {ok:true, hint:'Face centred — hold still, capturing…'};
+}
+
+// ---------------- document step ----------------
+let docState = {docId:null, entry:null, side:'front', frontBlob:null, backBlob:null};
+const docScanner = makeAutoScanner({
+  video: $('doc-video'), frameEl: $('doc-frame'), hintEl: $('doc-hint'), progressEl: $('doc-progress'),
+  judge: judgeDocument,
+  onCapture: async blob => {
+    if(docState.side === 'front'){
+      docState.frontBlob = blob;
+      const fd = new FormData();
+      fd.append('kind', $('kind').value); fd.append('issuing_country', $('country').value);
+      fd.append('doc_first_name', $('dfirst').value); fd.append('doc_last_name', $('dlast').value);
+      fd.append('doc_dob', $('ddob').value); fd.append('doc_number', $('dnum').value);
+      if(docState.entry && docState.entry.has_expiry) fd.append('doc_expiry', $('dexpiry').value);
+      fd.append('capture_meta', JSON.stringify({front:{method:'live_camera', side:'front'}}));
+      fd.append('front', blob, 'front.jpg');
+      const r = await api('POST', '/v1/flow/document', fd, true);
+      docState.docId = r.document_id;
+      upsertDocInfo({id:r.document_id, kind:r.kind, issuing_country:r.issuing_country, has_front:true, has_back:false});
+      msg('Front scanned.');
+      if(docState.entry && docState.entry.sides === 2){ startBackScan(); }
+      else { finishDocStep(); }
+    }else{
+      docState.backBlob = blob;
+      const fd = new FormData();
+      fd.append('document_id', docState.docId);
+      fd.append('capture_meta', JSON.stringify({back:{method:'live_camera', side:'back'}}));
+      fd.append('back', blob, 'back.jpg');
+      await api('POST', '/v1/flow/document/back', fd, true);
+      upsertDocInfo({id:docState.docId, has_back:true});
+      msg('Back scanned.');
+      finishDocStep();
+    }
+  }
+});
+function upsertDocInfo(patch){
+  info.documents = info.documents || [];
+  let d = info.documents.find(x => x.id === patch.id);
+  if(!d){ info.documents.push(patch); } else { Object.assign(d, patch); }
+}
+function startBackScan(){
+  docState.side = 'back';
+  $('scan-title').textContent = 'Now scan the BACK of your ID';
+  $('doc-hint').textContent = 'Flip your document over — scanning the back automatically…';
+  docScanner.start('environment').catch(()=>{ camRetry = startBackScan; });
+}
+function finishDocStep(){
+  docScanner.stop(); stopCam();
+  const t = $('doc-thumbs'); t.innerHTML = '';
+  [['Front', docState.frontBlob], ['Back', docState.backBlob]].forEach(([label, blob]) => {
+    if(!blob) return;
+    const f = document.createElement('figure');
+    f.innerHTML = '<img alt=""><figcaption>'+label+'</figcaption>';
+    f.querySelector('img').src = URL.createObjectURL(blob);
+    t.appendChild(f);
+  });
+  $('btn-doc-retake-back').style.display = (docState.entry && docState.entry.sides === 2) ? '' : 'none';
+  $('doc-done').style.display = '';
+}
+$('btn-doc-continue').onclick = () => { msg(''); nextStep(); };
+$('btn-doc-retake-front').onclick = () => {
+  $('doc-done').style.display = 'none'; docState.side = 'front'; docState.frontBlob = null; docState.backBlob = null;
+  $('scan-title').textContent = 'Scan the FRONT of your document';
+  docScanner.start('environment').catch(()=>{ camRetry = $('btn-doc-retake-front').onclick; });
+};
+$('btn-doc-retake-back').onclick = () => {
+  $('doc-done').style.display = 'none'; startBackScan();
+};
+function refreshDocTypes(){
+  const country = $('country').value;
+  const entries = registry[country] || [];
+  $('kind').innerHTML = entries.map(e => '<option value="'+e.id+'">'+e.label+'</option>').join('');
+  applyEntry();
+}
+function applyEntry(){
+  const entries = registry[$('country').value] || [];
+  docState.entry = entries.find(e => e.id === $('kind').value) || entries[0] || null;
+  if(!docState.entry) return;
+  $('kind').value = docState.entry.id;
+  $('doc-frame').classList.toggle('page', docState.entry.id === 'passport');
+  $('expiry-row').style.display = docState.entry.has_expiry ? '' : 'none';
+  $('doc-note').textContent =
+    (docState.entry.sides === 2 ? 'This document has two sides — the scanner will ask for the back automatically. ' : 'One side to scan. ') +
+    (docState.entry.has_expiry ? '' : 'This document type has no expiry date.');
+}
+$('country').onchange = refreshDocTypes;
+$('kind').onchange = applyEntry;
+
+function enterDocStep(resumeBack){
+  show('s-doc');
+  $('who').textContent = 'Verifying: '+(info.applicant.first_name||'')+' '+(info.applicant.last_name||'')+' · Level '+level;
+  const countries = Object.keys(registry);
+  if(!$('country').options.length){
+    $('country').innerHTML = countries.map(c => '<option value="'+c+'">'+c+'</option>').join('');
+    $('country').value = (info.applicant.country && registry[info.applicant.country]) ? info.applicant.country : countries[0];
+    refreshDocTypes();
+    if(info.applicant.country && $('country').value === info.applicant.country){
+      const want = (info.documents||[]).filter(d=>d.kind!=='proof_of_address').pop();
+      if(want && registry[$('country').value].some(e=>e.id===want.kind)) $('kind').value = want.kind;
+      applyEntry();
+    }
+  }
+  $('doc-done').style.display = 'none';
+  if(resumeBack){
+    const d = (info.documents||[]).filter(x=>x.kind!=='proof_of_address').pop();
+    docState.docId = d.id;
+    const entries = registry[d.issuing_country] || [];
+    docState.entry = entries.find(e=>e.id===d.kind) || docState.entry;
+    startBackScan();
+  }else{
+    docState.side = 'front';
+    $('scan-title').textContent = 'Scan the FRONT of your document';
+    docScanner.start('environment').catch(()=>{ camRetry = () => enterDocStep(false); });
+  }
+}
+
+// ---------------- selfie step (auto-capture) ----------------
+const selfieScanner = makeAutoScanner({
+  video: $('selfie-video'), frameEl: $('selfie-oval'), hintEl: $('selfie-hint'), progressEl: $('selfie-progress'),
+  judge: st => judgeFace(st, $('selfie-video')),
+  onCapture: async blob => {
+    const fd = new FormData();
+    fd.append('capture_meta', JSON.stringify({method:'live_camera'}));
+    fd.append('selfie', blob, 'selfie.jpg');
+    await api('POST', '/v1/flow/selfie', fd, true);
+    info.selfie_uploaded = true; msg('Selfie captured.'); nextStep();
+  }
+});
+function enterSelfieStep(){
+  show('s-selfie');
+  selfieScanner.start('user').catch(()=>{ camRetry = enterSelfieStep; });
+}
+
+// ---------------- liveness step (fully automatic) ----------------
+let lvChallenge = null, lvBusy = false;
+const ARROWS = {left:'⬅️', right:'➡️', up:'⬆️', down:'⬇️'};
+async function enterLivenessStep(){
+  show('s-liveness'); lvBusy = false;
+  try{
+    const c = await api('POST', '/v1/flow/liveness/challenge', {});
+    lvChallenge = c.challenge;
+    $('lv-instruction').textContent = c.instructions;
+    $('lv-arrow').textContent = (lvChallenge.movements || []).map(m => ARROWS[m] || '').join('  ');
+  }catch(e){ msg(e.message, true); return; }
+  // The check starts BY ITSELF when the step opens: camera on, face in
+  // the oval -> recording starts automatically, stops automatically.
+  let stream;
+  try{ stream = await startCam($('lv-video'), 'user'); }
+  catch(e){ camRetry = enterLivenessStep; return; }
+  $('lv-hint').textContent = 'Put your face in the oval…';
+  const waitFace = setInterval(() => {
+    if(!$('s-liveness').classList.contains('on')){ clearInterval(waitFace); return; }
+    const st = analyseFrame($('lv-video'));
+    if(st && skinRatioInCentre($('lv-video')) >= 0.18 && st.mean >= 45){
+      clearInterval(waitFace);
+      recordLiveness(stream);
+    }
+  }, 250);
+}
+function recordLiveness(stream){
+  if(lvBusy) return; lvBusy = true;
+  $('lv-hint').textContent = 'Recording — follow the instruction now…';
+  let rec;
+  try{ rec = new MediaRecorder(stream); }
+  catch(e){ $('lv-hint').textContent = 'This browser cannot record the liveness video.'; stopCam(); return; }
+  const chunks = [];
+  rec.ondataavailable = e => chunks.push(e.data);
+  rec.onstop = async () => {
+    stopCam();
+    try{
+      const fd = new FormData();
+      fd.append('capture_meta', JSON.stringify({method:'live_camera'}));
+      fd.append('video', new Blob(chunks, {type: rec.mimeType || 'video/webm'}), 'liveness.webm');
+      await api('POST', '/v1/flow/liveness', fd, true);
+      info.liveness_uploaded = true; msg('Liveness recorded.'); nextStep();
+    }catch(e){ msg(e.message, true); lvBusy = false; enterLivenessStep(); }
+  };
+  rec.start();
+  setTimeout(() => { if(rec.state !== 'inactive') rec.stop(); }, 4500);
+}
+
+// ---------------- proof of address (same live scanner) ----------------
+const poaScanner = makeAutoScanner({
+  video: $('poa-video'), frameEl: $('poa-frame'), hintEl: $('poa-hint'), progressEl: $('poa-progress'),
+  judge: judgeDocument,
+  onCapture: async blob => {
+    const fd = new FormData();
+    fd.append('capture_meta', JSON.stringify({method:'live_camera'}));
+    fd.append('document', blob, 'poa.jpg');
+    await api('POST', '/v1/flow/poa', fd, true);
+    info.poa_uploaded = true; msg('Proof of address scanned.'); nextStep();
+  }
+});
+function enterPoaStep(){
+  show('s-poa');
+  poaScanner.start('environment').catch(()=>{ camRetry = enterPoaStep; });
+}
+
+// ---------------- step machine ----------------
+function currentDoc(){
+  const ds = (info.documents || []).filter(d => d.kind !== 'proof_of_address');
+  return ds[ds.length - 1];
+}
 function nextStep(){
-  const hasDoc = (info.documents||[]).length>0;
-  if(info.credential_session && !hasDoc){ show('s-submit'); msg('Your verified credential covers the document checks for this session. You can submit now.'); return; }
-  if(!hasDoc){ show('s-details'); return; }
-  if(!info.selfie_uploaded){ show('s-selfie'); return; }
-  if(level>=2 && !info.liveness_uploaded){ startLiveness(); return; }
-  if(level>=3 && !info.poa_uploaded){ show('s-poa'); return; }
+  stopCam();
+  const doc = currentDoc();
+  if(info.credential_session && !doc){ show('s-submit'); msg('Your verified credential covers the document checks for this session. You can submit now.'); return; }
+  if(!doc){ enterDocStep(false); return; }
+  const entry = ((registry[doc.issuing_country] || []).find(e => e.id === doc.kind)) || null;
+  if(entry && entry.sides === 2 && !doc.has_back){ enterDocStep(true); return; }
+  if(!info.selfie_uploaded){ enterSelfieStep(); return; }
+  if(level >= 2 && !info.liveness_uploaded){ enterLivenessStep(); return; }
+  if(level >= 3 && !info.poa_uploaded){ enterPoaStep(); return; }
   show('s-submit');
 }
-(async()=>{
-  try{ info = await api('GET','/v1/flow/session'); }catch(e){ msg('This link is invalid or has expired. Ask the business to send a new one.', true); return; }
-  level = info.session.level;
-  $('who').textContent = 'Verifying: '+(info.applicant.first_name||'')+' '+(info.applicant.last_name||'')+' · Level '+level;
+(async () => {
+  try{ info = await api('GET', '/v1/flow/session'); }
+  catch(e){ msg('This link is invalid or has expired. Ask the business to send a new one.', true); return; }
+  level = info.session.level; registry = info.document_registry || {};
   if(['approved','rejected','needs_review','needs_more_information'].includes(info.session.status)){
     show('s-status'); $('status').textContent = 'Status: '+info.session.status;
-    if(info.session.status==='approved' && info.credential_issued){
-      try{ const c = await api('GET','/v1/flow/credential');
-        if(c.credential){ $('cred').style.display='block'; $('cred-json').textContent = JSON.stringify(c.credential.claims, null, 1); }
+    if(info.session.status === 'approved' && info.credential_issued){
+      try{ const c = await api('GET', '/v1/flow/credential');
+        if(c.credential){ $('cred').style.display = 'block'; $('cred-json').textContent = JSON.stringify(c.credential.claims, null, 1); }
       }catch(e){}
     }
     return;
@@ -119,57 +513,13 @@ function nextStep(){
   // Resumable: reopening an unexpired link continues where you left off.
   if(!info.session.consent_at) show('s-consent'); else nextStep();
 })();
-$('btn-consent').onclick = async()=>{ try{ await api('POST','/v1/flow/consent',{text_version: info.consent_text_version||'v1', locale:'en'}); nextStep(); }catch(e){ msg(e.message,true);} };
-$('btn-doc').onclick = async()=>{
-  const fd = new FormData();
-  fd.append('kind',$('kind').value); fd.append('issuing_country',$('country').value);
-  fd.append('doc_first_name',$('dfirst').value); fd.append('doc_last_name',$('dlast').value);
-  fd.append('doc_dob',$('ddob').value); fd.append('doc_expiry',$('dexpiry').value); fd.append('doc_number',$('dnum').value);
-  if($('front').files[0]) fd.append('front',$('front').files[0]);
-  if($('back').files[0]) fd.append('back',$('back').files[0]);
-  try{ await api('POST','/v1/flow/document',fd,true); info.documents=[{}]; msg('Document uploaded.'); nextStep(); }catch(e){ msg(e.message,true);} };
-$('btn-selfie').onclick = async()=>{
-  const fd = new FormData(); if($('selfie').files[0]) fd.append('selfie',$('selfie').files[0]);
-  try{ await api('POST','/v1/flow/selfie',fd,true); info.selfie_uploaded=true; msg('Selfie uploaded.'); nextStep(); }catch(e){ msg(e.message,true);} };
-// --- Liveness: active challenge (movement) ---
-let lvChallenge = null;
-async function startLiveness(){
-  show('s-liveness');
-  try{ const c = await api('POST','/v1/flow/liveness/challenge',{});
-    lvChallenge = c.challenge; $('lv-instruction').textContent = c.instruction;
-  }catch(e){ msg(e.message,true); }
-}
-async function uploadLiveness(blob, name){
-  const fd = new FormData(); fd.append('video', blob, name||'liveness.webm');
-  await api('POST','/v1/flow/liveness',fd,true);
-  info.liveness_uploaded = true; msg('Liveness video uploaded.'); nextStep();
-}
-$('btn-lv-start').onclick = async()=>{
-  try{
-    if(!lvChallenge) await startLiveness();
-    const stream = await navigator.mediaDevices.getUserMedia({video:true});
-    $('lv-video').srcObject = stream;
-    const rec = new MediaRecorder(stream); const chunks = [];
-    rec.ondataavailable = e => chunks.push(e.data);
-    rec.onstop = async()=>{ stream.getTracks().forEach(t=>t.stop());
-      try{ await uploadLiveness(new Blob(chunks,{type:rec.mimeType||'video/webm'}), 'liveness.webm'); }catch(e){ msg(e.message,true); } };
-    rec.start(); msg('Recording — follow the movement instruction now…');
-    setTimeout(()=>rec.stop(), 4500);
-  }catch(e){ msg('Camera unavailable ('+e.message+'). Use the video file upload instead.', true); }
-};
-$('btn-lv-upload').onclick = async()=>{
-  const f = $('lv-file').files[0]; if(!f){ msg('Choose a video file first.', true); return; }
-  try{ if(!lvChallenge) await startLiveness(); await uploadLiveness(f, f.name); }catch(e){ msg(e.message,true); }
-};
-$('btn-poa').onclick = async()=>{
-  const fd = new FormData(); if($('poa').files[0]) fd.append('document',$('poa').files[0]);
-  try{ await api('POST','/v1/flow/poa',fd,true); info.poa_uploaded=true; msg('Proof of address uploaded.'); nextStep(); }catch(e){ msg(e.message,true);} };
-$('btn-submit').onclick = async()=>{
-  try{ const r = await api('POST','/v1/flow/submit',{});
-    show('s-status'); $('status').textContent = 'Status: '+r.status+(r.status==='needs_review' ? ' — a reviewer will check your documents.' : '');
-    if(r.status==='approved' && r.credential){ $('cred').style.display='block'; $('cred-json').textContent = JSON.stringify(r.credential.claims, null, 1); }
-  }catch(e){ msg(e.message,true);} };
-$('btn-revoke').onclick = async()=>{
-  try{ await api('POST','/v1/flow/credential/revoke',{}); $('cred').style.display='none'; msg('Credential revoked.'); }catch(e){ msg(e.message,true);} };
+$('btn-consent').onclick = async () => { try{ await api('POST', '/v1/flow/consent', {text_version: info.consent_text_version || 'v1', locale: 'en'}); info.consent_at = true; nextStep(); }catch(e){ msg(e.message, true); } };
+$('btn-submit').onclick = async () => {
+  try{ const r = await api('POST', '/v1/flow/submit', {});
+    show('s-status'); $('status').textContent = 'Status: '+r.status+(r.status === 'needs_review' ? ' — a reviewer will check your documents.' : '');
+    if(r.status === 'approved' && r.credential){ $('cred').style.display = 'block'; $('cred-json').textContent = JSON.stringify(r.credential.claims, null, 1); }
+  }catch(e){ msg(e.message, true); } };
+$('btn-revoke').onclick = async () => {
+  try{ await api('POST', '/v1/flow/credential/revoke', {}); $('cred').style.display = 'none'; msg('Credential revoked.'); }catch(e){ msg(e.message, true); } };
 </script>
 </body></html>
