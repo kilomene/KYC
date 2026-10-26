@@ -9,6 +9,13 @@ a claim to print**: we say "more advanced" in public only about a
 specific capability we have built, tested, and measured against them.
 Until then, this document is our internal scorecard.
 
+*STATUS (WS0 audit, 2026-10-26): rows in the table below are targets.
+Two need explicit correction against the built system: "passive
+liveness" is NOT built (liveness is an active movement challenge;
+passive liveness is Phase 4 WS2), and the reviewer assist is a
+deterministic pre-read, not an AI summary. "AI-prepared case summaries"
+remains a target. See docs/CLAIMS-AUDIT.md.*
+
 ## Where we intend to beat Sumsub, Persona, and Onfido
 
 | Dimension | Incumbent weakness to exploit | Our target |
