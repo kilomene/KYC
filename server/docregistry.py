@@ -2,7 +2,7 @@
 
 Every supported document is described by FACTS, not just a name:
 
-    {id, label, sides (1|2), has_expiry (bool), mrz (bool)}
+    {id, label, sides (1|2), has_expiry (bool), mrz (bool), aspect}
 
 Those facts drive real behaviour:
   * session/document validation (a type not in the registry for the
@@ -11,7 +11,12 @@ Those facts drive real behaviour:
     prompts for the BACK scan after the front is accepted),
   * the expiry check (a has_expiry:False document — e.g. a Nigerian
     NIN slip, NIN card or voter's card — NEVER fails or goes unclear
-    for a missing expiry date; it has none).
+    for a missing expiry date; it has none),
+  * the live scanner's document detector: `aspect` is the document's
+    width/height ratio (ISO/IEC 7810 ID-1 cards = 1.586, passport data
+    page ~1.42, NIN slip / A-series paper ~1.41). The scanner only
+    auto-captures when a detected quadrilateral matches this ratio —
+    a still, textured room can no longer pass as a document.
 
 Owner-specified facts (2026-10-26): Nigeria — passport, driver's
 licence, voter's card (INEC PVC, no expiry), NIN card (no expiry),
@@ -23,26 +28,26 @@ MRZ True) pending the owner's per-country research merge.
 """
 
 # Passport: the data page is what is scanned -> sides 1, MRZ True.
-_PASSPORT = {"label": "Passport", "sides": 1, "has_expiry": True, "mrz": True}
-_CARD_LICENCE = {"label": "Driver's licence", "sides": 2, "has_expiry": True, "mrz": False}
-_CARD_ID = {"label": "National ID", "sides": 2, "has_expiry": True, "mrz": False}
+_PASSPORT = {"label": "Passport", "sides": 1, "has_expiry": True, "mrz": True, "aspect": 1.42}
+_CARD_LICENCE = {"label": "Driver's licence", "sides": 2, "has_expiry": True, "mrz": False, "aspect": 1.586}
+_CARD_ID = {"label": "National ID", "sides": 2, "has_expiry": True, "mrz": False, "aspect": 1.586}
 
 DOCUMENT_REGISTRY = {
     "NG": {
         "passport": dict(_PASSPORT),
         "drivers_licence": dict(_CARD_LICENCE),
-        "national_id": {"label": "National ID", "sides": 2, "has_expiry": False, "mrz": False},
-        "voter_card": {"label": "Voter's card (INEC PVC)", "sides": 2, "has_expiry": False, "mrz": False},
-        "nin_card": {"label": "NIN card", "sides": 2, "has_expiry": False, "mrz": False},
-        "nin_slip": {"label": "NIN slip", "sides": 1, "has_expiry": False, "mrz": False},
+        "national_id": {"label": "National ID", "sides": 2, "has_expiry": False, "mrz": False, "aspect": 1.586},
+        "voter_card": {"label": "Voter's card (INEC PVC)", "sides": 2, "has_expiry": False, "mrz": False, "aspect": 1.586},
+        "nin_card": {"label": "NIN card", "sides": 2, "has_expiry": False, "mrz": False, "aspect": 1.586},
+        "nin_slip": {"label": "NIN slip", "sides": 1, "has_expiry": False, "mrz": False, "aspect": 1.41},
     },
     "US": {
         "passport": dict(_PASSPORT),
-        "passport_card": {"label": "Passport card", "sides": 2, "has_expiry": True, "mrz": True},
-        "drivers_license": {"label": "Driver's license", "sides": 2, "has_expiry": True, "mrz": False},
+        "passport_card": {"label": "Passport card", "sides": 2, "has_expiry": True, "mrz": True, "aspect": 1.586},
+        "drivers_license": {"label": "Driver's license", "sides": 2, "has_expiry": True, "mrz": False, "aspect": 1.586},
         # British-spelling alias kept for API backwards compatibility.
-        "drivers_licence": {"label": "Driver's license", "sides": 2, "has_expiry": True, "mrz": False},
-        "state_id": {"label": "State ID", "sides": 2, "has_expiry": True, "mrz": False},
+        "drivers_licence": {"label": "Driver's license", "sides": 2, "has_expiry": True, "mrz": False, "aspect": 1.586},
+        "state_id": {"label": "State ID", "sides": 2, "has_expiry": True, "mrz": False, "aspect": 1.586},
         "national_id": dict(_CARD_ID),
     },
     "GB": {"passport": dict(_PASSPORT), "drivers_licence": dict(_CARD_LICENCE), "national_id": dict(_CARD_ID)},
