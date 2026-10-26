@@ -901,13 +901,24 @@ async function enterLivenessStep(){
 function recordLiveness(stream){
   if(lvBusy) return; lvBusy = true;
   lvGuide.show('lv_record');
-  // The voice speaks the server-issued challenge directions, in order.
+  // The voice speaks the server-issued challenge directions, in order,
+  // spaced across the recording window.
   const moves = (lvChallenge && lvChallenge.movements) || [];
   if(moves[0]) VOICE.say('lv_turn_' + moves[0], true);
-  if(moves[1]) setTimeout(() => { if(lvBusy) VOICE.say('lv_turn_' + moves[1], true); }, 2100);
+  if(moves[1]) setTimeout(() => { if(lvBusy) VOICE.say('lv_turn_' + moves[1], true); }, 4200);
   let rec;
-  try{ rec = new MediaRecorder(stream); }
-  catch(e){ $('lv-hint').textContent = 'This browser cannot record the liveness video.'; stopCam(); return; }
+  // Best available quality: the rPPG pulse analysis (Phase 4 WS2) needs
+  // a longer, less-crushed clip than the old ~4.5 s default — record
+  // ~9 s at the highest bitrate the browser accepts.
+  try{
+    const opts = {videoBitsPerSecond: 2500000};
+    if(window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported('video/webm;codecs=vp9'))
+      opts.mimeType = 'video/webm;codecs=vp9';
+    rec = new MediaRecorder(stream, opts);
+  }catch(e){
+    try{ rec = new MediaRecorder(stream); }
+    catch(e2){ $('lv-hint').textContent = 'This browser cannot record the liveness video.'; stopCam(); return; }
+  }
   const chunks = [];
   rec.ondataavailable = e => chunks.push(e.data);
   rec.onstop = async () => {
@@ -921,7 +932,9 @@ function recordLiveness(stream){
     }catch(e){ msg(e.message, true); lvBusy = false; enterLivenessStep(); }
   };
   rec.start();
-  setTimeout(() => { if(rec.state !== 'inactive') rec.stop(); }, 4500);
+  // ~9 s window (WS2): two challenge movements plus enough stable-face
+  // footage for the pulse/deepfake analysis to measure a real signal.
+  setTimeout(() => { if(rec.state !== 'inactive') rec.stop(); }, 9000);
 }
 
 // ---------------- proof of address (same live scanner, page aspect) ----------------
