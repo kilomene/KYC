@@ -1,10 +1,17 @@
 # Phase 4 Plan — from advanced scanner to certified-grade platform
 
-Status: DRAFT for owner approval (presented 2026-10-26). Nothing in this
-plan executes before the owner approves it. Ordering follows the owner's
+Status: APPROVED by the owner 2026-10-26. Execution follows the owner's
 sequence decision (2026-10-26): scanner build first, then this plan,
 then execution. It also absorbs the independent repo assessment the
 owner reviewed the same day, whose gaps matched our own not-done lists.
+
+## Owner execution standard (reaffirmed 2026-10-26)
+
+Every Phase 4 deliverable is built completely: full functionality, full
+design, correct placement of every component, advanced capability, and
+maximum practical security. No placeholders, partial substitutes, or
+decorative stand-ins count as delivery. Claims remain bounded by what
+has actually been built, tested, and measured.
 
 ## Workstream 0 — Claims-vs-code audit (do first, it is cheap and honest)
 - File-by-file audit: every README/docs claim checked against the code
