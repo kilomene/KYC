@@ -8,14 +8,23 @@ active config; every decision records the config_version it used.
 import json
 from .db import new_id, now_iso
 
+# document_framing is a REQUIRED, decision-bearing check for document
+# sessions (owner's order, 2026-10-26): a capture with no detectable
+# document in frame auto-rejects; it is not a mere risk signal. It is
+# conditionally required — credential-seeded sessions without a
+# document have no framing result and framing is never inherited
+# (server/credentials.py); see server/engine.py.
 DEFAULT_REQUIRED = {
-    1: ["capture_quality", "ocr", "expiry_age", "consistency"],
-    2: ["capture_quality", "ocr", "mrz", "expiry_age", "consistency", "authenticity", "face_match", "liveness"],
-    3: ["capture_quality", "ocr", "mrz", "expiry_age", "consistency", "authenticity", "face_match", "liveness", "poa", "screening_sanctions"],
+    1: ["capture_quality", "document_framing", "document_classification", "data_consistency", "ocr", "expiry_age", "consistency"],
+    2: ["capture_quality", "document_framing", "document_classification", "data_consistency", "ocr", "mrz", "expiry_age", "consistency", "authenticity", "face_match", "face_track", "liveness", "deepfake"],
+    3: ["capture_quality", "document_framing", "document_classification", "data_consistency", "ocr", "mrz", "expiry_age", "consistency", "authenticity", "face_match", "face_track", "liveness", "deepfake", "poa", "screening_sanctions"],
 }
 KNOWN_CHECKS = ["capture_quality", "ocr", "mrz", "expiry_age", "consistency",
                 "authenticity", "face_match", "liveness", "poa", "screening_sanctions",
-                "document_framing"]
+                "document_framing", "location_consistency", "vpn_proxy",
+                "mrz_viz_consistency", "code_decode", "verification_layers", "deepfake",
+                "face_track", "biometric_evidence", "document_classification",
+                "data_consistency", "document_evidence"]
 
 def default_config(level):
     return {
