@@ -1,0 +1,15 @@
+[Unit]
+Description=KYC WS tunnel client (kyc-tunnel Worker -> 127.0.0.1:8790)
+After=network-online.target kyc.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=HOME=/home/hatch
+EnvironmentFile=/home/hatch/.vm-agent/proxy.env
+ExecStart=/usr/bin/python3 /home/hatch/workspace/KYC/deploy/tunnel-client/kyc-tunnel-client.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
