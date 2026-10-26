@@ -96,8 +96,19 @@ class ClassificationUnits(unittest.TestCase):
             self.assertIn("pattern_expected", tpl)
         tpl, level = T.get_template("DE", "passport")
         self.assertEqual(level, "generic")  # generic TD3 for other passports
-        tpl, level = T.get_template("GB", "drivers_licence")
-        self.assertEqual(level, "coarse")   # coarse for remaining registry types
+        # Phase 4 WS1: GB/CA/AU/DE/GH licences and DE/GH national IDs
+        # (plus all newly merged registry types) carry FULL templates;
+        # the coarse fallback remains only for untemplated kinds.
+        for country, kind in [("GB", "drivers_licence"), ("CA", "drivers_licence"),
+                              ("AU", "drivers_licence"), ("DE", "drivers_licence"),
+                              ("GH", "drivers_licence"), ("DE", "national_id"),
+                              ("GH", "national_id"), ("IN", "aadhaar"), ("PH", "philid"),
+                              ("SG", "nric"), ("KE", "national_id"), ("ZA", "smart_id"),
+                              ("AE", "emirates_id"), ("FR", "national_id"),
+                              ("NL", "national_id"), ("IE", "passport_card")]:
+            tpl, level = T.get_template(country, kind)
+            self.assertIsNotNone(tpl, (country, kind))
+            self.assertEqual(level, "full", (country, kind))
 
 @unittest.skipUnless(TESS, "session flows need tesseract")
 class ClassificationSessions(unittest.TestCase):
@@ -118,13 +129,16 @@ class ClassificationSessions(unittest.TestCase):
             self.assertEqual(view["checks_summary"].get("document_classification"), "fail")
             self.assertIn("document_classification_mismatch", view["decision"]["reason_codes"])
 
-    def test_coarse_type_failure_blocks_auto_approval(self):
+    def test_full_template_mismatch_auto_rejects(self):
+        # GB drivers_licence is a FULL template since Phase 4 WS1: a
+        # passport image claimed as one fails classification outright
+        # (before WS1 it was coarse: unclear, blocking auto-approval).
         with Server() as srv:
             _, key, _ = make_tenant(srv)
             ctx = drive_flow(srv, key, level=1, kind="drivers_licence", country="GB")
             view = _submit(srv, ctx)
-            self.assertEqual(view["checks_summary"].get("document_classification"), "unclear", view)
-            self.assertNotEqual(view["status"], "approved")
+            self.assertEqual(view["checks_summary"].get("document_classification"), "fail", view)
+            self.assertEqual(view["status"], "rejected", view)
 
 if __name__ == "__main__":
     unittest.main()
