@@ -122,11 +122,38 @@ export class TunnelHub {
       const [client, server] = Object.values(pair);
       this.state.acceptWebSocket(server);
       this.ws = server;
+      // Re-send in-flight requests on the fresh socket. The tunnel
+      // client's socket drops abnormally every few minutes in this
+      // environment (no close frame — the path out of the VM recycles
+      // long-lived connections) and it reconnects within seconds.
+      // Before this, webSocketClose failed every in-flight request on
+      // the spot (the owner's live runs died as HTTP 504s); now a head
+      // request survives the drop: its frame is re-sent here and its
+      // original 30s timer keeps running, so only a reconnect that
+      // never comes still ends in a 504. Re-sending is safe for this
+      // origin: uploads replace the step's capture and reads are
+      // reads, so a request the client had already processed simply
+      // processes again with the same result.
+      for (const entry of this.pending.values()) {
+        if (entry.kind === "head" && entry.frame) {
+          try { server.send(entry.frame); } catch (e) { /* timer decides */ }
+        }
+      }
       return new Response(null, { status: 101, webSocket: client });
     }
 
     // Public request -> forward down the tunnel.
-    const ws = this.liveWs();
+    let ws = this.liveWs();
+    if (!ws) {
+      // The tunnel client reconnects within seconds of a drop; a
+      // request landing in that window used to die instantly as a
+      // 503. Give the reconnect a short grace period first.
+      const deadline = Date.now() + 6000;
+      while (!ws && Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 250));
+        ws = this.liveWs();
+      }
+    }
     if (!ws) {
       return new Response("KYC tunnel is offline", { status: 503 });
     }
@@ -159,7 +186,7 @@ export class TunnelHub {
         this.pending.delete(id);
         resolve(null);
       }, HEAD_TIMEOUT_MS);
-      this.pending.set(id, { kind: "head", resolve, timer });
+      this.pending.set(id, { kind: "head", resolve, timer, frame });
       try {
         ws.send(frame);
       } catch (e) {
@@ -243,11 +270,14 @@ export class TunnelHub {
     if (this.ws === ws) this.ws = null;
     for (const [id, entry] of Array.from(this.pending.entries())) {
       if (entry.kind === "head") {
-        clearTimeout(entry.timer);
-        entry.resolve(null);
-      } else {
-        this._dropStream(id, entry, new Error("KYC tunnel closed"));
+        // Do NOT fail head requests on a socket drop: the client
+        // reconnects within seconds and the /tunnel handler re-sends
+        // their frames (see above). The 30s head timer is the only
+        // deadline. Streams cannot survive a socket change and are
+        // dropped as before.
+        continue;
       }
+      this._dropStream(id, entry, new Error("KYC tunnel closed"));
       this.pending.delete(id);
     }
   }
