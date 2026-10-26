@@ -1,0 +1,15 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KYC — a Nova Inc product</title>
+<style>body{font-family:system-ui,sans-serif;max-width:720px;margin:2rem auto;padding:0 1rem;line-height:1.5;color:#111}a{color:#0b5fff}.card{border:1px solid #ddd;border-radius:12px;padding:1rem 1.25rem;margin:1rem 0}</style></head>
+<body>
+<h1>KYC</h1>
+<p><strong>Know Your Customer, built our way.</strong> A Nova Inc product.</p>
+<div class="card"><h2>Status — honest</h2>
+<p><strong>Phase 1 local MVP.</strong> This build runs locally: tenant API keys, hosted applicant flow (consent → document → selfie → submit), real checks (image quality, OCR, MRZ check digits, expiry/age, name/DOB consistency), a fail-closed decision engine, and human review in the console.</p>
+<p><strong>Not yet built:</strong> face match and liveness are Phase 2 — so Level 2/3 sessions cannot auto-approve here; they go to a human reviewer who compares the document and selfie images. Proof of address, sanctions screening, and KYB are Phase 3. Nothing on this page claims a certification we do not hold.</p></div>
+<div class="card"><h2>Links</h2>
+<p><a href="/console">Tenant review console</a> — paste an API key to work the review queue.</p>
+<p>Applicant flow links are created per session by a tenant through the API (<code>POST /v1/sessions</code>) and look like <code>/flow/&lt;token&gt;</code>.</p></div>
+<p style="color:#666;font-size:.9em">KYC is a Nova Inc product. Local development build — not a public deployment.</p>
+</body></html>
