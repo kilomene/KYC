@@ -47,7 +47,6 @@ pre{background:#f6f6f6;padding:.6rem;overflow:auto;font-size:.8rem;white-space:p
 <body>
 <h1>Verify your identity</h1>
 <div style="text-align:right"><span id="voice-ind">🔊 speaking…</span><button id="btn-mute" class="ghost" style="width:auto;margin-top:0;padding:.35rem .7rem">🔊 Voice on</button></div>
-<div id="voice-arm" style="display:none;position:fixed;left:50%;transform:translateX(-50%);bottom:14px;z-index:60;background:#12351f;color:#d9ffe4;border:1px solid #2fbf71;border-radius:999px;padding:.55rem 1rem;font-size:.95rem;box-shadow:0 4px 18px rgba(0,0,0,.35)">🔊 Tap anywhere to turn on voice guidance</div>
 <div id="out"></div>
 
 <section class="step" id="s-consent">
@@ -73,6 +72,12 @@ pre{background:#f6f6f6;padding:.6rem;overflow:auto;font-size:.8rem;white-space:p
 <p>VPN or proxy connections are not accepted for identity verification.</p>
 <p><b>Turn off your VPN or proxy and try again.</b></p>
 <button id="btn-vpn-retry">Try again</button>
+</section>
+
+<section class="step" id="s-resume">
+<h2>Welcome back</h2>
+<p>Your verification is already in progress. Continue where you left off — everything you have completed is saved.</p>
+<button id="btn-resume">Continue</button>
 </section>
 
 <section class="step" id="s-nocamera">
@@ -384,6 +389,7 @@ function clientSignals(){
 const GUIDANCE = {
   welcome:      {voice: 'Welcome. We will start with your document. Place your ID inside the frame when the camera opens.'},
   voice_on:     {voice: 'Voice guidance is on.'},
+  welcome_back: {voice: "Welcome back. Let's continue."},
   starting:     {text: 'Starting camera…'},
   doc_dark:     {text: 'Too dark — move somewhere brighter.', voice: 'The place where you are is dark. Move to a brighter place.'},
   doc_dim:      {text: 'A bit dim — more light will help the scan.', voice: 'The light here is dim. Move to a brighter place if you can.'},
@@ -544,28 +550,14 @@ const VOICE = {
     if (!this._playClip(key) && line) this._speakSynth(line, true);
   },
   // THE RESUME GAP (owner's silent runs, 2026-10-26): a reopened link
-  // whose consent was already granted skips the consent screen and
-  // jumps straight to the next step — no tap ever happens, prime() is
-  // never called, `unlocked` stays false and say() returns silently
-  // for the WHOLE run. arm() fixes the class: on a resumed load, show
-  // the voice banner and prime on the first genuine tap ANYWHERE
-  // (capture phase, so the unlock lands before the tap's own handler
-  // can trigger guidance).
-  armed: false,
-  arm(){
-    if (this.armed || this.unlocked) return;
-    this.armed = true;
-    const banner = document.getElementById('voice-arm');
-    if (banner) banner.style.display = 'block';
-    const h = () => {
-      document.removeEventListener('pointerdown', h, true);
-      document.removeEventListener('click', h, true);
-      if (banner) banner.style.display = 'none';
-      this.prime('voice_on');
-    };
-    document.addEventListener('pointerdown', h, true);
-    document.addEventListener('click', h, true);
-  },
+  // whose consent was already granted used to jump straight to the
+  // next step — no tap ever happened, prime() was never called,
+  // `unlocked` stayed false and say() returned silently for the WHOLE
+  // run. The fix is structural, not a voice gimmick: a resumed load now
+  // lands on the Welcome back screen, whose own Continue button primes
+  // the voice (owner's ruling: no separate tap-for-voice UI — it must
+  // be built in). iOS forbids ANY page sound before a user gesture in
+  // that page load; the flow's own buttons are those gestures.
   say(key, force){
     const g = GUIDANCE[key];
     const line = g && (g.voice || g.text);
@@ -1441,6 +1433,7 @@ async function doConsent(){
 }
 $('btn-consent').onclick = doConsent;
 $('btn-vpn-retry').onclick = doConsent;
+$('btn-resume').onclick = () => { VOICE.prime('welcome_back'); nextStep(); };
 
 (async () => {
   // Phone-only: a desktop browser gets the handoff screen and nothing
@@ -1461,7 +1454,7 @@ $('btn-vpn-retry').onclick = doConsent;
   // Resumable: reopening an unexpired link continues where you left off.
   if(!info.session.consent_at) show('s-consent');
   else if(info.session.vpn_status === 'detected') show('s-vpn');
-  else { VOICE.arm(); nextStep(); }
+  else show('s-resume');
 })();
 $('btn-submit').onclick = async () => {
   try{ const r = await api('POST', '/v1/flow/submit', {});
