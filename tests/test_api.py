@@ -47,9 +47,14 @@ class TestAPI(unittest.TestCase):
             ctx = drive_flow(srv, test_key, level=2)
             st, view = call(srv, "POST", "/v1/flow/submit", {}, token=ctx["token"])
             self.assertEqual(st, 200, view)
-            # Phase 1: face_match/liveness are not_run, so NO auto-approval at L2
+            # Phase 2: face_match RUNS now (it can no longer be not_run);
+            # the synthetic drawing has no detectable real face, so it can
+            # never pass, and with no liveness video the session must go
+            # to review — still NO auto-approval. (This assertion replaces
+            # the Phase 1 'not_run' assertion, which Phase 2 obsoleted.)
             self.assertEqual(view["status"], "needs_review", view)
-            self.assertEqual(view["checks_summary"].get("face_match"), "not_run")
+            self.assertIn(view["checks_summary"].get("face_match"), ("unclear", "error", "fail"))
+            self.assertEqual(view["checks_summary"].get("liveness"), "not_run")
             self.assertIn("case_id", view)
             # reviewer needs a reason
             st, r = call(srv, "POST", f"/v1/cases/{view['case_id']}/decide", {"action": "approve", "reason": "  "}, key=test_key)
