@@ -102,7 +102,14 @@ class TestScreeningFlowAndFourEyes(unittest.TestCase):
             # Applicant matches the shipped SAMPLE list exactly.
             ctx = drive_l3_with_poa(srv, key, first="Viktor", last="Petrov", dob="1968-03-14")
             st, view = call(srv, "POST", "/v1/flow/submit", {}, token=ctx["token"])
-            self.assertEqual(view["status"], "needs_review", view)
+            # Auto-decision doctrine (2026-10-26): the synthetic-media
+            # session also carries decisive failures (no real face /
+            # liveness, an MRZ the band pass misread), so the ENGINE now
+            # auto-rejects instead of parking at needs_review. What this
+            # test exercises is unchanged: the case opens either way, the
+            # screening hit stays pending and blocks approval until it is
+            # disposed, and overriding to approve takes four eyes.
+            self.assertEqual(view["status"], "rejected", view)
             self.assertEqual(view["checks_summary"]["screening_sanctions"], "unclear")
             self.assertEqual(view["checks_summary"]["poa"], "pass", view)
             case_id = view["case_id"]
@@ -233,10 +240,19 @@ class TestKYB(unittest.TestCase):
             from helpers import selfie_bytes
             multipart(srv, "/v1/flow/selfie", {}, {"selfie": ("s.png", selfie_bytes(), "image/png")}, token)
             st, view = call(srv, "POST", "/v1/flow/submit", {}, token=token)
-            self.assertEqual(view["status"], "needs_review", view)
-            st, dec = call(srv, "POST", f"/v1/cases/{view['case_id']}/decide",
-                           {"action": "approve", "reason": "KYB director verified by eye."}, key=key)
-            self.assertEqual(dec["outcome"], "approved", dec)
+            # Auto-decision doctrine (2026-10-26): the synthetic L2
+            # session auto-rejects; the KYB reviewer path completes it
+            # via a four-eyes override.
+            self.assertEqual(view["status"], "rejected", view)
+            rev_a = make_user(srv, key, "KYB Reviewer A")
+            rev_b = make_user(srv, key, "KYB Reviewer B")
+            st, dec = decide_as(srv, view["case_id"], key,
+                                {"action": "approve", "reason": "KYB director verified by eye."}, rev_a["token"])
+            self.assertEqual(st, 202, dec); self.assertEqual(dec["status"], "awaiting_second")
+            st, dec = call(srv, "POST", f"/v1/cases/{view['case_id']}/confirm",
+                           {"reason": "Second pair of eyes: agreed."},
+                           key=key, raw_headers={"X-Reviewer-Key": rev_b["token"]})
+            self.assertEqual(st, 200, dec); self.assertEqual(dec["outcome"], "approved", dec)
             st, doc = multipart(srv, f"/v1/businesses/{bid}/document", {},
                                 {"document": ("reg.pdf", b"%PDF-1.4 fake certificate bytes", "application/pdf")}, key)
             self.assertEqual(st, 201, doc)
@@ -282,7 +298,14 @@ class TestCredentials(unittest.TestCase):
             st, v = call(srv, "POST", "/v1/credentials/verify", {"credential": cred}, key=key)
             self.assertTrue(v["valid"], v)
             self.assertEqual(v["claims"]["level"], 1)
-            self.assertNotIn("document", json.dumps(v))  # claims only, no document data
+            # Claims only, no document DATA. (Check NAMES in
+            # checks_passed — e.g. document_classification — are
+            # metadata about what ran, not document data; the ban is
+            # on the data itself, tightened 2026-10-26 when new check
+            # names made the old blunt substring assertion wrong.)
+            for _forbidden in ("document_number", "doc_number", "storage_path",
+                               "ocr_text", "mrz_raw", "image_url", "date_of_birth"):
+                self.assertNotIn(_forbidden, json.dumps(v))
             # Tampered claims are rejected.
             bad = json.loads(json.dumps(cred)); bad["claims"]["level"] = 3
             st, v = call(srv, "POST", "/v1/credentials/verify", {"credential": bad}, key=key)
