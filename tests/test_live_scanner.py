@@ -37,7 +37,7 @@ def _upload_doc(srv, sess, kind, country, fields=None, meta=None):
 class TestRegistry(unittest.TestCase):
     def test_owner_facts_encoded(self):
         ng = R.DOCUMENT_REGISTRY["NG"]
-        self.assertEqual(ng["passport"], {"label": "Passport", "sides": 1, "has_expiry": True, "mrz": True})
+        self.assertEqual(ng["passport"], {"label": "Passport", "sides": 1, "has_expiry": True, "mrz": True, "aspect": 1.42})
         self.assertEqual(ng["voter_card"]["sides"], 2); self.assertFalse(ng["voter_card"]["has_expiry"])
         self.assertFalse(ng["nin_card"]["has_expiry"]); self.assertEqual(ng["nin_card"]["sides"], 2)
         self.assertFalse(ng["nin_slip"]["has_expiry"]); self.assertEqual(ng["nin_slip"]["sides"], 1)
@@ -112,6 +112,12 @@ class TestTwoSidedCapture(unittest.TestCase):
     def test_two_sided_session_completes_with_back_scan(self):
         with Server() as srv:
             _, key, _ = make_tenant(srv)
+            # Tenant config explicitly requires review (ceiling -1) —
+            # one of the sanctioned review paths — so the case view of a
+            # two-sided document can be exercised; a clean session like
+            # this one otherwise auto-approves with no case at all.
+            st, r = call(srv, "PUT", "/v1/config", {"level": 1, "config": {"risk_auto_approve_ceiling": -1}}, key=key)
+            self.assertEqual(st, 200, r)
             app, sess = _session(srv, key, country="NG", level=1)
             st, r = _upload_doc(srv, sess, "drivers_licence", "NG",
                                 meta='{"front":{"method":"live_camera","side":"front"}}')
