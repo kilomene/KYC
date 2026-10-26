@@ -61,6 +61,46 @@ this workstream).
   (scripts/benchmark_vision.py; benchmarks/RESULTS.md;
   test_benchmark) — IMPLEMENTED with the synthetic-corpus limit
   recorded in RESULTS.md (WS1)
+- FAR/FRR benchmark of the production face-match pipeline on the
+  full LFW View-2 protocol (6,000 official pairs, real faces):
+  EER 1.07%; at the production threshold 0.363 → FAR 0.10%,
+  FRR 2.00%, accuracy 98.95%; protocol accuracy 99.13% ± 0.38%;
+  simulated condition slices (dark/downscale/blur, labelled).
+  Threshold verdict from the measured curve: 0.363 KEPT;
+  high-assurance option 0.413 recorded. (scripts/
+  benchmark_biometrics.py; benchmarks/BIOMETRICS.md +
+  biometrics.json; test_biometrics_benchmark) — IMPLEMENTED with
+  the corpus limit recorded (funneled LFW is pre-cropped faces;
+  demographic slicing UNMEASURED — LFW carries no attributes)
+  (WS2)
+- Presentation-attack suite against the production defences:
+  replay family on REAL artefacts (genuine videos vs fresh
+  challenges, liveness passed 0/6); print/screen/mask/deepfake
+  families SIMULATED with documented methods — physical masks and
+  DNN face-swap corpora UNMEASURED (cannot be produced here).
+  No artefact auto-approved; per-family rejected/blocked rates in
+  benchmarks/BIOMETRICS.md. (scripts/benchmark_attacks.py;
+  benchmarks/attacks.json; test_attacks) — IMPLEMENTED at the
+  labelled depths (WS2)
+- rPPG hardened to POS + CHROM + green under a signal-quality gate;
+  re-measured on the owner's real captures — plausible POS peak,
+  still below the evidentiary bar on 4.5 s clips, so the leg
+  remains evidence-only (attack suite also measured it firing on
+  jittered photo presentations). Flow liveness window extended to
+  ~9 s at raised bitrate. (server/deepfake.py; public/flow.html;
+  test_rppg) — IMPLEMENTED, claim stays at evidence-only (WS2)
+- Detection/embedding work space capped at 1024 px
+  (server/face.py `work_image`): YuNet boxes measurably shrink/
+  drift with input size and break SFace alignment on
+  multi-megapixel stills (scale sweep in BIOMETRICS.md §4). A
+  far/angled document portrait can still go undetected → face
+  match *unclear*, fail closed. — IMPLEMENTED (WS2)
+- Provider adapter: own SFace pipeline is provider #1 through
+  server/bioprovider.py (the WS2 benchmark runs through it);
+  external slots fail closed (`provider_not_configured`). A real
+  external head-to-head needs vendor accounts/API keys held by the
+  operator — the D5 evaluation remains OPEN, not faked.
+  (test_bioprovider) — IMPLEMENTED as labelled (WS2)
 - KYB is format validation + document + reviewer confirmation, with NO
   live government registry connection — labelled that way in the API,
   console, and README. — IMPLEMENTED as labelled
@@ -124,10 +164,26 @@ unit takes the token from an optional `data/platform-admin.env` file.
   corpus was available), so accuracy numbers bound the extraction
   wiring, not real-world documents; font-consistency calibration is
   still fixture-based, not corpus-calibrated.
-- **WS2 — Biometrics, measured.** No FAR/FRR benchmark; no
-  presentation-attack suite results; demographic fairness testing
-  (COMPLIANCE §3) not done; rPPG is evidence-only; passive liveness not
-  built; the D5 provider-adapter evaluation has not run.
+- **WS2 — Biometrics, measured. CLOSED 2026-10-26** (numbers in
+  benchmarks/BIOMETRICS.md): FAR/FRR benchmark on the full LFW
+  protocol (EER 1.07%; production threshold 0.363 kept on measured
+  evidence — FAR 0.10% / FRR 2.00%); presentation-attack suite at
+  labelled depths (replay REAL; print/screen/mask-proxy/deepfake-
+  morph SIMULATED); rPPG hardened (POS/CHROM/quality gate) and
+  honestly still evidence-only; liveness window extended to ~9 s;
+  detection-at-resolution defect found and fixed (1024 px work
+  space). Remaining open inside WS2's scope: demographic fairness
+  testing (COMPLIANCE §3) NOT done — LFW carries no demographic
+  attributes and no lawfully downloadable attribute-labelled set
+  was reachable, so no fairness numbers exist; physical-mask and
+  DNN face-swap attack corpora UNMEASURED (cannot be produced in
+  this environment); passive liveness not built (the measured
+  movement challenge remains the mechanism); the D5 external
+  provider head-to-head has NOT run — the adapter exists and fails
+  closed, but a real evaluation needs vendor accounts/API keys;
+  rPPG on the new ~9 s captures unmeasured until a real longer
+  capture exists; a far/angled document portrait can still evade
+  YuNet detection (face match returns *unclear*, fail closed).
 - **WS3 — Security, verified.** Reviewer authentication is named tokens,
   not MFA/password accounts; no rate limiting; webhook retries,
   dead-letter and replay not built; stored media is not encrypted at
