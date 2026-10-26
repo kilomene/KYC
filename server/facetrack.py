@@ -94,6 +94,11 @@ def build_track(frame_faces, pass_threshold=FACE.DEFAULT_THRESHOLD, margin=FACE.
              "aggregate_embedding": agg}, agg)
 
 def _frame_record(frame):
+    # Detection + embedding in work_image space (WS2): for oversized
+    # stills this keeps alignCrop landmarks native to the embedded
+    # image; centre/size outputs are normalised, so they are
+    # unaffected by the working scale. Video frames are already small.
+    frame = FACE.work_image(frame)
     face = FACE.largest_face(frame)
     if face is None:
         return None
