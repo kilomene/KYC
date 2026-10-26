@@ -26,7 +26,7 @@ design, our rules — informed by what the category does, copying none of it.
 > **four-eyes review with reviewer roles and case SLAs**, a reviewer
 > **assist** pre-read, **reusable signed verified credentials**, human
 > review console, signed webhooks, audit log, erasure and retention.
-> 242 automated tests + a live Level 3 end-to-end run, all green.
+> 273 automated tests + a live Level 3 end-to-end run, all green.
 > The application currently runs on the Nova origin service and is
 > reached publicly through a Cloudflare tunnel; it is not on Supabase.
 > Final Cloudflare-native hosting is Phase 4 WS5 (DECISIONS D4/D6),
@@ -42,7 +42,7 @@ python3 scripts/fetch_models.py        # one-time: YuNet + SFace ONNX models int
 python3 -m server --port 8765          # data lives in ./data/ (gitignored)
 # Landing:  http://127.0.0.1:8765/
 # Console:  http://127.0.0.1:8765/console   (paste a tenant API key)
-python3 -m unittest discover tests     # 242 tests
+python3 -m unittest discover tests     # 273 tests
 python3 scripts/e2e_local.py           # live Level 3 end-to-end run
 python3 -m server.retention --days 90  # delete images of old decided sessions
 python3 scripts/fetch_ofac.py          # optional: real OFAC SDN list into data/lists/
@@ -120,6 +120,51 @@ verification" state; it never falls back to file upload.
   decision-bearing** check for document sessions: framing *fail*
   (`document_not_detected`) auto-rejects; framing *unclear* (document
   too small in frame) auto-rejects with `document_quality_rescan`.
+- **Paper documents are first-class (rectification, 2026-10-26).**
+  The first live owner test failed exactly here: his physical
+  Nigerian NIN slip — a wide, bowed, laminated *paper* printout,
+  ~2.18:1 in frame — was told "No ID detected", because the registry
+  carried the slip at a card-style point aspect (1.41 ±10%), the
+  client detector searched for rigid straight edges, and server
+  framing found no quad in the frame (largest contour 1.4% of the
+  image). The model is now honest per physical class, end to end:
+  *Registry geometry* — plastic cards keep a point aspect; paper and
+  booklet types carry an aspect **range** (NIN slip 1.2–2.8, guide
+  frame drawn at 2.0; ZA green ID book is a booklet range).
+  *Client detector* — paper types take a dedicated path: luminance
+  segmentation of the bright sheet, quadratic (bowed) border fits,
+  border support judged against the fitted outline at paper
+  thresholds (side ≥ 0.30, mean ≥ 0.45), aspect tested against the
+  registry range, and the measured aspect corrected for the analysis
+  canvas's vertical squash on tall video buffers. The card path and
+  its strict numbers are unchanged; the screen-refresh refusal keeps
+  precedence over both paths; proof-of-address pages (portrait paper)
+  take the paper path too. *Server framing* — multi-strategy quad
+  detection (two Canny tunings + luminance segmentation) with
+  interior-texture, border-support and ring-contrast gates so bright
+  windows/walls cannot hallucinate a document (the owner's original
+  room photos still fail); segmentation quads must meet the pass
+  size bars to count at all. *Warped reading* — when a quad is found,
+  the capture is perspective-warped flat and OCR, classification and
+  field extraction read the warp (authenticity keeps the original);
+  a quad too small to be the document (an inner photo box) never
+  earns a warp. *Measured on the owner's own frames* (artefacts in
+  `data/owner-frame-proof/`, script `scripts/owner_frame_proof.py`):
+  the clearer frame now passes server framing (quad found, aspect
+  2.204, wide-fill rule, warp applied), locks the client detector
+  (`doc_hold`; the old card path still says `doc_none` on it),
+  classifies 100/100 as NG NIN slip on the warp, and extracts surname
+  and given names; the darker frame locks the client detector but
+  still fails server framing (`document_not_detected`) — a capture
+  taken in that light would be asked to rescan. **Honest limit:**
+  the slip's printed NIN digits sit under the green NIMC watermark in
+  grey print; on the owner's frame tesseract could not segment them
+  in any of 20+ configurations tried (multi-pass, zone crops to 4×,
+  thresholding, digit whitelist, green-channel separation), so the
+  number field does not extract from that capture — names do, and
+  the extraction machinery itself is proven on a layout-faithful
+  synthetic slip (classification pass 85.6, all printed fields
+  extracted, number format-valid).
 - **Honest limits:** the client-side guidance (brightness / glare /
   blur / stillness / a skin-tone centre heuristic for the selfie) is
   *guidance heuristics*, not verification — the real checks run
@@ -319,6 +364,49 @@ Full write-up with sources and honest limits: `benchmarks/BIOMETRICS.md`
   (`provider_not_configured`) — a head-to-head still needs vendor
   accounts/keys; the evaluation is open, not faked.
 
+### Security hardening, verified (Phase 4 WS3, 2026-10-26)
+
+- *Tenant isolation, tested as attacks* (`tests/test_isolation.py`):
+  tenant A keys, reviewer tokens and flow tokens are driven against
+  tenant B's applicants, sessions, documents, images, cases,
+  credentials, businesses, webhook endpoints and deliveries — every
+  attempt refused, cross-tenant ids return the same `404` shape as a
+  random UUID (no existence oracle), and test/live environments stay
+  separated under the same tenant.
+- *Reviewer MFA*: TOTP (RFC 6238, stdlib implementation) enrolment for
+  named reviewers; privileged actions (decide, four-eyes confirm, hit
+  disposition, KYB registry) require a current code in
+  `X-Reviewer-TOTP`; replayed codes are refused. Recovery is an
+  audited tenant-admin reset — there is no bypass, it fails closed.
+- *Rate limits + body cap*: per-credential (1,200/min), per-flow-token
+  (240/min) and per-IP (6,000/min) sliding windows, env-tunable;
+  breaches return a real `429` with `Retry-After`. Bodies over 25 MB
+  are refused `413` before being read.
+- *Webhooks that finish the job*: failed deliveries retry with
+  exponential backoff (30 s base, 5 attempts), then dead-letter;
+  operators list deliveries (`GET /v1/webhooks/deliveries`) and replay
+  them (re-signed, re-delivered). An SSRF guard refuses non-public
+  webhook targets before any network call.
+- *Encryption at rest for stored media* (`server/storage.py`):
+  AES-256-GCM envelope encryption — per-file keys wrapped by a master
+  key from `KYC_MASTER_KEY` / `KYC_MASTER_KEY_FILE` (never in the DB
+  or repo). Existing plaintext files migrate in place with per-file
+  SHA-256 verification (`python3 -m server.storage --data-dir …
+  migrate`). Encrypted files fail closed (`503`) when the key is
+  absent. Follow-up work needing stored media goes through this
+  module's `write_file` / `read_file` / `materialize` — the single
+  storage read/write helper for media.
+- *Backup + restore, exercised*: `scripts/backup.py` produces a
+  checksummed backup (DB snapshot + media tree + manifest);
+  `scripts/restore_drill.py` restored one for real into a scratch
+  instance — restored server healthy, records readable, document
+  decrypted byte-identical (measured: benchmarks/BACKUP-RESTORE.md).
+- *Self-pen-test*: `scripts/pentest_local.py` — 32 scripted probes
+  (auth bypass, cross-tenant, SQLi, traversal, SSRF, upload abuse,
+  MFA gate, rate limit, body cap): **32/32 pass, 0 findings**
+  (docs/PENTEST.md). An independent external pen test is still open —
+  the self-test does not impersonate one.
+
 ### Screen-replay + portrait-substitution defence (2026-10-26)
 
 A document shown on another phone/monitor screen and held to the
@@ -501,10 +589,13 @@ detail "document type has no expiry date" (age is still checked).
   keys run the identical real checks; "test" means strict data
   separation from live (a test key can never read live data), nothing
   more.
-- No billing, no email sending; webhook delivery is one signed attempt,
-  logged (no backoff/replay yet). Tenant "teams" exist as named
+- No billing, no email sending. Tenant "teams" exist as named
   reviewer tokens with roles (admin/reviewer) for console actions —
-  not full user accounts with passwords.
+  not full user accounts with passwords (reviewers can add TOTP MFA,
+  WS3). No malware scanning of uploads; no CI vulnerability scanning;
+  no external penetration test yet (a scripted self-pen-test is green
+  — docs/PENTEST.md). The SQLite database file itself is not
+  encrypted (stored media files are, WS3).
 
 ## The ambition
 
