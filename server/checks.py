@@ -213,9 +213,69 @@ def check_expiry_age(mrz_parsed=None, doc_expiry=None, doc_dob=None, applicant_d
         return {"status": "fail", "findings": findings, "reason_codes": ["underage"]}
     return {"status": "pass", "findings": findings, "reason_codes": []}
 
+# ---------- proof of address (Phase 3) ----------
+_MONTHS = {m: i + 1 for i, m in enumerate(
+    ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"])}
+
+def find_dates_in_text(text):
+    """All plausible document dates in OCR text (ISO, 'D Month YYYY',
+    DD/MM/YYYY). Returns list of datetime.date."""
+    out = []
+    t = (text or "")
+    for m in re.finditer(r"(\d{4})-(\d{2})-(\d{2})", t):
+        d = _safe_date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        if d: out.append(d)
+    low = t.lower()
+    for m in re.finditer(r"(\d{1,2})\s+([a-z]{3,9})\s+(\d{4})", low):
+        mon = _MONTHS.get(m.group(2)[:3])
+        if mon:
+            d = _safe_date(int(m.group(3)), mon, int(m.group(1)))
+            if d: out.append(d)
+    for m in re.finditer(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b", t):
+        d = _safe_date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+        if d: out.append(d)
+    return out
+
+def check_poa(ocr_text, applicant_first=None, applicant_last=None, address=None,
+              window_days=90, today=None):
+    """Proof-of-address: the document must carry a date inside the
+    tenant's window, the applicant's name, and at least half of the
+    applicant's address tokens. No date found -> unclear (OCR may have
+    missed it — a human looks), stale date -> fail."""
+    today = today or date.today()
+    dates = find_dates_in_text(ocr_text)
+    text_tokens = _tokens(ocr_text)
+    name_tokens = _tokens(f"{applicant_first or ''} {applicant_last or ''}")
+    addr_tokens = _tokens(address)
+    name_found = bool(name_tokens) and name_tokens.issubset(text_tokens) or (bool(name_tokens) and bool(name_tokens & text_tokens) and len(name_tokens & text_tokens) >= min(2, len(name_tokens)))
+    addr_overlap = (len(addr_tokens & text_tokens) / len(addr_tokens)) if addr_tokens else None
+    findings = {"dates_found": [d.isoformat() for d in dates],
+                "doc_date": None, "age_days": None, "window_days": window_days,
+                "name_found": bool(name_found and name_tokens),
+                "address_overlap": (round(addr_overlap, 2) if addr_overlap is not None else None)}
+    if not dates:
+        return {"status": "unclear", "findings": findings, "reason_codes": ["poa_no_date_found"]}
+    past = [d for d in dates if d <= today]
+    doc_date = max(past) if past else min(dates)
+    findings["doc_date"] = doc_date.isoformat()
+    findings["age_days"] = (today - doc_date).days
+    if doc_date > today:
+        return {"status": "unclear", "findings": findings, "reason_codes": ["poa_date_in_future"]}
+    if (today - doc_date).days > window_days:
+        return {"status": "fail", "findings": findings, "reason_codes": ["poa_outdated"]}
+    if name_tokens and not findings["name_found"]:
+        return {"status": "unclear", "findings": findings, "reason_codes": ["poa_name_not_found"]}
+    if addr_tokens and addr_overlap is not None and addr_overlap < 0.5:
+        return {"status": "unclear", "findings": findings, "reason_codes": ["poa_address_mismatch"]}
+    return {"status": "pass", "findings": findings, "reason_codes": []}
+
 # ---------- consistency ----------
 def _norm(s):
-    return re.sub(r"[^A-Z ]", "", (s or "").upper()).strip()
+    # Non-letters become SPACES, not nothing: deleting them glues words
+    # across newlines/punctuation ("BILL\nANNA" -> "BILLANNA"), which
+    # silently broke name/address token matching (caught in Phase 3 PoA
+    # verification, 2026-10-26).
+    return re.sub(r"\s+", " ", re.sub(r"[^A-Z ]", " ", (s or "").upper())).strip()
 
 def _tokens(s):
     return set(_norm(s).split())
