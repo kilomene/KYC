@@ -135,7 +135,9 @@ export class TunnelHub {
       // reads, so a request the client had already processed simply
       // processes again with the same result.
       for (const entry of this.pending.values()) {
-        if (entry.kind === "head" && entry.frame) {
+        if (entry.kind === "head" && entry.frame && !entry.resent) {
+          entry.resent = true;   // at most one re-send: a frame the
+          // client cannot accept must never become a retry storm.
           try { server.send(entry.frame); } catch (e) { /* timer decides */ }
         }
       }
@@ -174,6 +176,15 @@ export class TunnelHub {
     let body = null;
     if (request.method !== "GET" && request.method !== "HEAD") {
       const buf = new Uint8Array(await request.arrayBuffer());
+      // The tunnel protocol caps frames at 4 MiB and the request body
+      // rides base64-encoded (x1.37) inside one: a body over ~2.8MB
+      // can never cross. Refuse it HERE with a fast, honest 413
+      // instead of framing a request whose arrival kills the tunnel
+      // client's socket (the 2026-10-26 selfie-burst incident: five
+      // native-resolution frames, one ~9MB frame, a 30s flap storm).
+      if (buf.length > 2800000) {
+        return new Response("request body too large for the tunnel", { status: 413 });
+      }
       if (buf.length) body = b64encode(buf);
     }
     const path = url.pathname + url.search;
