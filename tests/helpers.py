@@ -97,6 +97,48 @@ def selfie_bytes():
     d.text((240, 480), "SELFIE", fill="black", font=_font(36))
     out = io.BytesIO(); im.save(out, format="PNG"); return out.getvalue()
 
+def poa_image_bytes(first="ANNA", last="ERIKSSON", address="12 Marina Road Lagos", date_str=None, size=(1240, 700)):
+    """A synthetic utility bill: name + address + a recent date, drawn with a
+    real TrueType font so tesseract can read it (see _font note)."""
+    from datetime import date, timedelta
+    if date_str is None:
+        d = date.today() - timedelta(days=10)
+        date_str = d.strftime("%d %B %Y") + f" ({d.isoformat()})"
+    im = Image.new("RGB", size, "white")
+    d = ImageDraw.Draw(im)
+    d.rectangle([20, 20, size[0]-20, size[1]-20], outline="black", width=4)
+    d.text((60, 60), "UTILITY BILL", fill="black", font=_font(44))
+    d.text((60, 150), f"{first} {last}", fill="black", font=_font(38))
+    d.text((60, 230), address.upper(), fill="black", font=_font(34))
+    d.text((60, 320), f"Bill date: {date_str}", fill="black", font=_font(34))
+    d.text((60, 400), "Electricity usage statement", fill="black", font=_font(30))
+    out = io.BytesIO(); im.save(out, format="PNG"); return out.getvalue()
+
+def structured_photo(size=(640, 480), seed=7):
+    """A structured, photo-like PIL image (shapes + grain) used by the
+    authenticity tests — pure noise is statistically uniform and makes
+    ELA/moire tests meaningless, so this mimics scene structure."""
+    import numpy as _np
+    rng = _np.random.default_rng(seed)
+    im = Image.new("RGB", size, (120, 130, 140))
+    d = ImageDraw.Draw(im)
+    # Random positions/sizes on purpose: a regular grid of shapes is
+    # genuinely periodic and the FFT moire signal (correctly) fires on it.
+    for i in range(12):
+        x, y = int(rng.integers(0, size[0]-90)), int(rng.integers(20, size[1]//2))
+        w, h = int(rng.integers(25, 80)), int(rng.integers(40, 130))
+        d.rectangle([x, y, x+w, y+h], fill=(60+i*12, 90, 150-i*8))
+    for i in range(8):
+        x, y = int(rng.integers(0, size[0]-90)), int(rng.integers(size[1]//2, size[1]-100))
+        w, h = int(rng.integers(45, 95)), int(rng.integers(55, 95))
+        d.ellipse([x, y, x+w, y+h], fill=(200-i*15, 170, 90))
+    arr = _np.asarray(im).astype(_np.int16) + rng.normal(0, 7, (size[1], size[0], 3)).astype(_np.int16)
+    return Image.fromarray(_np.clip(arr, 0, 255).astype("uint8"))
+
+def jpeg_roundtrip(im, q):
+    buf = io.BytesIO(); im.save(buf, "JPEG", quality=q); buf.seek(0)
+    return Image.open(buf).copy()
+
 def drive_flow(srv, key, level=2, first="Anna", last="Eriksson", dob="1974-08-12",
                doc_fields=None, doc_bytes=None, country="NG", kind="passport"):
     """Create applicant+session and drive consent/document/selfie. Returns dict."""
