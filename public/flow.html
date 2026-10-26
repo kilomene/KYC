@@ -372,6 +372,7 @@ function clientSignals(){
 // Web Speech API (speechSynthesis): on-device, no server cost, and it
 // works without our backend. If it is unavailable, guidance is text-only.
 const GUIDANCE = {
+  welcome:      {voice: 'Welcome. We will start with your document. Place your ID inside the frame when the camera opens.'},
   starting:     {text: 'Starting camera…'},
   doc_dark:     {text: 'Too dark — move somewhere brighter.', voice: 'The place where you are is dark. Move to a brighter place.'},
   doc_dim:      {text: 'A bit dim — more light will help the scan.', voice: 'The light here is dim. Move to a brighter place if you can.'},
@@ -415,7 +416,38 @@ class Guide {
 const VOICE = {
   enabled: true,
   unlocked: false,          // speech starts only after the consent tap (autoplay policy)
+  voice: null,              // cached synthesis voice (loaded async on iOS)
   lastKey: null, lastAt: 0,
+  _loadVoice(){
+    if (!('speechSynthesis' in window)) return;
+    try{
+      const vs = speechSynthesis.getVoices();
+      if (vs && vs.length){
+        this.voice = vs.find(v => v.lang && v.lang.toLowerCase().startsWith('en') && v.default)
+                  || vs.find(v => v.lang && v.lang.toLowerCase().startsWith('en'))
+                  || vs[0];
+      }
+    }catch(e){}
+  },
+  // iOS Safari silently drops speak() calls that were never primed inside
+  // a user-gesture handler — a boolean flag set in the handler is NOT
+  // enough; an actual utterance must be spoken from within the tap. This
+  // is called synchronously at the top of the consent handler, before any
+  // await, and speaks the welcome line for real (it is also the first
+  // guidance the user hears).
+  prime(){
+    this.unlocked = true;
+    this._loadVoice();
+    if (!this.enabled || !('speechSynthesis' in window)) return;
+    try{
+      speechSynthesis.resume();               // iOS sometimes starts paused
+      const u = new SpeechSynthesisUtterance(GUIDANCE.welcome.voice);
+      u.lang = 'en-US'; if (this.voice) u.voice = this.voice;
+      u.rate = 1.0; u.pitch = 1.0;
+      speechSynthesis.speak(u);
+      this.lastKey = 'welcome'; this.lastAt = performance.now();
+    }catch(e){}
+  },
   say(key, force){
     const g = GUIDANCE[key];
     const line = g && (g.voice || g.text);
@@ -425,17 +457,34 @@ const VOICE = {
       if (key === this.lastKey && now - this.lastAt < 6000) return;  // persistent line: repeat at most every ~6s
       if (key !== this.lastKey && now - this.lastAt < 350) return;   // don't machine-gun on state flicker
     }
-    this.lastKey = key; this.lastAt = now;
     if (!this.enabled || !this.unlocked || !('speechSynthesis' in window)) return;
+    const synth = speechSynthesis;
+    // Never interrupt a line mid-speech for a routine state update, and
+    // never cancel()+speak() in the same instant: on iOS the cancel is
+    // asynchronous and eats the utterance queued behind it — one of the
+    // reasons the voice was silent in live tests. Forced lines cancel,
+    // then speak after a short beat.
+    if (synth.speaking && !force) return;
+    this.lastKey = key; this.lastAt = now;
+    const speakNow = () => {
+      try{
+        synth.resume();
+        const u = new SpeechSynthesisUtterance(line);
+        u.lang = 'en-US'; if (this.voice) u.voice = this.voice;
+        u.rate = 1.0; u.pitch = 1.0;
+        synth.speak(u);
+      }catch(e){}
+    };
     try{
-      speechSynthesis.cancel();               // never overlap or queue-spam
-      const u = new SpeechSynthesisUtterance(line);
-      u.rate = 1.0; u.pitch = 1.0;
-      speechSynthesis.speak(u);
+      if (synth.speaking || synth.pending){ synth.cancel(); setTimeout(speakNow, 90); }
+      else speakNow();
     }catch(e){}
   },
   stop(){ if ('speechSynthesis' in window){ try{ speechSynthesis.cancel(); }catch(e){} } }
 };
+if ('speechSynthesis' in window && 'onvoiceschanged' in speechSynthesis){
+  speechSynthesis.onvoiceschanged = () => VOICE._loadVoice();
+}
 $('btn-mute').onclick = () => {
   VOICE.enabled = !VOICE.enabled;
   if (!VOICE.enabled) VOICE.stop();
@@ -1241,7 +1290,9 @@ function nextStep(){
 
 // ---------------- consent (flow start: IP harvest + VPN gate) ----------------
 async function doConsent(){
-  VOICE.unlocked = true;   // the tap is the user gesture that unlocks speech
+  VOICE.prime();   // MUST stay the first statement: iOS only unlocks speech
+                   // for an utterance spoken inside the tap handler itself,
+                   // before any await breaks the gesture chain.
   try{
     // iOS gates motion sensors behind a permission that needs a user
     // gesture — the consent tap is that gesture. Elsewhere this is a
