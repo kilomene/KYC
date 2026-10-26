@@ -165,13 +165,26 @@ def parse_iso_date(s):
     return _safe_date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
 
 # ---------- expiry / age ----------
-def check_expiry_age(mrz_parsed=None, doc_expiry=None, doc_dob=None, applicant_dob=None, today=None, has_expiry=True):
+def check_expiry_age(mrz_parsed=None, doc_expiry=None, doc_dob=None, applicant_dob=None, today=None, has_expiry=True, validity_end=None):
     """Expiry + age. `has_expiry` comes from the document registry
     (server/docregistry.py): document types with NO expiry date (e.g.
     NG NIN slip / NIN card / voter's card) must NEVER fail or go
     unclear for a missing expiry date — there is none. For those, this
-    check passes on expiry outright and only the age leg applies."""
+    check passes on expiry outright and only the age leg applies.
+
+    `validity_end` (Phase 4 WS1) is a document-TYPE validity window
+    from the registry, independent of any printed date: the ZA green
+    ID book prints no expiry yet stops being recognised as valid ID
+    after 2028-03-31. Past that date the document fails with
+    document_validity_window_ended, whatever its (absent) printed
+    expiry says."""
     today = today or date.today()
+    vend = parse_iso_date(validity_end) if isinstance(validity_end, str) else validity_end
+    if vend is not None and today > vend:
+        return {"status": "fail",
+                "findings": {"validity_end": vend.isoformat(), "today": today.isoformat(),
+                             "detail": "document type is no longer legally valid after this date"},
+                "reason_codes": ["document_validity_window_ended"]}
     expiry = dob = None; source = None
     if mrz_parsed and mrz_parsed.get("valid"):
         expiry = yymmdd_to_date(mrz_parsed["expiry_yymmdd"], today=today)
