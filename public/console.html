@@ -23,6 +23,9 @@ function H(){const h={'Authorization':'Bearer '+KEY,'Content-Type':'application/
 async function api(m,p,b){const r=await fetch(p,{method:m,headers:H(),body:b?JSON.stringify(b):undefined});const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error((j.error&&j.error.message)||('HTTP '+r.status));return j;}
 async function imgInto(el,url){const r=await fetch(url,{headers:{'Authorization':'Bearer '+KEY}});if(!r.ok){el.alt='image unavailable';return;}const b=await r.blob();el.src=URL.createObjectURL(b);}
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+function captureSummary(d){ const m=d&&d.capture_meta; if(!m) return 'not recorded';
+  const parts=[]; if(m.front) parts.push('front: '+(m.front.method||'?')); if(m.back) parts.push('back: '+(m.back.method||'?'));
+  return parts.length? parts.join(' · ') : (m.method||'not recorded'); }
 
 async function loadCases(){
   KEY=$('key').value.trim(); $('out').textContent=''; $('biz').innerHTML=''; $('cfg').innerHTML='';
@@ -63,12 +66,15 @@ async function openCase(id){
       '<p><b>Applicant:</b> '+esc(a.first_name||'')+' '+esc(a.last_name||'')+' · DOB '+esc(a.dob||'')+' · '+esc(a.country||'')+'<br>'+
       '<b>Document:</b> '+esc((d0.kind||'')+' '+(d0.issuing_country||''))+' · exp '+esc(d0.doc_expiry||'')+'<br>'+
       '<b>Session status:</b> '+esc(v.session?v.session.status:'')+'</p>'+risk+assist+checks+
-      '<div class="grid"><div><h3>Document image</h3><img id="im-doc"></div><div><h3>Selfie</h3><img id="im-selfie"></div></div>'+
+      '<p><b>Capture:</b> '+esc(captureSummary(d0))+'</p>'+
+      '<div class="grid"><div><h3>Document — front</h3><img id="im-doc"></div><div><h3>Selfie</h3><img id="im-selfie"></div></div>'+
+      (d0.back_image_url? '<div class="grid"><div><h3>Document — back</h3><img id="im-doc-back"></div><div></div></div>' : '')+
       hits+cred+four+
       '<h3>Decide (reason is required)</h3><input id="reason" placeholder="Reason" style="width:60%"> '+
       '<button data-a="approve">Approve</button> <button data-a="reject">Reject</button> <button data-a="request_more">Request more</button>'+
       '<pre>'+esc(JSON.stringify(v.checks.map(c=>({type:c.type,status:c.status,findings:c.findings})),null,1))+'</pre></div>';
     if(d0.image_url) imgInto($('im-doc'), d0.image_url);
+    if(d0.back_image_url) imgInto($('im-doc-back'), d0.back_image_url);
     if(b0&&b0.image_url) imgInto($('im-selfie'), b0.image_url);
     document.querySelectorAll('#detail [data-a]').forEach(btn=>btn.onclick=async()=>{
       const reason=$('reason').value.trim(); if(!reason){alert('Reason is required');return;}
