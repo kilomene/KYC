@@ -21,6 +21,32 @@ this workstream).
 - Per-country document registry driving validation, back-side prompts,
   expiry rules, and scanner aspect gates; no-expiry document types never
   fail on a missing expiry date. (server/docregistry.py) — IMPLEMENTED
+- Paper-document geometry + detection (rectification 2026-10-26, after
+  the owner's real NIN slip failed the live scanner at a card-style
+  1.41 aspect gate): registry carries aspect RANGES for paper/booklet
+  types (NG nin_slip 1.2–2.8, guide 2.0; ZA green_id_book booklet);
+  client paper detector in flow.html (luminance segmentation, bowed
+  quadratic borders, paper thresholds side ≥ 0.30 / mean ≥ 0.45,
+  canvas-squash aspect correction) with the card path unchanged and
+  the screen refusal keeping precedence; server framing is
+  multi-strategy with texture/border/ring gates (segmentation quads
+  must meet pass size bars), and OCR/classification/extraction read
+  the perspective warp when a check-grade quad exists.
+  (server/docregistry.py, public/flow.html, server/framing.py,
+  server/vision.py, server/templates.py, server/fieldtemplates.py;
+  tests/test_paper_detection.py + tests/detector_harness.js) —
+  IMPLEMENTED, measured on the owner's frames
+  (data/owner-frame-proof/proof.json): clearer frame — framing pass
+  (aspect 2.204), client doc_hold, classification 100/100, surname +
+  given names extracted; darker frame — client doc_hold, server
+  framing fail. **Honest limit:** the NIN digits themselves do not
+  OCR from the owner's capture (grey print under the NIMC watermark;
+  20+ OCR configurations tried) — the number field stays unextracted
+  there rather than guessed; extraction is proven on a synthetic
+  layout-faithful slip. Aadhaar was NOT converted to a paper range
+  (the registry type is the PVC card layout; the A4 printout is a
+  different layout), nor the Ghana voter card (a fixed-size cut card)
+  or the French pink paper licence (insufficient layout research).
 - Multi-pass OCR with a dedicated MRZ-band pass, MRZ↔VIZ cross-validation,
   QR/PDF417 decoding with AAMVA cross-checks, verification layers
   (surface/text/internal) with the internal layer required where the
@@ -108,9 +134,20 @@ this workstream).
   SDN list loads via scripts/fetch_ofac.py; no lists → `error`, never a
   silent pass. PEP/adverse-media exist only when such a list is loaded.
   — IMPLEMENTED as labelled
-- Signed webhooks (one attempt, logged), reusable HMAC-signed verified
-  credentials (claims only), four-eyes review, retention CLI, applicant
-  erasure. — IMPLEMENTED
+- Signed webhooks with retries (exponential backoff), dead-letter
+  state, operator replay and an SSRF delivery guard — reusable
+  HMAC-signed verified credentials (claims only), four-eyes review,
+  retention CLI, applicant erasure. — IMPLEMENTED (WS3)
+- Reviewer TOTP MFA (RFC 6238, replay-protected) gating privileged
+  reviewer actions; API rate limits (per-key / per-flow-token / per-IP)
+  with real `429` + `Retry-After` and a request-body cap (`413`);
+  stored media encrypted at rest (AES-256-GCM envelope, master key in
+  env/file only); checksummed backups with a measured restore drill.
+  Proven by tests/test_isolation.py, tests/test_mfa.py,
+  tests/test_ratelimit.py, tests/test_webhooks_retry.py,
+  tests/test_encryption.py, tests/test_backup.py, scripts/
+  pentest_local.py (32/32) and benchmarks/BACKUP-RESTORE.md. —
+  IMPLEMENTED (WS3)
 
 ## 2. False or stale claims corrected in WS0
 
@@ -184,13 +221,30 @@ unit takes the token from an optional `data/platform-admin.env` file.
   rPPG on the new ~9 s captures unmeasured until a real longer
   capture exists; a far/angled document portrait can still evade
   YuNet detection (face match returns *unclear*, fail closed).
-- **WS3 — Security, verified.** Reviewer authentication is named tokens,
-  not MFA/password accounts; no rate limiting; webhook retries,
-  dead-letter and replay not built; stored media is not encrypted at
-  rest beyond host disk controls; no backup/restore test has run; no CI
-  vulnerability scanning; no external penetration test; the app sets no
-  CSP/HSTS headers itself (TLS terminates at Cloudflare); captures are
-  type-checked but not malware-scanned or re-encoded.
+- **WS3 — Security, verified. CLOSED 2026-10-26 with evidence.**
+  Reviewer TOTP MFA built (RFC 6238; enrol/confirm/reset; privileged
+  actions gated; replayed codes refused; audited admin reset is the
+  only recovery and fails closed); rate limits built (429 +
+  Retry-After; per-key, per-flow-token, per-IP) plus a 413 body cap;
+  webhook retries with exponential backoff, dead-letter state,
+  operator replay, and an SSRF guard that blocks non-public targets
+  before any network call; stored media encrypted at rest (AES-256-GCM
+  envelope; master key from env/file, never in DB/repo; migration
+  verified count + spot-decrypt; reads fail closed without the key);
+  backup script + restore drill EXECUTED (backup 272,010 bytes;
+  restored copy boots, records readable, document decrypts
+  byte-identical — benchmarks/BACKUP-RESTORE.md); tenant-isolation
+  battery (9 tests) and scripted self-pen-test (32/32 probes, 0
+  findings — docs/PENTEST.md) green. REMAINING inside WS3's scope,
+  stated plainly: **no external penetration test yet** (the self-test
+  was its precondition and is green); **no CI vulnerability
+  scanning** (no CI pipeline exists); the **SQLite file itself is
+  not encrypted** (media files are; the DB relies on host controls);
+  the rate limiter is **per-process memory** (multi-process needs a
+  shared store — WS5); DNS-rebinding TOCTOU on webhook delivery is
+  a recorded low-severity open item; captures are type-checked but
+  **not malware-scanned**; the app sets no CSP/HSTS headers itself
+  (TLS terminates at Cloudflare).
 - **WS4 — Authoritative data.** No live business-registry connection;
   sanctions coverage depends on locally loaded lists (OFAC SDN
   fetchable; PEP/adverse media not bundled); no national identity
