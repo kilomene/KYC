@@ -3,8 +3,9 @@
 Auth model:
   * Tenant APIs:  Authorization: Bearer <api_key>  (only the sha256 hash is stored)
   * Hosted flow:  Authorization: Bearer <flow_token> on /v1/flow/* (hash stored)
-  * Tenant creation is unauthenticated ONLY because this is the local MVP
-    bootstrap (a real deployment gates it behind platform admin). Noted in README.
+  * Tenant creation requires the platform operator token
+    (KYC_PLATFORM_ADMIN_TOKEN env var, X-Platform-Admin header); with no
+    token configured it is disabled entirely (WS0 audit fix, 2026-10-26).
 """
 import hashlib, json, os, re, secrets
 from datetime import datetime, timedelta, timezone
@@ -490,8 +491,19 @@ def make_handler(db: DB, data_dir: str):
             return self._send(200, {"deleted": True, "applicant_id": r["id"], "files_deleted": deleted_files})
 
         def _post(self, p):
-            # --- tenant bootstrap (local MVP: unauthenticated) ---
+            # --- tenant bootstrap (platform-operator gated) ---
+            # WS0 audit fix (2026-10-26): this endpoint was unauthenticated
+            # in the local MVP and stayed open after the service went live —
+            # anyone could mint a tenant and live API keys. It now requires
+            # the platform operator token from the KYC_PLATFORM_ADMIN_TOKEN
+            # environment variable (X-Platform-Admin header). When the env
+            # var is unset, tenant creation is disabled entirely (fail
+            # closed). The token is never stored in the repo or database.
             if p == "/v1/tenants":
+                admin_token = os.environ.get("KYC_PLATFORM_ADMIN_TOKEN", "")
+                presented = self.headers.get("X-Platform-Admin", "")
+                if not admin_token or not secrets.compare_digest(presented, admin_token):
+                    return self._err(403, "tenant creation is restricted to the platform operator", "tenant_bootstrap_restricted")
                 b = self._json()
                 if not b.get("name"): return self._err(422, "name required")
                 tid = new_id()
