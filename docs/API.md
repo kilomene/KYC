@@ -5,9 +5,16 @@ per environment. All timestamps UTC ISO-8601. All ids are opaque UUIDs.
 The Phase 1 endpoints below are implemented as drafted; the Phase 2/3
 section after the decision object documents what was added in the
 2026-10-26 local build (implemented and covered by the test suite).
-Two draft items remain unimplemented and are marked as such: webhook
-replay and API-only document/selfie upload endpoints (the hosted flow
-is the upload path in the local build).*
+Unimplemented items are marked as such where they appear: webhook
+replay, API-only document/selfie upload endpoints (the hosted flow is
+the only capture path), the `GET /v1/documents/{id}` metadata endpoint,
+idempotency keys, and rate limiting (WS0 audit, 2026-10-26).*
+
+Platform bootstrap: `POST /v1/tenants` creates a tenant and its test/live
+keys, and is **platform-operator only** — it requires the server-side
+`KYC_PLATFORM_ADMIN_TOKEN` environment variable presented in the
+`X-Platform-Admin` header. With no token configured it returns `403`
+(tenant creation disabled). It is not part of the tenant API surface.
 
 ## Core flow
 
@@ -15,8 +22,8 @@ is the upload path in the local build).*
 1. POST /v1/applicants            → create / upsert an applicant
 2. POST /v1/sessions              → create a verification session
                                     response includes the hosted-flow URL
-3. Applicant completes the flow    → uploads happen inside the flow
-   (or: upload via API in an API-only integration, endpoints below)
+3. Applicant completes the flow    → captures happen inside the flow
+   (an API-only upload integration is drafted below but NOT implemented)
 4. Webhook: session.completed      → decision ready
    GET  /v1/sessions/{id}          → status + decision + reason codes
    GET  /v1/sessions/{id}/checks   → per-check results
@@ -28,18 +35,18 @@ is the upload path in the local build).*
 |---|---|
 | `POST /v1/applicants` | Create applicant from name / DOB / country (+ optional external_ref) |
 | `GET /v1/applicants/{id}` | Applicant summary (no document images by default) |
-| `DELETE /v1/applicants/{id}` | Request erasure (audited, async, confirmed by webhook `applicant.deleted`) |
+| `DELETE /v1/applicants/{id}` | Erasure (audited, synchronous, confirmed by webhook `applicant.deleted`) |
 | `POST /v1/sessions` | Create session: applicant_id, level, optional allowed document types/countries, expiry override |
 | `GET /v1/sessions/{id}` | Status, decision, reason codes, timestamps |
 | `POST /v1/sessions/{id}/cancel` | Cancel a live session; its link dies immediately |
-| `POST /v1/sessions/{id}/documents` | API-only upload (multipart) when not using the hosted flow |
-| `POST /v1/sessions/{id}/selfie` | API-only biometric capture upload (liveness rules still apply) |
+| `POST /v1/sessions/{id}/documents` | **NOT IMPLEMENTED (draft)** — API-only upload when not using the hosted flow |
+| `POST /v1/sessions/{id}/selfie` | **NOT IMPLEMENTED (draft)** — API-only biometric capture upload |
 | `GET /v1/sessions/{id}/checks` | Every check: type, status, findings, provider, timestamps |
-| `GET /v1/documents/{id}` | Document metadata + extracted fields (images only via short-lived signed URL, separately authorised + audited) |
+| `GET /v1/documents/{id}` | **NOT IMPLEMENTED (draft)** — document metadata + extracted fields. (Implemented today: `GET /v1/documents/{id}/image`, tenant-authenticated and audited, used by the console case view) |
 | `POST /v1/cases/{id}/decide` | Reviewer action via API (approve / reject / request_more) — reason mandatory |
 | `GET /v1/cases` | Review queue for the tenant |
 | `POST /v1/webhooks` / `GET /v1/webhooks` | Manage webhook endpoints |
-| `POST /v1/webhooks/{id}/replay/{delivery_id}` | Replay a delivery |
+| `POST /v1/webhooks/{id}/replay/{delivery_id}` | **NOT IMPLEMENTED (draft)** — replay a delivery |
 
 ## Phase 2/3 endpoints (implemented 2026-10-26)
 
@@ -128,18 +135,21 @@ Events: `session.created`, `session.completed`, `session.expired`,
 
 ## Errors & rules
 
-- Standard shape: `{ "error": { "code", "message", "request_id" } }`.
+- Standard shape: `{ "error": { "code", "message" } }` (no request_id
+  field is emitted today).
 - `401` bad/revoked key, `403` wrong environment or scope, `404` unknown
   or other-tenant id (no existence oracle), `409` state conflict,
-  `422` validation, `429` rate limit (headers included).
-- Idempotency: `Idempotency-Key` honoured on session/applicant creation.
+  `422` validation. `429` rate limiting is **not implemented yet**
+  (Phase 4 WS3).
+- Idempotency: `Idempotency-Key` is **not honoured yet** (Phase 4 WS6);
+  creation endpoints do not deduplicate on it today.
 - Sandbox: test keys run the **identical real checks** as live keys —
   there are no faked deterministic outcomes. "Test" means strict data
   separation only: a test key can never read live data, and every
   record is stamped `env: test`. Screening in the test environment
   reads the same list files (results stay inside the test env).
 
-## Rate limits (starting proposal)
+## Rate limits (starting proposal — NOT implemented yet)
 
 - 600 req/min per live key (burst 100), 60/min per test key; upload
   endpoints sized for phone photos (≤ 15 MB per image, server-reduced).
