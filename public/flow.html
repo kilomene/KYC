@@ -12,14 +12,15 @@ pre{background:#f6f6f6;padding:.6rem;overflow:auto;font-size:.8rem;white-space:p
 .danger{background:#b3261e}
 .camwrap{position:relative;width:100%;border-radius:12px;overflow:hidden;background:#111;margin-top:.6rem}
 .camwrap video{width:100%;display:block}
+.quadlayer{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
 /* --- document frame overlay: animated corners that react --- */
 .docframe{position:absolute;left:6%;right:6%;top:50%;transform:translateY(-50%);aspect-ratio:1.586/1;pointer-events:none}
-.docframe.page{aspect-ratio:1.42/1;left:10%;right:10%}
 .docframe .corner{position:absolute;width:34px;height:34px;border:5px solid #cfd8ea;transition:border-color .18s ease}
 .docframe .c-tl{left:-4px;top:-4px;border-right:0;border-bottom:0;border-top-left-radius:10px}
 .docframe .c-tr{right:-4px;top:-4px;border-left:0;border-bottom:0;border-top-right-radius:10px}
 .docframe .c-bl{left:-4px;bottom:-4px;border-right:0;border-top:0;border-bottom-left-radius:10px}
 .docframe .c-br{right:-4px;bottom:-4px;border-left:0;border-top:0;border-bottom-right-radius:10px}
+.docframe.seen .corner{border-color:#f5a623}
 .docframe.good .corner{border-color:#2fbf71}
 .docframe .scanline{position:absolute;left:2%;right:2%;height:3px;border-radius:2px;background:linear-gradient(90deg,transparent,#5b8cff,transparent);opacity:.85;animation:scanmove 1.6s ease-in-out infinite}
 .docframe.good .scanline{background:linear-gradient(90deg,transparent,#2fbf71,transparent)}
@@ -33,15 +34,36 @@ pre{background:#f6f6f6;padding:.6rem;overflow:auto;font-size:.8rem;white-space:p
 .thumbs{display:flex;gap:.6rem;flex-wrap:wrap}.thumbs figure{margin:0;text-align:center}
 .thumbs img{width:150px;border:1px solid #ccc;border-radius:8px}
 .bigarrow{font-size:2rem;text-align:center}
+#qr canvas{border:1px solid #ddd;border-radius:8px}
 </style></head>
 <body>
 <h1>Verify your identity</h1>
+<div style="text-align:right"><button id="btn-mute" class="ghost" style="width:auto;margin-top:0;padding:.35rem .7rem">🔊 Voice on</button></div>
 <div id="out"></div>
 
 <section class="step" id="s-consent">
 <h2>Before we start — your consent</h2>
-<p>We will collect: your name and date of birth, a live camera scan of your government ID, and a live selfie. Higher verification levels also ask for a short live liveness video and a scan of a proof-of-address document. This is used only to verify your identity for the business that sent you here. A human reviewer may look at your document and selfie images side by side. You can ask that business to delete your data. Nothing is collected until you agree.</p>
+<p>We will collect: your name and date of birth, a live camera scan of your government ID, and a live selfie. Higher verification levels also ask for a short live liveness video and a scan of a proof-of-address document. We also record your device type and your IP address, and use the IP address for a location check against the country on your application. VPN and proxy connections are not accepted. This is used only to verify your identity for the business that sent you here. A human reviewer may look at your document and selfie images side by side. You can ask that business to delete your data. Nothing is collected until you agree.</p>
 <button id="btn-consent">I agree — continue</button>
+</section>
+
+<section class="step" id="s-desktop">
+<h2>Continue on your phone</h2>
+<p><b>This verification can only be completed on a phone.</b> It needs a phone camera for the live scan — it cannot be done on a laptop or desktop. Point your phone camera at this code to open this exact verification on your phone:</p>
+<div id="qr-wrap" style="text-align:center;margin:1rem 0"><span id="qr"></span></div>
+<div id="qr-fallback" style="display:none">
+<p>Or open this link on your phone:</p>
+<p><b id="flow-link" style="word-break:break-all"></b></p>
+<button id="btn-copy" class="ghost">Copy link</button>
+</div>
+<p style="font-size:.9em;color:#555">If you are already on your phone and seeing this, your browser is presenting itself as a desktop — open the link in your phone's normal browser instead.</p>
+</section>
+
+<section class="step" id="s-vpn">
+<h2>VPN or proxy detected</h2>
+<p>VPN or proxy connections are not accepted for identity verification.</p>
+<p><b>Turn off your VPN or proxy and try again.</b></p>
+<button id="btn-vpn-retry">Try again</button>
 </section>
 
 <section class="step" id="s-nocamera">
@@ -65,9 +87,10 @@ pre{background:#f6f6f6;padding:.6rem;overflow:auto;font-size:.8rem;white-space:p
 <span id="expiry-row"><label>Document expiry (YYYY-MM-DD)</label><input id="dexpiry" placeholder="2030-01-31"></span>
 <label>Document number</label><input id="dnum">
 <h3 id="scan-title">Scan the FRONT of your document</h3>
-<p style="font-size:.95em">Hold your document inside the frame. The scanner watches the edges, light and sharpness itself and takes the picture <b>automatically</b> the moment everything is right — there is no button to press.</p>
+<p style="font-size:.95em">Hold your document inside the frame. The scanner has to <b>see</b> your ID — its edges and shape — before it can take the picture, and it takes it <b>automatically</b> the moment everything is right. There is no button to press.</p>
 <div class="camwrap">
   <video id="doc-video" autoplay muted playsinline></video>
+  <svg class="quadlayer" viewBox="0 0 100 100" preserveAspectRatio="none"><polygon id="doc-poly" points="" fill="rgba(47,191,113,0.07)" stroke="#f5a623" stroke-width="1.5" vector-effect="non-scaling-stroke" style="opacity:0"/></svg>
   <div class="docframe" id="doc-frame"><span class="corner c-tl"></span><span class="corner c-tr"></span><span class="corner c-bl"></span><span class="corner c-br"></span><div class="scanline"></div></div>
 </div>
 <p class="hint" id="doc-hint">Starting camera…</p>
@@ -105,10 +128,11 @@ pre{background:#f6f6f6;padding:.6rem;overflow:auto;font-size:.8rem;white-space:p
 
 <section class="step" id="s-poa">
 <h2>Proof of address</h2>
-<p>Scan a recent utility bill, bank statement or official letter showing your name and address, dated within the last 90 days. Hold it inside the frame — the picture is taken <b>automatically</b>.</p>
+<p>Scan a recent utility bill, bank statement or official letter showing your name and address, dated within the last 90 days. Hold it inside the frame — the picture is taken <b>automatically</b> when the scanner sees the page.</p>
 <div class="camwrap">
   <video id="poa-video" autoplay muted playsinline></video>
-  <div class="docframe" id="poa-frame"><span class="corner c-tl"></span><span class="corner c-tr"></span><span class="corner c-bl"></span><span class="corner c-br"></span><div class="scanline"></div></div>
+  <svg class="quadlayer" viewBox="0 0 100 100" preserveAspectRatio="none"><polygon id="poa-poly" points="" fill="rgba(47,191,113,0.07)" stroke="#f5a623" stroke-width="1.5" vector-effect="non-scaling-stroke" style="opacity:0"/></svg>
+  <div class="docframe" id="poa-frame" style="aspect-ratio:1.41/1"><span class="corner c-tl"></span><span class="corner c-tr"></span><span class="corner c-bl"></span><span class="corner c-br"></span><div class="scanline"></div></div>
 </div>
 <p class="hint" id="poa-hint">Starting camera…</p>
 <div class="progress"><div id="poa-progress"></div></div>
@@ -140,12 +164,280 @@ async function api(method, path, body, isForm){
   const opts = {method, headers: isForm ? {'Authorization':'Bearer '+token} : H};
   if(body) opts.body = isForm ? body : JSON.stringify(body);
   const r = await fetch(path, opts); const j = await r.json().catch(()=>({}));
-  if(!r.ok) throw new Error((j.error && j.error.message) || ('HTTP '+r.status));
+  if(!r.ok){ const e = new Error((j.error && j.error.message) || ('HTTP '+r.status)); e.code = (j.error && j.error.code) || null; throw e; }
   return j;
 }
 const GOOD_MS = 700;              // ~700ms of good frames -> auto-capture (fast when presented properly)
-const TICK_MS = 120;              // guidance analysis tick
 let info, level = 1, registry = {};
+
+/*QR-LIB-BEGIN*/
+// Minimal QR encoder (byte mode, ECC level L, versions 1-6) — just
+// enough to render the "continue on your phone" handoff code with ZERO
+// external dependencies. Verified against a real decoder (OpenCV
+// QRCodeDetector) at build time.
+var QR_GF_EXP = [], QR_GF_LOG = [];
+(function(){ var x = 1; for (var i = 0; i < 255; i++){ QR_GF_EXP.push(x); QR_GF_LOG[x] = i; x <<= 1; if (x & 0x100) x ^= 0x11D; } for (var i = 255; i < 512; i++) QR_GF_EXP.push(QR_GF_EXP[i - 255]); })();
+function qrGfMul(a, b){ return a && b ? QR_GF_EXP[QR_GF_LOG[a] + QR_GF_LOG[b]] : 0; }
+function qrPolyMul(p, q){ var r = new Array(p.length + q.length - 1).fill(0); for (var i = 0; i < p.length; i++) for (var j = 0; j < q.length; j++) r[i + j] ^= qrGfMul(p[i], q[j]); return r; }
+function qrRsGen(n){ var p = [1]; for (var i = 0; i < n; i++) p = qrPolyMul(p, [1, QR_GF_EXP[i]]); return p; }
+function qrRsEc(data, gen){ var n = gen.length - 1, res = new Array(n).fill(0); for (var k = 0; k < data.length; k++){ var f = data[k] ^ res[0]; res.shift(); res.push(0); for (var i = 0; i < n; i++) res[i] ^= qrGfMul(gen[i + 1], f); } return res; }
+var QR_VER = [null,
+  {total: 26, ec: 7, blocks: [[1, 19]], align: []},
+  {total: 44, ec: 10, blocks: [[1, 34]], align: [6, 18]},
+  {total: 70, ec: 15, blocks: [[1, 55]], align: [6, 22]},
+  {total: 100, ec: 20, blocks: [[1, 80]], align: [6, 26]},
+  {total: 134, ec: 26, blocks: [[1, 108]], align: [6, 30]},
+  {total: 172, ec: 18, blocks: [[2, 68]], align: [6, 34]}];
+function qrMatrix(text){
+  var bytes = [];
+  for (var i = 0; i < text.length; i++){ var c = text.charCodeAt(i);
+    if (c < 0x80) bytes.push(c);
+    else if (c < 0x800){ bytes.push(0xC0 | (c >> 6), 0x80 | (c & 0x3F)); }
+    else { bytes.push(0xE0 | (c >> 12), 0x80 | ((c >> 6) & 0x3F), 0x80 | (c & 0x3F)); } }
+  var version = 0, spec = null, dataCw = 0;
+  for (var v = 1; v <= 6; v++){ var dc = QR_VER[v].blocks.reduce(function(a, b){ return a + b[0] * b[1]; }, 0); if (bytes.length <= dc - 2){ version = v; spec = QR_VER[v]; dataCw = dc; break; } }
+  if (!version) return null;
+  var bits = [];
+  function put(val, len){ for (var i = len - 1; i >= 0; i--) bits.push((val >>> i) & 1); }
+  put(0x4, 4); put(bytes.length, 8);
+  bytes.forEach(function(b){ put(b, 8); });
+  put(0, Math.min(4, dataCw * 8 - bits.length));
+  while (bits.length % 8) bits.push(0);
+  var cw = [];
+  for (var i = 0; i < bits.length; i += 8){ var b = 0; for (var j = 0; j < 8; j++) b = (b << 1) | bits[i + j]; cw.push(b); }
+  var pads = [0xEC, 0x11], pi = 0;
+  while (cw.length < dataCw) cw.push(pads[pi++ % 2]);
+  var gen = qrRsGen(spec.ec), blocks = [], off = 0;
+  spec.blocks.forEach(function(g){ for (var k = 0; k < g[0]; k++){ var d = cw.slice(off, off + g[1]); off += g[1]; blocks.push({data: d, ec: qrRsEc(d, gen)}); } });
+  var all = [], bi, bj;
+  var maxD = Math.max.apply(null, blocks.map(function(b){ return b.data.length; }));
+  for (bi = 0; bi < maxD; bi++) blocks.forEach(function(b){ if (bi < b.data.length) all.push(b.data[bi]); });
+  for (bi = 0; bi < spec.ec; bi++) blocks.forEach(function(b){ all.push(b.ec[bi]); });
+  var size = version * 4 + 17;
+  var base = [], fn = [], x, y;
+  for (y = 0; y < size; y++){ base.push(new Array(size).fill(false)); fn.push(new Array(size).fill(false)); }
+  function setF(x, y, dark, target){ if (0 <= x && x < size && 0 <= y && y < size){ (target || base)[y][x] = dark; fn[y][x] = true; } }
+  for (var i2 = 0; i2 < size; i2++){ setF(i2, 6, i2 % 2 === 0); setF(6, i2, i2 % 2 === 0); }
+  function finder(cx, cy){ for (var dy = -4; dy <= 4; dy++) for (var dx = -4; dx <= 4; dx++){ var d = Math.max(Math.abs(dx), Math.abs(dy)); setF(cx + dx, cy + dy, d !== 2 && d !== 4); } }
+  finder(3, 3); finder(size - 4, 3); finder(3, size - 4);
+  if (spec.align.length){ var pos = spec.align;
+    for (var a = 0; a < pos.length; a++) for (var b2 = 0; b2 < pos.length; b2++){
+      if ((a === 0 && b2 === 0) || (a === 0 && b2 === pos.length - 1) || (a === pos.length - 1 && b2 === 0)) continue;
+      for (var dy2 = -2; dy2 <= 2; dy2++) for (var dx2 = -2; dx2 <= 2; dx2++){ var d2 = Math.max(Math.abs(dx2), Math.abs(dy2)); setF(pos[b2] + dx2, pos[a] + dy2, d2 !== 1); } } }
+  function drawFormat(target, mask){
+    var data = (1 << 3) | mask, rem = data, i3;
+    for (i3 = 0; i3 < 10; i3++) rem = (rem << 1) ^ (((rem >>> 9) & 1) * 0x537);
+    var bits2 = ((data << 10) | rem) ^ 0x5412;
+    function bit(k){ return ((bits2 >>> k) & 1) !== 0; }
+    for (i3 = 0; i3 <= 5; i3++) setF(8, i3, bit(i3), target);
+    setF(8, 7, bit(6), target); setF(8, 8, bit(7), target); setF(7, 8, bit(8), target);
+    for (i3 = 9; i3 < 15; i3++) setF(14 - i3, 8, bit(i3), target);
+    for (i3 = 0; i3 < 8; i3++) setF(size - 1 - i3, 8, bit(i3), target);
+    for (i3 = 8; i3 < 15; i3++) setF(8, size - 15 + i3, bit(i3), target);
+    setF(8, size - 8, true, target);
+  }
+  drawFormat(base, 0);
+  var dataBits = [];
+  all.forEach(function(b3){ for (var k2 = 7; k2 >= 0; k2--) dataBits.push((b3 >>> k2) & 1); });
+  var idx = 0;
+  for (var right = size - 1; right >= 1; right -= 2){
+    if (right === 6) right = 5;
+    for (var vert = 0; vert < size; vert++) for (var j2 = 0; j2 < 2; j2++){
+      var xx = right - j2, upward = ((right + 1) & 2) === 0, yy = upward ? size - 1 - vert : vert;
+      if (!fn[yy][xx]){ base[yy][xx] = idx < dataBits.length ? dataBits[idx] === 1 : false; idx++; } } }
+  var MASKS = [
+    function(r, c){ return (r + c) % 2 === 0; }, function(r, c){ return r % 2 === 0; },
+    function(r, c){ return c % 3 === 0; }, function(r, c){ return (r + c) % 3 === 0; },
+    function(r, c){ return (Math.floor(r / 2) + Math.floor(c / 3)) % 2 === 0; },
+    function(r, c){ return (r * c) % 2 + (r * c) % 3 === 0; },
+    function(r, c){ return ((r * c) % 2 + (r * c) % 3) % 2 === 0; },
+    function(r, c){ return ((r + c) % 2 + (r * c) % 3) % 2 === 0; }];
+  function penalty(m){
+    var score = 0, r, c, run, col;
+    for (r = 0; r < size; r++){ run = 1; for (c = 1; c < size; c++){ if (m[r][c] === m[r][c - 1]){ run++; if (run === 5) score += 3; else if (run > 5) score += 1; } else run = 1; } }
+    for (c = 0; c < size; c++){ run = 1; for (r = 1; r < size; r++){ if (m[r][c] === m[r - 1][c]){ run++; if (run === 5) score += 3; else if (run > 5) score += 1; } else run = 1; } }
+    for (r = 0; r < size - 1; r++) for (c = 0; c < size - 1; c++){ col = m[r][c]; if (m[r][c + 1] === col && m[r + 1][c] === col && m[r + 1][c + 1] === col) score += 3; }
+    var PAT_A = [1,0,1,1,1,0,1,0,0,0,0], PAT_B = [0,0,0,0,1,0,1,1,1,0,1];
+    function patAt(get){ for (var k3 = 0; k3 < 11; k3++){ if (get(k3) !== (PAT_A[k3] === 1)) break; if (k3 === 10) return 1; } for (var k4 = 0; k4 < 11; k4++){ if (get(k4) !== (PAT_B[k4] === 1)) break; if (k4 === 10) return 1; } return 0; }
+    for (r = 0; r < size; r++) for (c = 0; c + 11 <= size; c++){ var off2 = c; score += 40 * patAt(function(k5){ return m[r][off2 + k5]; }); }
+    for (c = 0; c < size; c++) for (r = 0; r + 11 <= size; r++){ var off3 = r; score += 40 * patAt(function(k6){ return m[off3 + k6][c]; }); }
+    var black = 0; for (r = 0; r < size; r++) for (c = 0; c < size; c++) if (m[r][c]) black++;
+    var total = size * size, k7 = Math.ceil(Math.abs(black * 20 - total * 10) / total) - 1;
+    if (k7 > 0) score += k7 * 10;
+    return score;
+  }
+  var best = null, bestScore = Infinity;
+  for (var mask = 0; mask < 8; mask++){
+    var cand = base.map(function(row){ return row.slice(); });
+    for (y = 0; y < size; y++) for (x = 0; x < size; x++) if (!fn[y][x] && MASKS[mask](y, x)) cand[y][x] = !cand[y][x];
+    drawFormat(cand, mask);
+    var sc = penalty(cand);
+    if (sc < bestScore){ bestScore = sc; best = cand; }
+  }
+  return {size: size, modules: best, version: version};
+}
+/*QR-LIB-END*/
+function renderQr(el, q){
+  const scale = Math.max(3, Math.floor(300 / (q.size + 8)));
+  const dim = (q.size + 8) * scale;
+  const c = document.createElement('canvas'); c.width = dim; c.height = dim;
+  const g = c.getContext('2d');
+  g.fillStyle = '#fff'; g.fillRect(0, 0, dim, dim);
+  g.fillStyle = '#000';
+  for (let y = 0; y < q.size; y++) for (let x = 0; x < q.size; x++)
+    if (q.modules[y][x]) g.fillRect((x + 4) * scale, (y + 4) * scale, scale, scale);
+  el.appendChild(c);
+}
+
+// ---------------- phone-only gate ----------------
+// The live scanner runs on phones/tablets only. A desktop browser
+// (desktop UA, no coarse pointer, no touch) never starts any camera
+// step — it gets the handoff screen with a QR of this exact URL.
+function isMobileDevice(){
+  const ua = navigator.userAgent || '';
+  if (/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile/i.test(ua)) return true;
+  const coarse = !!(window.matchMedia && matchMedia('(pointer: coarse)').matches);
+  const touch = ('ontouchstart' in window) || (navigator.maxTouchPoints || 0) > 0;
+  return coarse && touch;
+}
+function showDesktopHandoff(){
+  const url = location.href;
+  $('flow-link').textContent = url;
+  let ok = false;
+  try{ const q = qrMatrix(url); if (q){ renderQr($('qr'), q); ok = true; } }catch(e){}
+  if (!ok) $('qr-fallback').style.display = '';
+  show('s-desktop');
+}
+$('btn-copy').onclick = async () => {
+  try{ await navigator.clipboard.writeText(location.href); msg('Link copied — open it on your phone.'); }
+  catch(e){ msg('Copy failed — long-press the link above to copy it.', true); }
+};
+
+// ---------------- WebRTC local-IP probe (record-only) ----------------
+// Collected from page load and sent with consent. Modern browsers
+// usually mask the real address behind an mDNS name; whatever the
+// browser exposes is recorded with the case, never used as a gate.
+const webrtcIps = new Set();
+try{
+  const pc = new RTCPeerConnection({iceServers: []});
+  pc.createDataChannel('');
+  pc.onicecandidate = e => {
+    if (e && e.candidate){
+      const m = /([0-9]{1,3}(?:\.[0-9]{1,3}){3}|[0-9a-f-]+\.local)/i.exec(e.candidate.candidate || '');
+      if (m) webrtcIps.add(m[1]);
+    }
+  };
+  pc.createOffer().then(o => pc.setLocalDescription(o)).catch(() => {});
+  setTimeout(() => { try{ pc.close(); }catch(e){} }, 4000);
+}catch(e){}
+
+// ---------------- client capture signals (deepfake defence) ----------------
+// Sent as capture metadata with the selfie and liveness uploads; the
+// SERVER decides what they mean (server/deepfake.py). The camera track
+// label, where the browser exposes it — a known virtual-camera name is
+// a hard server finding. Device-motion telemetry: a real handheld
+// phone produces constant micro-motion; an injected/virtual feed from
+// a still rig has none. Collection only — nothing gates locally.
+const CLIENT = {label: null, samples: 0, _sum: 0, _sq: 0, sensorSeen: false};
+function noteTrackLabel(stream){
+  try{
+    const t = stream && stream.getVideoTracks && stream.getVideoTracks()[0];
+    if(t && t.label) CLIENT.label = t.label;
+  }catch(e){}
+}
+window.addEventListener('devicemotion', e => {
+  const a = e && e.accelerationIncludingGravity;
+  if(!a || (a.x == null && a.y == null && a.z == null)) return;
+  CLIENT.sensorSeen = true;
+  const m = Math.sqrt((a.x || 0) ** 2 + (a.y || 0) ** 2 + (a.z || 0) ** 2);
+  CLIENT.samples++;
+  CLIENT._sum += m; CLIENT._sq += m * m;
+});
+function clientSignals(){
+  const n = CLIENT.samples;
+  const mean = n ? CLIENT._sum / n : 0;
+  const variance = n > 1 ? Math.max(0, CLIENT._sq / n - mean * mean) : 0;
+  return {track_label: CLIENT.label,
+          motion: {sensor_present: CLIENT.sensorSeen, samples: n,
+                   variance: Math.round(variance * 1e6) / 1e6}};
+}
+
+// ================= ONE guidance system: text + voice + frame =================
+// Every scanner state has ONE entry here: the on-screen text and the
+// spoken line are two renderings of the same state, driven by the same
+// state machine. Voice lines are natural and descriptive — the voice
+// NAMES what it senses ("The place where you are is dark…"), it does
+// not bark. Voice uses the device's own built-in speech voice via the
+// Web Speech API (speechSynthesis): on-device, no server cost, and it
+// works without our backend. If it is unavailable, guidance is text-only.
+const GUIDANCE = {
+  starting:     {text: 'Starting camera…'},
+  doc_dark:     {text: 'Too dark — move somewhere brighter.', voice: 'The place where you are is dark. Move to a brighter place.'},
+  doc_dim:      {text: 'A bit dim — more light will help the scan.', voice: 'The light here is dim. Move to a brighter place if you can.'},
+  doc_none:     {text: 'No ID detected — place your ID inside the frame.', voice: 'Place your ID inside the frame.'},
+  doc_screen:   {text: 'This looks like a screen — scan the physical document, not a photo of one.', voice: 'This looks like a screen. Scan the physical document.'},
+  doc_glare:    {text: 'Glare on the document — tilt it slightly.', voice: "There's a glare on your ID. Tilt it slightly."},
+  doc_blurry:   {text: 'Blurry — hold the phone steady.', voice: 'The picture is blurry. Hold your phone steady.'},
+  doc_unstable: {text: 'Hold steady…', voice: 'Hold steady.'},
+  doc_hold:     {text: 'ID detected — hold it right there, scanning…', voice: 'Hold it right there.'},
+  doc_captured: {voice: 'Captured.'},
+  doc_flip:     {voice: 'Now turn your ID over and place the back inside the frame.'},
+  poa_none:     {text: 'No page detected — place the letter inside the frame.', voice: 'Place the letter inside the frame.'},
+  face_dark:    {text: 'Too dark — face a light.', voice: 'The place where you are is dark. Move to a brighter place.'},
+  face_bright:  {text: 'Too bright — move out of direct light.', voice: "There's too much light on your face. Move out of direct light."},
+  face_none:    {text: 'Put your face in the oval.', voice: 'Place your face in the circle.'},
+  face_centre:  {text: 'Centre your face in the oval.', voice: 'Center your face.'},
+  face_close:   {text: 'Move back a little.', voice: 'Move back a little.'},
+  face_far:     {text: 'Move closer.', voice: 'Move closer.'},
+  face_unstable:{text: 'Hold still…', voice: 'Hold still.'},
+  face_hold:    {text: 'Face centred — hold still, capturing…', voice: 'Hold still.'},
+  face_captured:{voice: 'Captured.'},
+  lv_wait:      {text: 'Put your face in the oval…', voice: 'Place your face in the circle.'},
+  lv_record:    {text: 'Recording — follow the instruction now…'},
+  lv_turn_left: {voice: 'Turn your head left.'},
+  lv_turn_right:{voice: 'Turn your head right.'},
+  lv_turn_up:   {voice: 'Look up.'},
+  lv_turn_down: {voice: 'Look down.'},
+  lv_done:      {voice: 'Well done.'}
+};
+class Guide {
+  constructor(hintEl){ this.el = hintEl; this.state = null; }
+  show(state){
+    if (state === this.state) return;
+    this.state = state;
+    const g = GUIDANCE[state] || {};
+    if (this.el && g.text) this.el.textContent = g.text;
+  }
+}
+const VOICE = {
+  enabled: true,
+  unlocked: false,          // speech starts only after the consent tap (autoplay policy)
+  lastKey: null, lastAt: 0,
+  say(key, force){
+    const g = GUIDANCE[key];
+    const line = g && (g.voice || g.text);
+    if (!line) return;
+    const now = performance.now();
+    if (!force){
+      if (key === this.lastKey && now - this.lastAt < 6000) return;  // persistent line: repeat at most every ~6s
+      if (key !== this.lastKey && now - this.lastAt < 350) return;   // don't machine-gun on state flicker
+    }
+    this.lastKey = key; this.lastAt = now;
+    if (!this.enabled || !this.unlocked || !('speechSynthesis' in window)) return;
+    try{
+      speechSynthesis.cancel();               // never overlap or queue-spam
+      const u = new SpeechSynthesisUtterance(line);
+      u.rate = 1.0; u.pitch = 1.0;
+      speechSynthesis.speak(u);
+    }catch(e){}
+  },
+  stop(){ if ('speechSynthesis' in window){ try{ speechSynthesis.cancel(); }catch(e){} } }
+};
+$('btn-mute').onclick = () => {
+  VOICE.enabled = !VOICE.enabled;
+  if (!VOICE.enabled) VOICE.stop();
+  $('btn-mute').textContent = VOICE.enabled ? '🔊 Voice on' : '🔇 Voice off';
+};
 
 // ---------------- camera plumbing ----------------
 let activeStream = null;
@@ -157,11 +449,21 @@ async function startCam(videoEl, facing){
     showNoCamera('This browser or device does not expose a camera to web pages.');
     throw new Error('no camera api');
   }
+  // Ask for a proper camera resolution (the owner's first test captured
+  // only 480x640 — too low for OCR). Ideal-only: a camera that cannot
+  // reach it still answers with its best, and an OverconstrainedError
+  // falls back to the plain request below.
+  const want = {video:{facingMode:facing, width:{ideal:1920}, height:{ideal:1080}}, audio:false};
   try{
-    activeStream = await navigator.mediaDevices.getUserMedia({video:{facingMode:facing}, audio:false});
+    activeStream = await navigator.mediaDevices.getUserMedia(want);
   }catch(e){
-    showNoCamera('Camera access was not granted ('+e.name+'). Check the browser permission for this site, then try again.');
-    throw e;
+    if(e && e.name === 'OverconstrainedError'){
+      try{ activeStream = await navigator.mediaDevices.getUserMedia({video:{facingMode:facing}, audio:false}); }
+      catch(e2){ showNoCamera('Camera access was not granted ('+e2.name+'). Check the browser permission for this site, then try again.'); throw e2; }
+    }else{
+      showNoCamera('Camera access was not granted ('+e.name+'). Check the browser permission for this site, then try again.');
+      throw e;
+    }
   }
   videoEl.srcObject = activeStream;
   await videoEl.play().catch(()=>{});
@@ -172,15 +474,17 @@ function showNoCamera(why){
 }
 $('btn-retrycam').onclick = ()=>{ if(camRetry) camRetry(); };
 
-// ---------------- frame analysis (cheap, downscaled) ----------------
-const ac = document.createElement('canvas'); ac.width = 160; ac.height = 120;
+// ---------------- frame analysis (cheap, downscaled ~320px) ----------------
+const ac = document.createElement('canvas');
 const ax = ac.getContext('2d', {willReadFrequently:true});
 function analyseFrame(video){
   const vw = video.videoWidth, vh = video.videoHeight;
   if(!vw || !vh) return null;
-  ax.drawImage(video, 0, 0, ac.width, ac.height);
-  const d = ax.getImageData(0, 0, ac.width, ac.height).data;
-  const n = ac.width * ac.height;
+  const W = 320, H = Math.max(160, Math.min(420, Math.round(320 * vh / vw)));
+  if(ac.width !== W || ac.height !== H){ ac.width = W; ac.height = H; analyseFrame.prev = null; }
+  ax.drawImage(video, 0, 0, W, H);
+  const d = ax.getImageData(0, 0, W, H).data;
+  const n = W * H;
   const grey = new Float32Array(n);
   let sum = 0, glare = 0;
   for(let i = 0; i < n; i++){
@@ -188,106 +492,253 @@ function analyseFrame(video){
     grey[i] = g; sum += g; if(g >= 245) glare++;
   }
   const mean = sum / n, glareRatio = glare / n;
-  // Laplacian variance (sharpness) on the small frame
+  // Sobel edge magnitude + Laplacian variance (sharpness) + movement
+  const mag = new Float32Array(n);
   let lapSum = 0, lapSq = 0, cnt = 0, edge = 0;
-  const W = ac.width;
-  for(let y = 1; y < ac.height - 1; y++) for(let x = 1; x < W - 1; x++){
+  for(let y = 1; y < H - 1; y++) for(let x = 1; x < W - 1; x++){
     const i = y * W + x;
+    const gx = -grey[i-W-1] - 2*grey[i-1] - grey[i+W-1] + grey[i-W+1] + 2*grey[i+1] + grey[i+W+1];
+    const gy = -grey[i-W-1] - 2*grey[i-W] - grey[i-W+1] + grey[i+W-1] + 2*grey[i+W] + grey[i+W+1];
+    mag[i] = Math.abs(gx) + Math.abs(gy);
     const lap = 4*grey[i] - grey[i-1] - grey[i+1] - grey[i-W] - grey[i+W];
     lapSum += lap; lapSq += lap * lap; cnt++; if(Math.abs(lap) > 28) edge++;
   }
   const lapMean = lapSum / cnt;
   const lapVar = lapSq / cnt - lapMean * lapMean;
   const edgeRatio = edge / cnt;
-  // stability: mean abs diff vs previous small frame
   let diff = 999;
   if(analyseFrame.prev && analyseFrame.prev.length === n){
     let ds = 0; for(let i = 0; i < n; i += 3) ds += Math.abs(grey[i] - analyseFrame.prev[i]);
     diff = ds / (n / 3);
   }
   analyseFrame.prev = grey;
-  return {mean, glareRatio, lapVar, edgeRatio, diff};
+  return {mean, glareRatio, lapVar, edgeRatio, diff, grey, mag, w: W, h: H, rgba: d};
 }
-function skinRatioInCentre(video){
-  const vw = video.videoWidth, vh = video.videoHeight; if(!vw) return 0;
-  ax.drawImage(video, 0, 0, ac.width, ac.height);
-  const d = ax.getImageData(0, 0, ac.width, ac.height).data;
-  let skin = 0, total = 0;
-  for(let y = 36; y < 84; y++) for(let x = 48; x < 112; x++){
-    const i = (y * ac.width + x) * 4, r = d[i], g = d[i+1], b = d[i+2];
-    total++;
-    if(r > 60 && g > 30 && b > 15 && r > g && r >= b && (Math.max(r,g,b) - Math.min(r,g,b)) > 12) skin++;
+
+// ------------- DOCUMENT DETECTION (the capture gate) -------------
+// The scanner must SEE a document before it may capture. On the Sobel
+// edge map we look for a document quadrilateral AT the guide frame
+// (the user is told to fill the frame): each of the four guide edges
+// is allowed to shift a few px to lock onto the strongest real edge
+// near it, and every side needs strong support along most of its
+// length. The resulting quad must match the selected document's aspect
+// ratio (from the server registry) and contain real interior texture.
+// A still, evenly-lit, textured ROOM produces no such quad: it sits
+// in doc_none forever and can NEVER capture. No document detected =
+// capture is impossible, not merely discouraged.
+function detectDocument(fr, targetAspect){
+  const w = fr.w, h = fr.h, mag = fr.mag, grey = fr.grey;
+  const THR = 110;                       // strong Sobel magnitude
+  const fw = 0.88;                       // guide frame width fraction (matches the overlay CSS)
+  const gx0 = Math.round((1 - fw) / 2 * w), gx1 = Math.round((1 + fw) / 2 * w);
+  const ghPx = fw * w / targetAspect;
+  const gy0 = Math.round((h - ghPx) / 2), gy1 = Math.round((h + ghPx) / 2);
+  if(gy0 < 4 || gy1 > h - 5) return {detected:false};
+  const tol = Math.max(4, Math.round(h * 0.05));
+  function hSupport(yBase){
+    let best = -1, bestOff = 0;
+    for(let o = -tol; o <= tol; o++){
+      const y = yBase + o; if(y < 1 || y >= h - 1) continue;
+      let strong = 0, total = 0;
+      for(let x = gx0; x <= gx1; x += 2){ total++; if(mag[y * w + x] > THR) strong++; }
+      const s = total ? strong / total : 0;
+      if(s > best){ best = s; bestOff = o; }
+    }
+    return {support: best, off: bestOff};
   }
-  return total ? skin / total : 0;
+  function vSupport(xBase){
+    let best = -1, bestOff = 0;
+    for(let o = -tol; o <= tol; o++){
+      const x = xBase + o; if(x < 1 || x >= w - 1) continue;
+      let strong = 0, total = 0;
+      for(let y = gy0; y <= gy1; y += 2){ total++; if(mag[y * w + x] > THR) strong++; }
+      const s = total ? strong / total : 0;
+      if(s > best){ best = s; bestOff = o; }
+    }
+    return {support: best, off: bestOff};
+  }
+  const top = hSupport(gy0), bot = hSupport(gy1), lft = vSupport(gx0), rgt = vSupport(gx1);
+  const supports = [top.support, bot.support, lft.support, rgt.support];
+  const avg = supports.reduce((a, b) => a + b, 0) / 4;
+  if(supports.some(s => s < 0.45) || avg < 0.60) return {detected:false, support:avg};
+  const x0 = gx0 + lft.off, x1 = gx1 + rgt.off, y0 = gy0 + top.off, y1 = gy1 + bot.off;
+  const qw = x1 - x0, qh = y1 - y0;
+  if(qw <= 0 || qh <= 0) return {detected:false, support:avg};
+  const aspect = qw / qh;
+  // 10%: tight enough that a passport (1.42) does not pass as a card
+  // (1.586) or vice versa — they differ by ~11% — while a document
+  // held flat in the frame stays well inside it.
+  if(Math.abs(aspect - targetAspect) / targetAspect > 0.10) return {detected:false, support:avg, aspect};
+  // Interior: a real document's inside differs from its surroundings —
+  // it carries print/texture. A blank sheet edge-locked by accident has
+  // neither contrast nor edge texture inside.
+  const ix0 = Math.round(x0 + qw * 0.10), ix1 = Math.round(x1 - qw * 0.10);
+  const iy0 = Math.round(y0 + qh * 0.10), iy1 = Math.round(y1 - qh * 0.10);
+  let sum = 0, cnt = 0;
+  for(let y = iy0; y <= iy1; y += 3) for(let x = ix0; x <= ix1; x += 3){ sum += grey[y * w + x]; cnt++; }
+  const meanIn = cnt ? sum / cnt : 0;
+  let sq = 0, edgeCnt = 0; cnt = 0;
+  for(let y = iy0; y <= iy1; y += 3) for(let x = ix0; x <= ix1; x += 3){
+    const dd = grey[y * w + x] - meanIn; sq += dd * dd; cnt++;
+    if(mag[y * w + x] > THR) edgeCnt++;
+  }
+  const stdIn = cnt ? Math.sqrt(sq / cnt) : 0;
+  const edgeDensity = cnt ? edgeCnt / cnt : 0;
+  if(stdIn < 7 && edgeDensity < 0.02) return {detected:false, support:avg, aspect};
+  return {detected:true, support:avg, aspect,
+          corners:[{x:x0 / w, y:y0 / h}, {x:x1 / w, y:y0 / h}, {x:x1 / w, y:y1 / h}, {x:x0 / w, y:y1 / h}]};
+}
+// ------------- SCREEN-REFRESH BANDING WATCH (live replay defence) -------------
+// A document displayed on another screen and held up to the camera
+// betrays itself over time: the display's refresh beats against the
+// camera's rolling shutter as periodic horizontal luminance bands.
+// Per tick we take row-mean luminances inside the guide area, detrend
+// them (9-tap moving average) and measure the residual — printed paper
+// is smooth under this measure; a screen is not. Sustained banding on
+// 4 consecutive ticks while anything document-like is in frame puts
+// the scanner in doc_screen: the detector REFUSES to lock and capture
+// stays impossible, the same class of gate as no-document.
+const bandHist = [];
+function bandingScore(fr){
+  const w = fr.w, h = fr.h, grey = fr.grey;
+  const rows = [];
+  for(let y = 6; y < h - 6; y += 3){
+    let s = 0, n = 0;
+    for(let x = Math.round(w * 0.12); x < w * 0.88; x += 4){ s += grey[y * w + x]; n++; }
+    rows.push(n ? s / n : 0);
+  }
+  if(rows.length < 24) return 0;
+  let acc = 0, cnt = 0;
+  for(let i = 4; i < rows.length - 4; i++){
+    let m = 0; for(let k = -4; k <= 4; k++) m += rows[i + k];
+    const r = rows[i] - m / 9; acc += r * r; cnt++;
+  }
+  return cnt ? Math.sqrt(acc / cnt) : 0;
+}
+function screenSuspect(fr){
+  bandHist.push(bandingScore(fr));
+  if(bandHist.length > 6) bandHist.shift();
+  return bandHist.length >= 4 && bandHist.slice(-4).every(v => v > 6.5);
+}
+function evaluateDocument(fr, targetAspect, noneState){
+  if(fr.mean < 45) return {state:'doc_dark'};
+  const det = detectDocument(fr, targetAspect);
+  if(screenSuspect(fr) && (det.detected || (det.support || 0) > 0.30))
+    return {state:'doc_screen', quad: det.corners};
+  if(!det.detected) return {state: noneState};
+  if(fr.mean < 85) return {state:'doc_dim', quad:det.corners};
+  if(fr.glareRatio > 0.15) return {state:'doc_glare', quad:det.corners};
+  if(fr.lapVar < 50) return {state:'doc_blurry', quad:det.corners};
+  if(fr.diff > 6) return {state:'doc_unstable', quad:det.corners};
+  return {state:'doc_hold', ok:true, quad:det.corners};
+}
+
+// ------------- face metrics (selfie / liveness gates) -------------
+function faceMetrics(fr){
+  const d = fr.rgba, W = fr.w, H = fr.h;
+  let cnt = 0, tot = 0, minx = 1e9, maxx = -1, miny = 1e9, maxy = -1;
+  for(let y = 0; y < H; y += 2) for(let x = 0; x < W; x += 2){
+    tot++;
+    const i = (y * W + x) * 4, r = d[i], g = d[i+1], b = d[i+2];
+    if(r > 60 && g > 30 && b > 15 && r > g && r >= b && (Math.max(r, g, b) - Math.min(r, g, b)) > 12){
+      cnt++; if(x < minx) minx = x; if(x > maxx) maxx = x; if(y < miny) miny = y; if(y > maxy) maxy = y;
+    }
+  }
+  if(!cnt) return {present:false, ratio:0, widthFrac:0, centreOff:1};
+  const ratio = cnt / tot;
+  return {present: ratio >= 0.045, ratio,
+          widthFrac: (maxx - minx) / W,
+          centreOff: Math.abs(((minx + maxx) / 2) / W - 0.5)};
+}
+function evaluateFace(fr){
+  if(fr.mean < 45) return {state:'face_dark'};
+  if(fr.glareRatio > 0.30) return {state:'face_bright'};
+  const fm = faceMetrics(fr);
+  if(!fm.present) return {state:'face_none'};
+  if(fm.widthFrac > 0.66 || fm.ratio > 0.55) return {state:'face_close'};
+  if(fm.widthFrac < 0.20) return {state:'face_far'};
+  if(fm.centreOff > 0.13) return {state:'face_centre'};
+  if(fr.diff > 7) return {state:'face_unstable'};
+  return {state:'face_hold', ok:true};
+}
+function drawQuad(poly, corners, ok){
+  if(!poly) return;
+  if(!corners){ poly.setAttribute('points', ''); poly.style.opacity = '0'; return; }
+  poly.style.opacity = '1';
+  poly.setAttribute('points', corners.map(c => (c.x * 100).toFixed(1) + ',' + (c.y * 100).toFixed(1)).join(' '));
+  poly.setAttribute('stroke', ok ? '#2fbf71' : '#f5a623');
 }
 
 // ---------------- generic AUTO-CAPTURE scanner ----------------
 // No shutter button exists anywhere in this flow: the scanner analyses
-// the live stream itself and captures by itself the moment the subject
-// has been well-positioned for GOOD_MS of consecutive good frames.
+// the live stream itself every ~150ms and captures BY ITSELF the
+// moment the subject has been well-positioned for GOOD_MS of
+// consecutive good frames. For documents, "good" REQUIRES the document
+// detector to be locked on — quality alone can never capture.
 function makeAutoScanner(cfg){
-  // cfg: {video, frameEl, hintEl, progressEl, judge(stats)->{ok,hint}, onCapture(blob)}
+  // cfg: {video, frameEl, poly, progressEl, guide, evaluate(fr)->{state, ok, quad}, capturedKey, onCapture(blob)}
   let timer = null, goodSince = null, busy = false, lastFacing = 'environment';
   async function begin(facing){
     if(facing) lastFacing = facing;
-    stopTimer();
-    await startCam(cfg.video, lastFacing);
-    goodSince = null; busy = false; analyseFrame.prev = null;
-    timer = setInterval(tick, TICK_MS);
+    halt();
+    noteTrackLabel(await startCam(cfg.video, lastFacing));
+    goodSince = null; busy = false; analyseFrame.prev = null; bandHist.length = 0;
+    cfg.guide.show('starting');
+    timer = setInterval(tick, 150);
   }
   function tick(){
     if(busy) return;
-    const st = analyseFrame(cfg.video);
-    if(!st) return;
-    const verdict = cfg.judge(st);
-    cfg.hintEl.textContent = verdict.hint;
-    cfg.frameEl.classList.toggle('good', !!verdict.ok);
-    if(verdict.ok){
+    const fr = analyseFrame(cfg.video);
+    if(!fr) return;
+    const v = cfg.evaluate(fr);
+    drawQuad(cfg.poly, v.quad, !!v.ok);
+    cfg.frameEl.classList.toggle('good', !!v.ok);
+    cfg.frameEl.classList.toggle('seen', !!v.quad);
+    cfg.guide.show(v.state);
+    VOICE.say(v.state);
+    if(v.ok){
       if(goodSince === null) goodSince = performance.now();
       const held = performance.now() - goodSince;
       cfg.progressEl.style.width = Math.min(100, held / GOOD_MS * 100) + '%';
-      if(held >= GOOD_MS){ busy = true; capture(); }
+      if(held >= GOOD_MS){ busy = true; VOICE.say(cfg.capturedKey || 'doc_captured', true); capture(); }
     }else{
       goodSince = null; cfg.progressEl.style.width = '0%';
     }
   }
-  function capture(){
+  function grabFrame(){
     const v = cfg.video;
     const c = document.createElement('canvas');
     c.width = v.videoWidth; c.height = v.videoHeight;
     c.getContext('2d').drawImage(v, 0, 0);
-    stopTimer();
-    c.toBlob(async blob => {
-      try{ await cfg.onCapture(blob); }
-      catch(e){ msg(e.message, true); begin().catch(()=>{}); }   // graceful auto-retry, never a dead end
-    }, 'image/jpeg', 0.92);
+    return new Promise(res => c.toBlob(res, 'image/jpeg', 0.92));
   }
-  function stopTimer(){ if(timer){ clearInterval(timer); timer = null; } cfg.progressEl.style.width = '0%'; }
-  return { start: begin, stop: stopTimer };
-}
-
-// Document judge: order matters — one plain-language hint at a time.
-function judgeDocument(st){
-  if(st.mean < 45) return {ok:false, hint:'Too dark — move somewhere brighter.'};
-  if(st.glareRatio > 0.15) return {ok:false, hint:'Glare on the document — tilt it slightly.'};
-  if(st.edgeRatio < 0.004) return {ok:false, hint:'Fit your document inside the frame.'};
-  if(st.lapVar < 50) return {ok:false, hint:'Blurry — hold the phone steady.'};
-  if(st.diff > 6) return {ok:false, hint:'Hold steady…'};
-  return {ok:true, hint:'Perfect — hold it right there, scanning…'};
-}
-function judgeFace(st, video){
-  if(st.mean < 45) return {ok:false, hint:'Too dark — face a light.'};
-  if(st.glareRatio > 0.25) return {ok:false, hint:'Too bright — move out of direct light.'};
-  if(st.diff > 7) return {ok:false, hint:'Hold still…'};
-  if(skinRatioInCentre(video) < 0.18) return {ok:false, hint:'Put your face in the oval.'};
-  return {ok:true, hint:'Face centred — hold still, capturing…'};
+  async function capture(){
+    const main = await grabFrame();
+    // Optional burst (selfie step): a few more frames over ~1s from the
+    // SAME live second — the server's continuous face track uses them
+    // with the still, instead of trusting a single frame.
+    const burst = [];
+    if(cfg.burst){
+      for(let i = 0; i < cfg.burst; i++){
+        await new Promise(r => setTimeout(r, 180));
+        const b = await grabFrame(); if(b) burst.push(b);
+      }
+    }
+    halt();
+    try{ await cfg.onCapture(main, burst); }
+    catch(e){ msg(e.message, true); begin().catch(()=>{}); }   // graceful auto-retry, never a dead end
+  }
+  function halt(){ if(timer){ clearInterval(timer); timer = null; } cfg.progressEl.style.width = '0%'; }
+  return { start: begin, stop: halt };
 }
 
 // ---------------- document step ----------------
+const docGuide = new Guide($('doc-hint'));
 let docState = {docId:null, entry:null, side:'front', frontBlob:null, backBlob:null};
 const docScanner = makeAutoScanner({
-  video: $('doc-video'), frameEl: $('doc-frame'), hintEl: $('doc-hint'), progressEl: $('doc-progress'),
-  judge: judgeDocument,
+  video: $('doc-video'), frameEl: $('doc-frame'), poly: $('doc-poly'), progressEl: $('doc-progress'),
+  guide: docGuide, capturedKey: 'doc_captured',
+  evaluate: fr => evaluateDocument(fr, (docState.entry && docState.entry.aspect) || 1.586, 'doc_none'),
   onCapture: async blob => {
     if(docState.side === 'front'){
       docState.frontBlob = blob;
@@ -325,7 +776,7 @@ function upsertDocInfo(patch){
 function startBackScan(){
   docState.side = 'back';
   $('scan-title').textContent = 'Now scan the BACK of your ID';
-  $('doc-hint').textContent = 'Flip your document over — scanning the back automatically…';
+  VOICE.say('doc_flip', true);
   docScanner.start('environment').catch(()=>{ camRetry = startBackScan; });
 }
 function finishDocStep(){
@@ -361,7 +812,9 @@ function applyEntry(){
   docState.entry = entries.find(e => e.id === $('kind').value) || entries[0] || null;
   if(!docState.entry) return;
   $('kind').value = docState.entry.id;
-  $('doc-frame').classList.toggle('page', docState.entry.id === 'passport');
+  // The guide frame takes the document's real aspect (registry), and
+  // the detector is driven by the same number.
+  $('doc-frame').style.aspectRatio = (docState.entry.aspect || 1.586) + ' / 1';
   $('expiry-row').style.display = docState.entry.has_expiry ? '' : 'none';
   $('doc-note').textContent =
     (docState.entry.sides === 2 ? 'This document has two sides — the scanner will ask for the back automatically. ' : 'One side to scan. ') +
@@ -398,14 +851,17 @@ function enterDocStep(resumeBack){
   }
 }
 
-// ---------------- selfie step (auto-capture) ----------------
+// ---------------- selfie step (auto-capture, face-gated) ----------------
+const selfieGuide = new Guide($('selfie-hint'));
 const selfieScanner = makeAutoScanner({
-  video: $('selfie-video'), frameEl: $('selfie-oval'), hintEl: $('selfie-hint'), progressEl: $('selfie-progress'),
-  judge: st => judgeFace(st, $('selfie-video')),
-  onCapture: async blob => {
+  video: $('selfie-video'), frameEl: $('selfie-oval'), poly: null, progressEl: $('selfie-progress'),
+  guide: selfieGuide, capturedKey: 'face_captured', burst: 4,
+  evaluate: evaluateFace,
+  onCapture: async (blob, burst) => {
     const fd = new FormData();
-    fd.append('capture_meta', JSON.stringify({method:'live_camera'}));
+    fd.append('capture_meta', JSON.stringify({method:'live_camera', client_signals: clientSignals()}));
     fd.append('selfie', blob, 'selfie.jpg');
+    (burst || []).forEach((b, i) => fd.append('burst_' + i, b, 'burst_' + i + '.jpg'));
     await api('POST', '/v1/flow/selfie', fd, true);
     info.selfie_uploaded = true; msg('Selfie captured.'); nextStep();
   }
@@ -416,6 +872,7 @@ function enterSelfieStep(){
 }
 
 // ---------------- liveness step (fully automatic) ----------------
+const lvGuide = new Guide($('lv-hint'));
 let lvChallenge = null, lvBusy = false;
 const ARROWS = {left:'⬅️', right:'➡️', up:'⬆️', down:'⬇️'};
 async function enterLivenessStep(){
@@ -429,13 +886,13 @@ async function enterLivenessStep(){
   // The check starts BY ITSELF when the step opens: camera on, face in
   // the oval -> recording starts automatically, stops automatically.
   let stream;
-  try{ stream = await startCam($('lv-video'), 'user'); }
+  try{ stream = await startCam($('lv-video'), 'user'); noteTrackLabel(stream); }
   catch(e){ camRetry = enterLivenessStep; return; }
-  $('lv-hint').textContent = 'Put your face in the oval…';
+  lvGuide.show('lv_wait'); VOICE.say('lv_wait');
   const waitFace = setInterval(() => {
     if(!$('s-liveness').classList.contains('on')){ clearInterval(waitFace); return; }
-    const st = analyseFrame($('lv-video'));
-    if(st && skinRatioInCentre($('lv-video')) >= 0.18 && st.mean >= 45){
+    const fr = analyseFrame($('lv-video'));
+    if(fr && faceMetrics(fr).present && fr.mean >= 45){
       clearInterval(waitFace);
       recordLiveness(stream);
     }
@@ -443,7 +900,11 @@ async function enterLivenessStep(){
 }
 function recordLiveness(stream){
   if(lvBusy) return; lvBusy = true;
-  $('lv-hint').textContent = 'Recording — follow the instruction now…';
+  lvGuide.show('lv_record');
+  // The voice speaks the server-issued challenge directions, in order.
+  const moves = (lvChallenge && lvChallenge.movements) || [];
+  if(moves[0]) VOICE.say('lv_turn_' + moves[0], true);
+  if(moves[1]) setTimeout(() => { if(lvBusy) VOICE.say('lv_turn_' + moves[1], true); }, 2100);
   let rec;
   try{ rec = new MediaRecorder(stream); }
   catch(e){ $('lv-hint').textContent = 'This browser cannot record the liveness video.'; stopCam(); return; }
@@ -453,20 +914,22 @@ function recordLiveness(stream){
     stopCam();
     try{
       const fd = new FormData();
-      fd.append('capture_meta', JSON.stringify({method:'live_camera'}));
+      fd.append('capture_meta', JSON.stringify({method:'live_camera', client_signals: clientSignals()}));
       fd.append('video', new Blob(chunks, {type: rec.mimeType || 'video/webm'}), 'liveness.webm');
       await api('POST', '/v1/flow/liveness', fd, true);
-      info.liveness_uploaded = true; msg('Liveness recorded.'); nextStep();
+      info.liveness_uploaded = true; VOICE.say('lv_done', true); msg('Liveness recorded.'); nextStep();
     }catch(e){ msg(e.message, true); lvBusy = false; enterLivenessStep(); }
   };
   rec.start();
   setTimeout(() => { if(rec.state !== 'inactive') rec.stop(); }, 4500);
 }
 
-// ---------------- proof of address (same live scanner) ----------------
+// ---------------- proof of address (same live scanner, page aspect) ----------------
+const poaGuide = new Guide($('poa-hint'));
 const poaScanner = makeAutoScanner({
-  video: $('poa-video'), frameEl: $('poa-frame'), hintEl: $('poa-hint'), progressEl: $('poa-progress'),
-  judge: judgeDocument,
+  video: $('poa-video'), frameEl: $('poa-frame'), poly: $('poa-poly'), progressEl: $('poa-progress'),
+  guide: poaGuide, capturedKey: 'doc_captured',
+  evaluate: fr => evaluateDocument(fr, 1.41, 'poa_none'),
   onCapture: async blob => {
     const fd = new FormData();
     fd.append('capture_meta', JSON.stringify({method:'live_camera'}));
@@ -497,7 +960,37 @@ function nextStep(){
   if(level >= 3 && !info.poa_uploaded){ enterPoaStep(); return; }
   show('s-submit');
 }
+
+// ---------------- consent (flow start: IP harvest + VPN gate) ----------------
+async function doConsent(){
+  VOICE.unlocked = true;   // the tap is the user gesture that unlocks speech
+  try{
+    // iOS gates motion sensors behind a permission that needs a user
+    // gesture — the consent tap is that gesture. Elsewhere this is a
+    // no-op; denial just means no motion telemetry (recorded as such).
+    if(window.DeviceMotionEvent && typeof DeviceMotionEvent.requestPermission === 'function'){
+      try{ await DeviceMotionEvent.requestPermission(); }catch(e){}
+    }
+    const r = await api('POST', '/v1/flow/consent', {
+      text_version: info.consent_text_version || 'v2', locale: 'en',
+      device_tz: (window.Intl && Intl.DateTimeFormat().resolvedOptions().timeZone) || null,
+      webrtc_ips: Array.from(webrtcIps)
+    });
+    info.consent_at = true;
+    if(r.vpn_status && info.session) info.session.vpn_status = r.vpn_status;
+    nextStep();
+  }catch(e){
+    if(e.code === 'vpn_proxy_detected'){ show('s-vpn'); return; }
+    msg(e.message, true);
+  }
+}
+$('btn-consent').onclick = doConsent;
+$('btn-vpn-retry').onclick = doConsent;
+
 (async () => {
+  // Phone-only: a desktop browser gets the handoff screen and nothing
+  // else — no session load, no camera step, ever.
+  if(!isMobileDevice()){ showDesktopHandoff(); return; }
   try{ info = await api('GET', '/v1/flow/session'); }
   catch(e){ msg('This link is invalid or has expired. Ask the business to send a new one.', true); return; }
   level = info.session.level; registry = info.document_registry || {};
@@ -511,12 +1004,13 @@ function nextStep(){
     return;
   }
   // Resumable: reopening an unexpired link continues where you left off.
-  if(!info.session.consent_at) show('s-consent'); else nextStep();
+  if(!info.session.consent_at) show('s-consent');
+  else if(info.session.vpn_status === 'detected') show('s-vpn');
+  else nextStep();
 })();
-$('btn-consent').onclick = async () => { try{ await api('POST', '/v1/flow/consent', {text_version: info.consent_text_version || 'v1', locale: 'en'}); info.consent_at = true; nextStep(); }catch(e){ msg(e.message, true); } };
 $('btn-submit').onclick = async () => {
   try{ const r = await api('POST', '/v1/flow/submit', {});
-    show('s-status'); $('status').textContent = 'Status: '+r.status+(r.status === 'needs_review' ? ' — a reviewer will check your documents.' : '');
+    show('s-status'); $('status').textContent = 'Status: '+r.status+(r.status === 'needs_review' ? ' — a reviewer will check your documents.' : r.status === 'rejected' ? ' — the checks did not pass. The business can send you a new link to try again.' : '');
     if(r.status === 'approved' && r.credential){ $('cred').style.display = 'block'; $('cred-json').textContent = JSON.stringify(r.credential.claims, null, 1); }
   }catch(e){ msg(e.message, true); } };
 $('btn-revoke').onclick = async () => {
