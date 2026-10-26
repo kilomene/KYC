@@ -115,6 +115,8 @@ _MIGRATIONS = [
     ("cases", "pending_reviewer", "TEXT"),
     ("cases", "decided_by_name", "TEXT"),
     ("cases", "four_eyes_required", "INTEGER NOT NULL DEFAULT 0"),
+    ("documents", "capture_meta", "TEXT"),  # JSON: per-side capture metadata {front:{method,side}, back:{...}} from the live scanner
+    ("biometric_captures", "capture_meta", "TEXT"),  # JSON: capture metadata {method, ...} from the live scanner
 ]
 
 def now_iso():
