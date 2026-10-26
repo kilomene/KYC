@@ -8,27 +8,39 @@ money, or access. Other companies have built this before (Sumsub, Persona,
 Onfido, Veriff, Jumio). This is our own, original build: our code, our
 design, our rules — informed by what the category does, copying none of it.
 
-> **Status: Phase 1 local MVP built and tested (2026-10-26).**
-> A real, runnable local build (details below): tenant API keys, a hosted
-> applicant flow, checks that actually run (image quality, OCR, MRZ check
-> digits, expiry/age, name/DOB consistency), a fail-closed decision
-> engine, human review console, signed webhooks, audit log, erasure and
-> retention. It runs **locally only** — not deployed, not on Supabase or
+> **Status: Phases 1–3 built and tested locally (2026-10-26).**
+> A real, runnable local build: tenant API keys, a hosted applicant
+> flow, checks that actually run (image quality, OCR, MRZ check digits,
+> expiry/age, name/DOB consistency, **face match** (YuNet + SFace),
+> **active liveness (movement challenge)**, **document authenticity
+> signals** (ELA / metadata / moiré-FFT / format), **proof of address**,
+> **sanctions screening** with human disposition, **ongoing
+> monitoring**), an explainable **risk engine**, a fail-closed decision
+> engine with Level 2 auto-approval for clean low-risk sessions,
+> **versioned per-tenant flow config**, **KYB** (business verification),
+> **four-eyes review with reviewer roles and case SLAs**, a reviewer
+> **assist** pre-read, **reusable signed verified credentials**, human
+> review console, signed webhooks, audit log, erasure and retention.
+> 86 automated tests + a live Level 3 end-to-end run, all green.
+> It runs **locally only** — not deployed, not on Supabase or
 > Cloudflare yet; the production home will be Cloudflare when the owner
 > is ready (DECISIONS D4/D6), behind this same API contract.
 > Nothing here claims a certification, partnership, or check we have not
 > actually built and tested.
 
-## Run the Phase 1 local MVP
+## Run it locally
 
 ```bash
 cd KYC
+python3 scripts/fetch_models.py        # one-time: YuNet + SFace ONNX models into models/ (gitignored)
 python3 -m server --port 8765          # data lives in ./data/ (gitignored)
 # Landing:  http://127.0.0.1:8765/
 # Console:  http://127.0.0.1:8765/console   (paste a tenant API key)
-python3 -m unittest discover tests     # 38 tests
-python3 scripts/e2e_local.py           # live end-to-end run
+python3 -m unittest discover tests     # 86 tests
+python3 scripts/e2e_local.py           # live Level 3 end-to-end run
 python3 -m server.retention --days 90  # delete images of old decided sessions
+python3 scripts/fetch_ofac.py          # optional: real OFAC SDN list into data/lists/
+python3 -m server.monitoring --tenant <id> --env test   # ongoing-monitoring rescreen CLI
 ```
 
 Create a tenant (local bootstrap — unauthenticated **only** in this local
@@ -44,28 +56,51 @@ Then `POST /v1/applicants` and `POST /v1/sessions` with
 `/flow/<token>` link. Sessions are **resumable**: reopening an unexpired
 link continues where the applicant left off — uploaded steps stay done.
 
-Requires: Python 3.12, Pillow, and the `tesseract` CLI for OCR
-(`sudo apt-get install -y tesseract-ocr`). If tesseract is missing the OCR
-check reports `error` — it never pretends to pass.
+Requires: Python 3.12, Pillow, numpy, OpenCV (`cv2`) and the `tesseract`
+CLI for OCR (`sudo apt-get install -y tesseract-ocr`). If tesseract is
+missing the OCR check reports `error` — it never pretends to pass. If
+the face models are missing (run `scripts/fetch_models.py`), face match
+and liveness report `error`/`model_missing` — never a fake pass.
+Face models: YuNet `face_detection_yunet_2023mar.onnx` (MIT) and SFace
+`face_recognition_sface_2021dec.onnx` (Apache 2.0) from the OpenCV Zoo
+— the zoo ships SFace as the 2021dec file; there is no 2023dec file.
 
-### What Phase 1 does NOT do yet (honest list)
+### What this build does NOT do yet (honest list)
 
-- **Face match and liveness are Phase 2.** They are recorded as required
-  checks with status `not_run`, so by the fail-closed rule a Level 2/3
-  session can **never auto-approve** in Phase 1 — it goes to a human
-  reviewer, who compares the document image and the selfie side by side
-  in the console. Nothing claims biometrics passed.
-- **Level 3 extras (proof of address, sanctions/PEP screening) are
-  Phase 3** — likewise `not_run`, likewise blocking auto-approval.
-- **Document authenticity** beyond OCR/MRZ/consistency (template, tamper,
-  recapture detection) is Phase 2. KYB is Phase 3.
-- **Sandbox honesty note:** the blueprint's draft API text mentioned
-  "deterministic outcomes for test documents". This build does **not**
-  fake outcomes: test keys run the identical real checks; "test" means
-  strict data separation from live (a test key can never read live data),
-  nothing more.
-- No billing, no email sending, no multi-user tenant teams, webhook
-  delivery is one signed attempt, logged (no backoff/replay yet).
+- **No live government registry connection for KYB.** The registry leg
+  is registration-number *format* validation (NG/US/GB/CA/AU/DE/GH
+  patterns we define) + a company document upload + a named reviewer's
+  confirmation. It is labelled exactly that way in the API and console.
+- **Liveness is an active movement challenge (v1)** — server-issued
+  random head movements analysed from video frames. It is **not**
+  passive liveness and carries **no iBeta / ISO 30107 certification**;
+  nothing here claims one.
+- **Screening lists:** the repo ships a tiny, clearly-labelled SAMPLE
+  fixture list (`lists/sample.csv`, fictional entries). Real coverage
+  comes from dropping list CSVs into `data/lists/` —
+  `scripts/fetch_ofac.py` downloads the real OFAC SDN list (verified
+  working: 7,519 individual entries). PEP and adverse-media lists are
+  not bundled; the engine reads whatever CSVs are present in the
+  documented format. No lists at all → screening reports `error`
+  (`screening_lists_missing`), never a silent pass.
+- **Face/liveness accuracy is not benchmarked yet.** The SFace decision
+  threshold is OpenCV's published 0.363 default (tenant-configurable);
+  demographic performance testing per COMPLIANCE §3 has **not** been
+  done — no accuracy claim is made. Synthetic test images cannot pass
+  the real face checks, so sandbox Level 2/3 sessions land in human
+  review by design (fail-closed), exactly as the E2E shows.
+- **Authenticity signals are heuristics**, calibrated on synthetic
+  images (ELA block spread, moiré FFT energy share). Combined evidence
+  decides; one weak signal alone never fails a document. They are a
+  routing/tamper-triage layer, not a forensic guarantee.
+- **Sandbox honesty note:** this build does **not** fake outcomes: test
+  keys run the identical real checks; "test" means strict data
+  separation from live (a test key can never read live data), nothing
+  more.
+- No billing, no email sending; webhook delivery is one signed attempt,
+  logged (no backoff/replay yet). Tenant "teams" exist as named
+  reviewer tokens with roles (admin/reviewer) for console actions —
+  not full user accounts with passwords.
 
 ## The ambition
 
