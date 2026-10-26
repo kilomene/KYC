@@ -13,6 +13,15 @@
 <button id="load-cfg">Flow config</button>
 <button id="rescreen">Re-run screening (monitoring)</button>
 <div id="out"></div>
+<div class="card"><h3>New verification</h3>
+<p>Create an applicant + hosted-flow session. With <b>Read from document</b>, name and date of birth are <b>not</b> entered — the applicant only picks their document in the flow and the platform reads the identity from it (the read identity is adopted onto the applicant at decision time).</p>
+<label>Identity source <select id="nv-source"><option value="declared">Declared by tenant</option><option value="document">Read from document</option></select></label>
+<span id="nv-names"><input id="nv-first" placeholder="First name"> <input id="nv-last" placeholder="Last name"> <input id="nv-dob" placeholder="DOB YYYY-MM-DD"></span>
+<input id="nv-country" placeholder="Country (e.g. NG)" style="width:130px">
+<label>Level <select id="nv-level"><option>1</option><option selected>2</option><option>3</option></select></label>
+<button id="nv-create">Create session</button>
+<p id="nv-out"></p>
+</div>
 <div id="cases"></div>
 <div id="biz"></div>
 <div id="cfg"></div>
@@ -67,7 +76,7 @@ async function openCase(id){
     let four='';
     if(v.case.status==='awaiting_second'){ four='<p><b>Awaiting a second reviewer.</b> The first decision is parked; a DIFFERENT reviewer must confirm it.</p><input id="confirm-reason" placeholder="Confirmation reason (required)" style="width:55%"> <button id="btn-confirm">Confirm decision</button>'; }
     $('detail').innerHTML='<div class="card"><h2>Case '+esc(v.case.id)+' ('+esc(v.case.status)+')</h2>'+
-      '<p><b>Applicant:</b> '+esc(a.first_name||'')+' '+esc(a.last_name||'')+' · DOB '+esc(a.dob||'')+' · '+esc(a.country||'')+'<br>'+
+      '<p><b>Applicant:</b> '+esc(a.first_name||'')+' '+esc(a.last_name||'')+' · DOB '+esc(a.dob||'')+' · '+esc(a.country||'')+' · identity: '+esc(a.identity_source||'declared')+(a.identity_source==='document'?(a.identity_document_id?' (read from document, adopted)':' (read from document)'):'')+'<br>'+
       '<b>Document:</b> '+esc((d0.kind||'')+' '+(d0.issuing_country||''))+' · exp '+esc(d0.doc_expiry||'')+'<br>'+
       '<b>Session status:</b> '+esc(v.session?v.session.status:'')+'<br>'+
       '<b>Client IP:</b> '+esc((v.session&&v.session.client_ip_masked)||'not recorded')+' · <b>IP country:</b> '+esc((v.session&&v.session.ip_country)||'unknown')+' · <b>VPN/proxy:</b> '+esc((v.session&&v.session.vpn_status)||'unknown')+'</p>'+layers+risk+assist+checks+
@@ -123,6 +132,18 @@ async function loadCfg(){
         alert('Level '+lvl+' config is now version '+r.version); loadCfg(); }catch(e){ alert(e.message); } });
   }catch(e){ alert(e.message); }
 }
+
+$('nv-source').onchange=()=>{ const doc=$('nv-source').value==='document';
+  ['nv-first','nv-last','nv-dob'].forEach(id=>{ $(id).disabled=doc; $(id).style.opacity=doc?0.4:1; }); };
+$('nv-create').onclick=async()=>{ KEY=$('key').value.trim(); if(!KEY){ alert('Paste a tenant API key first'); return; }
+  const src=$('nv-source').value;
+  const body={identity_source:src, country:$('nv-country').value.trim().toUpperCase()||'NG'};
+  if(src==='declared'){ body.first_name=$('nv-first').value.trim(); body.last_name=$('nv-last').value.trim(); body.dob=$('nv-dob').value.trim(); }
+  try{ const a=await api('POST','/v1/applicants',body);
+    const s=await api('POST','/v1/sessions',{applicant_id:a.id, level:+$('nv-level').value});
+    const url=location.origin+s.flow_url;
+    $('nv-out').innerHTML='Flow link: <a href="'+esc(url)+'" target="_blank" rel="noopener">'+esc(url)+'</a> · identity source: '+esc(s.identity_source||src)+' · applicant '+esc(a.id);
+  }catch(e){ $('nv-out').textContent=e.message; } };
 
 $('load').onclick=loadCases;
 $('load-biz').onclick=loadBiz;
