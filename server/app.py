@@ -33,6 +33,7 @@ from . import vision as VISION
 from . import deepfake as DEEPFAKE
 from . import facetrack as FACETRACK
 from . import templates as TEMPLATES
+from . import fieldtemplates as FIELDTEMPLATES
 
 # KYB registry-number FORMAT rules per country (Phase 3). Format
 # validation only — the local build has NO live government registry
@@ -1124,7 +1125,8 @@ def make_handler(db: DB, data_dir: str):
                     db.execute("UPDATE documents SET ocr_text=?, mrz_raw=? WHERE id=?", (ocr_text[:8000], (parsed or {}).get("line2"), doc["id"]))
                     record("expiry_age", C.check_expiry_age(parsed if parsed and parsed.get("valid") else None,
                                                             doc_expiry=doc["doc_expiry"], doc_dob=doc["doc_dob"], applicant_dob=app["dob"],
-                                                            has_expiry=doc_entry.get("has_expiry", True)))
+                                                            has_expiry=doc_entry.get("has_expiry", True),
+                                                            validity_end=doc_entry.get("validity_end")))
                     record("consistency", C.check_consistency(app["first_name"], app["last_name"], app["dob"],
                                                               mrz_parsed=parsed, doc_first=doc["doc_first_name"], doc_last=doc["doc_last_name"],
                                                               doc_dob=doc["doc_dob"], ocr_text=ocr_text))
@@ -1144,7 +1146,8 @@ def make_handler(db: DB, data_dir: str):
                         record("mrz_viz_consistency", VISION.cross_check_mrz_viz(ocr_text, parsed), provider="local-vision")
                     _code = VISION.decode_codes(front_path,
                                                 os.path.join(data_dir, doc["back_storage_path"]) if doc["back_storage_path"] else None,
-                                                doc_fields=dict(doc))
+                                                doc_fields=dict(doc),
+                                                country=doc["issuing_country"], kind=doc["kind"])
                     code_found = bool(_code["findings"].get("found_any"))
                     record("code_decode", _code, provider="local-vision")
                     # Document classification (Addition 9): the image must
@@ -1166,6 +1169,15 @@ def make_handler(db: DB, data_dir: str):
                                                          ocr_text=ocr_text,
                                                          aamva=_code["findings"].get("aamva")),
                            provider="local-vision")
+                    # Field extraction (Phase 4 WS1): template-guided,
+                    # zone-first extraction for the claimed document
+                    # type, with the per-field source (zone / label /
+                    # text fallback) and format validation recorded as
+                    # evidence on the case.
+                    record("field_extraction",
+                           FIELDTEMPLATES.extract_fields(front_path, doc["issuing_country"], doc["kind"],
+                                                         ocr_text=ocr_text),
+                           provider="local-fieldtemplates")
                     # Face match (Phase 2 + continuous tracking, 2026-10-26):
                     # the liveness frames + selfie + burst frames form a
                     # TRACK (presence, trajectory, identity continuity);
