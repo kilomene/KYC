@@ -33,6 +33,14 @@ field-extraction templates live in server/fieldtemplates.py, payload
 semantics (full AAMVA parse, NIN-slip QR, Aadhaar secure QR, PhilID
 QR) in server/payloads.py, and the labelled accuracy benchmark in
 scripts/benchmark_vision.py (results in benchmarks/RESULTS.md).
+
+Paper rectification (2026-10-26): OCR reads the document from its
+perspective-WARPED rendition when server/framing.py finds a quad —
+a hand-held, bowed paper document (the Nigerian NIN slip) is read
+flat, not at an angle. The warp is a rendition FOR READING ONLY:
+authenticity / screen / forgery analysis always runs on the original
+capture (callers pass the original path there, and nothing in this
+module changes what they see).
 """
 import io, os, re, shutil, subprocess, tempfile
 from datetime import date
@@ -150,15 +158,35 @@ def _mrz_band_text(path, exe):
             return last
     return last
 
+def _reading_path(path):
+    """The image OCR should READ: the perspective-warped rendition
+    when framing finds a document quad in the capture, else the
+    original. Returns (effective_path, warp_findings_or_None)."""
+    try:
+        from . import framing as FRAMING
+        analysis = FRAMING.analyse_path(path)
+        if analysis and analysis.get("quad") is not None:
+            warped = FRAMING.warped_rendition(path)
+            if warped:
+                return warped, {"applied": True, "method": analysis.get("method"),
+                                "aspect": analysis.get("aspect"),
+                                "area_ratio": analysis.get("area_ratio")}
+    except Exception:
+        pass
+    return path, {"applied": False}
+
 def read_document_text(path, expect_mrz=True):
     """Multi-pass OCR. Returns {"status", "findings", "reason_codes",
     "text"} with the same contract as the old single-pass check_ocr.
     `expect_mrz=False` (card-type documents, per the registry) skips
     the dedicated MRZ-band pass entirely — up to three tesseract runs
-    that cannot find an MRZ the document type does not carry."""
+    that cannot find an MRZ the document type does not carry. When the
+    capture contains a detectable document quad, the passes read the
+    perspective-warped rendition (findings["warp"] records it)."""
     exe = shutil.which("tesseract")
     if not exe:
         return {"status": "error", "findings": {"error": "tesseract_not_installed"}, "reason_codes": ["ocr_unavailable"], "text": ""}
+    path, warp_info = _reading_path(path)
     variants = _prep_variants(path)
     if not variants:
         variants = [("raw", path)]
@@ -209,7 +237,7 @@ def read_document_text(path, expect_mrz=True):
         text = text + "\n" + "\n".join(lines)
         merged_band = True
     band_parsed = C.parse_mrz(band_text) if band_text else None
-    findings = {"chars": len(text), "engine": "vision-multipass",
+    findings = {"chars": len(text), "engine": "vision-multipass", "warp": warp_info,
                 "passes": [{"name": p["name"], "confidence": p["confidence"], "chars": p["chars"], "mrz_valid": p["mrz_valid"]} for p in passes]
                           + [{"name": "mrz_band", "confidence": None, "chars": len(band_text),
                               "mrz_valid": bool(band_parsed and band_parsed.get("valid"))}],
@@ -223,10 +251,15 @@ def read_document_text(path, expect_mrz=True):
 def ocr_words(path):
     """Tesseract TSV on the plain pass, as word boxes in NORMALISED
     image coordinates: [{"text", "conf", "box": (x0, y0, x1, y1)}].
-    Used by document classification to map where text actually sits."""
+    Used by document classification to map where text actually sits.
+    Coordinates are in the READING image's space — the warped
+    rendition when framing found a quad (see read_document_text) —
+    so template zones, which are document-relative, compare against
+    document-relative boxes."""
     exe = shutil.which("tesseract")
     if not exe or Image is None:
         return []
+    path, _warp = _reading_path(path)
     variants = _prep_variants(path)
     if not variants:
         return []
