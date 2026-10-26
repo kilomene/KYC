@@ -79,6 +79,7 @@ Hosted-flow additions (flow token auth):
 |---|---|
 | `POST /v1/flow/liveness/challenge` | Issue the server-generated movement challenge for this session (random 2-direction sequence); returns the challenge + a plain-language instruction |
 | `POST /v1/flow/liveness` | Multipart upload of the liveness video (`video` part, webm/mp4) — analysed server-side (face presence, challenged movement, static-replay rejection). Labelled in the UI as **active liveness (movement challenge)** |
+| `POST /v1/flow/document/back` | Attach the BACK side scan to an existing flow document (`document_id` + `back` part). 422 if the document type has no back side (per-country registry, `server/docregistry.py`). Document/selfie/liveness uploads accept a `capture_meta` JSON field (e.g. `{"method":"live_camera","side":"front"}`), stored per side and shown in the review console. The hosted flow itself is a live camera scanner — it has no file-upload path |
 | `POST /v1/flow/poa` | Multipart proof-of-address upload (`document` part) for Level 3 |
 | `GET /v1/flow/credential` | The applicant's own issued credential for this session (claims + signature) |
 | `POST /v1/flow/credential/revoke` | The applicant revokes their own credential |
