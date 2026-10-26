@@ -306,6 +306,7 @@ def check_consistency(applicant_first, applicant_last, applicant_dob,
                 "document_tokens": sorted(doc_tokens), "dob_match": dob_match}
     if not doc_tokens or not app_tokens:
         return {"status": "unclear", "findings": findings, "reason_codes": ["consistency_no_document_name"]}
+
     overlap = app_tokens & doc_tokens
     if app_tokens.issubset(doc_tokens) or doc_tokens.issubset(app_tokens):
         if dob_match is False:
@@ -317,3 +318,98 @@ def check_consistency(applicant_first, applicant_last, applicant_dob,
     if dob_match is False:
         return {"status": "fail", "findings": findings, "reason_codes": ["dob_mismatch"]}
     return {"status": "unclear", "findings": findings, "reason_codes": ["name_partial_match"]}
+
+# ---------- document self-consistency (identity-from-document path) ----------
+def check_document_self_consistency(extracted_fields=None, mrz_parsed=None,
+                                    ocr_text="", ocr_passes=None):
+    """Consistency for DOCUMENT-SOURCED sessions (identity_source =
+    'document'): the tenant declared NO name/DOB, so there is no
+    applicant identity to mismatch — consistency is evaluated across
+    the document's OWN independent reads instead:
+
+      * template field extraction (word-box read of the printed zone)
+        vs the check-digit-valid MRZ (name, DOB, document number);
+      * the extracted name vs the multi-pass OCR text read (a
+        different tesseract read of the same image);
+      * the OCR pass record itself is carried into the findings
+        (how many passes ran, whether any produced a valid MRZ).
+
+    Two present reads that DISAGREE fail the check (the document
+    contradicts itself — no applicant is involved, so the reason
+    codes name the reads, never an applicant mismatch). Agreement
+    passes. Nothing readable at all -> unclear (identity_not_read):
+    the applicant rescans; per the auto-decision engine an unclear
+    required check is an automatic rejection for rescan, never a
+    silent approval."""
+    fields = extracted_fields or {}
+    def val(name):
+        return (fields.get(name) or {}).get("value") or None
+    ext_name = f"{val('given_names') or ''} {val('surname') or ''}".strip()
+    ext_tokens = _tokens(ext_name)
+    mrz = mrz_parsed if (mrz_parsed and mrz_parsed.get("valid")) else None
+    findings = {"mode": "document_self",
+                "extracted": {"name": ext_name or None, "dob": val("dob"),
+                              "number": val("number")},
+                "mrz": None,
+                "ocr_passes": ocr_passes,
+                "name_in_ocr_text": None, "name_reads_agree": None,
+                "dob_reads_agree": None, "number_reads_agree": None}
+    disagreements = []
+    mrz_tokens = set()
+    surname_tokens = _tokens(val("surname") or "")
+    if mrz:
+        names = mrz.get("names") or {}
+        mrz_name = f"{names.get('given_names', '')} {names.get('surname', '')}".strip()
+        mrz_dob = yymmdd_to_date(mrz["dob_yymmdd"], is_dob=True)
+        findings["mrz"] = {"name": mrz_name or None,
+                           "dob": mrz_dob.isoformat() if mrz_dob else None,
+                           "number": mrz.get("document_number")}
+        mrz_tokens = _tokens(mrz_name)
+        if not surname_tokens:
+            surname_tokens = _tokens(names.get("surname", ""))
+        if ext_tokens and mrz_tokens:
+            agree = ext_tokens.issubset(mrz_tokens) or mrz_tokens.issubset(ext_tokens)
+            findings["name_reads_agree"] = agree
+            if not agree:
+                disagreements.append("doc_name_reads_disagree")
+        ext_dob = parse_iso_date(val("dob") or "")
+        if ext_dob and mrz_dob:
+            findings["dob_reads_agree"] = (ext_dob == mrz_dob)
+            if ext_dob != mrz_dob:
+                disagreements.append("doc_dob_reads_disagree")
+        ext_num = re.sub(r"[^A-Z0-9]", "", (val("number") or "").upper())
+        mrz_num = re.sub(r"[^A-Z0-9]", "", (mrz.get("document_number") or "").upper())
+        if ext_num and mrz_num:
+            findings["number_reads_agree"] = (ext_num == mrz_num)
+            if ext_num != mrz_num:
+                disagreements.append("doc_number_reads_disagree")
+    # The primary name read: the extraction where it read one, else
+    # the check-digit-valid MRZ (a real passport's printed name can
+    # sit outside the template zones while its MRZ reads perfectly).
+    primary_tokens = ext_tokens or mrz_tokens
+    if surname_tokens and ocr_text:
+        # Corroboration by the VISUAL zone (MRZ lines excluded): the
+        # surname printed for a human to read appears in the text.
+        l1, l2 = find_mrz_lines(ocr_text)
+        mrz_line_set = {clean_mrz_line(l1 or ""), clean_mrz_line(l2 or "")}
+        viz_text = "\n".join(l for l in ocr_text.splitlines()
+                             if clean_mrz_line(l) not in mrz_line_set and l.strip())
+        findings["name_in_ocr_text"] = surname_tokens.issubset(_tokens(viz_text))
+    if disagreements:
+        return {"status": "fail", "findings": findings,
+                "reason_codes": disagreements + ["document_reads_disagree"]}
+    # Pass requires at least one genuine cross-read agreement: two
+    # reads of the name agreeing, the surname corroborated by the
+    # visual zone, or DOB/number agreement with the MRZ.
+    cross_read = (findings["name_reads_agree"] is True
+                  or findings["name_in_ocr_text"] is True
+                  or findings["dob_reads_agree"] is True
+                  or findings["number_reads_agree"] is True)
+    if primary_tokens and cross_read:
+        return {"status": "pass", "findings": findings, "reason_codes": []}
+    if primary_tokens:
+        # A name was read but no second read corroborates it.
+        return {"status": "unclear", "findings": findings,
+                "reason_codes": ["document_reads_uncorroborated"]}
+    return {"status": "unclear", "findings": findings,
+            "reason_codes": ["identity_not_read"]}
