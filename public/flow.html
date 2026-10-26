@@ -1,14 +1,14 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Verify your identity — KYC (Nova Inc)</title>
-<style>body{font-family:system-ui,sans-serif;max-width:560px;margin:1rem auto;padding:0 1rem;line-height:1.5}label{display:block;margin:.7rem 0 .2rem}input,select,button{font-size:1rem;padding:.6rem;width:100%;box-sizing:border-box}button{background:#0b5fff;color:#fff;border:0;border-radius:8px;margin-top:1rem}.step{display:none}.step.on{display:block}.msg{padding:.7rem;border-radius:8px;background:#eef3ff;margin:.8rem 0}.err{background:#ffecec}</style></head>
+<style>body{font-family:system-ui,sans-serif;max-width:560px;margin:1rem auto;padding:0 1rem;line-height:1.5}label{display:block;margin:.7rem 0 .2rem}input,select,button{font-size:1rem;padding:.6rem;width:100%;box-sizing:border-box}button{background:#0b5fff;color:#fff;border:0;border-radius:8px;margin-top:1rem}.step{display:none}.step.on{display:block}.msg{padding:.7rem;border-radius:8px;background:#eef3ff;margin:.8rem 0}.err{background:#ffecec}video{width:100%;border-radius:8px;background:#111}pre{background:#f6f6f6;padding:.6rem;overflow:auto;font-size:.8rem;white-space:pre-wrap;word-break:break-all}.danger{background:#b3261e}</style></head>
 <body>
 <h1>Verify your identity</h1>
 <div id="out"></div>
 
 <section class="step" id="s-consent">
 <h2>Before we start — your consent</h2>
-<p>We will collect: your name and date of birth, a photo of your government ID, and a selfie. This is used only to verify your identity for the business that sent you here. A human reviewer may look at your document and selfie images side by side. You can ask that business to delete your data. Nothing is collected until you agree.</p>
+<p>We will collect: your name and date of birth, a photo of your government ID, and a selfie. Higher verification levels also ask for a short liveness video and a proof-of-address document. This is used only to verify your identity for the business that sent you here. A human reviewer may look at your document and selfie images side by side. You can ask that business to delete your data. Nothing is collected until you agree.</p>
 <button id="btn-consent">I agree — continue</button>
 </section>
 
@@ -41,19 +41,43 @@
 
 <section class="step" id="s-selfie">
 <h2>3. Selfie</h2>
-<p>Take a clear selfie in good light. In this Phase 1 build a human reviewer compares it with your document — there is no automated face match yet.</p>
+<p>Take a clear selfie in good light. It is compared automatically with the photo on your document, and a human reviewer can also compare them side by side.</p>
 <input type="file" id="selfie" accept="image/*" capture="user">
 <button id="btn-selfie">Upload selfie</button>
 </section>
 
+<section class="step" id="s-liveness">
+<h2>4. Liveness check — active liveness (movement challenge)</h2>
+<p id="lv-text">We will ask you to move your head in two directions shown on screen, while recording a short video (about 4 seconds). A still photo or a replayed recording will not pass. You can also upload a short video file instead.</p>
+<p><b id="lv-instruction"></b></p>
+<video id="lv-video" autoplay muted playsinline></video>
+<button id="btn-lv-start">Start challenge &amp; record</button>
+<label>…or upload a short video file (webm/mp4)</label>
+<input type="file" id="lv-file" accept="video/*">
+<button id="btn-lv-upload">Upload video file</button>
+</section>
+
+<section class="step" id="s-poa">
+<h2>5. Proof of address</h2>
+<p>Upload a recent utility bill, bank statement or official letter showing your name and address. It must be dated within the last 90 days.</p>
+<input type="file" id="poa" accept="image/*">
+<button id="btn-poa">Upload proof of address</button>
+</section>
+
 <section class="step" id="s-submit">
-<h2>4. Submit for verification</h2>
+<h2>Submit for verification</h2>
 <button id="btn-submit">Submit</button>
 </section>
 
 <section class="step" id="s-status">
 <h2>Your verification</h2>
 <p id="status"></p>
+<div id="cred" style="display:none">
+<h3>Your verified credential</h3>
+<p>This credential proves your verification to other businesses that use this platform, without sharing your documents. You can revoke it at any time.</p>
+<pre id="cred-json"></pre>
+<button id="btn-revoke" class="danger">Revoke credential</button>
+</div>
 </section>
 
 <script>
@@ -69,22 +93,33 @@ async function api(method, path, body, isForm){
   if(!r.ok) throw new Error((j.error && j.error.message) || ('HTTP '+r.status));
   return j;
 }
-let info;
+let info, level = 1;
+function nextStep(){
+  const hasDoc = (info.documents||[]).length>0;
+  if(info.credential_session && !hasDoc){ show('s-submit'); msg('Your verified credential covers the document checks for this session. You can submit now.'); return; }
+  if(!hasDoc){ show('s-details'); return; }
+  if(!info.selfie_uploaded){ show('s-selfie'); return; }
+  if(level>=2 && !info.liveness_uploaded){ startLiveness(); return; }
+  if(level>=3 && !info.poa_uploaded){ show('s-poa'); return; }
+  show('s-submit');
+}
 (async()=>{
   try{ info = await api('GET','/v1/flow/session'); }catch(e){ msg('This link is invalid or has expired. Ask the business to send a new one.', true); return; }
-  $('who').textContent = 'Verifying: '+(info.applicant.first_name||'')+' '+(info.applicant.last_name||'')+' · Level '+info.session.level;
-  if(info.session.status==='approved'||info.session.status==='rejected'||info.session.status==='needs_review'||info.session.status==='needs_more_information'){
-    show('s-status'); $('status').textContent = 'Status: '+info.session.status; return;
+  level = info.session.level;
+  $('who').textContent = 'Verifying: '+(info.applicant.first_name||'')+' '+(info.applicant.last_name||'')+' · Level '+level;
+  if(['approved','rejected','needs_review','needs_more_information'].includes(info.session.status)){
+    show('s-status'); $('status').textContent = 'Status: '+info.session.status;
+    if(info.session.status==='approved' && info.credential_issued){
+      try{ const c = await api('GET','/v1/flow/credential');
+        if(c.credential){ $('cred').style.display='block'; $('cred-json').textContent = JSON.stringify(c.credential.claims, null, 1); }
+      }catch(e){}
+    }
+    return;
   }
-  // Resumable: reopening an unexpired link continues where you left off —
-  // steps already uploaded stay done, you never restart a verification.
-  const hasDoc = (info.documents||[]).length>0;
-  if(!info.session.consent_at) show('s-consent');
-  else if(!hasDoc) show('s-details');
-  else if(!info.selfie_uploaded){ show('s-selfie'); msg('Welcome back — your document is already uploaded. Just the selfie remains.'); }
-  else { show('s-submit'); msg('Welcome back — document and selfie are uploaded. You can submit now.'); }
+  // Resumable: reopening an unexpired link continues where you left off.
+  if(!info.session.consent_at) show('s-consent'); else nextStep();
 })();
-$('btn-consent').onclick = async()=>{ try{ await api('POST','/v1/flow/consent',{text_version: info.consent_text_version||'v1', locale:'en'}); show('s-details'); }catch(e){ msg(e.message,true);} };
+$('btn-consent').onclick = async()=>{ try{ await api('POST','/v1/flow/consent',{text_version: info.consent_text_version||'v1', locale:'en'}); nextStep(); }catch(e){ msg(e.message,true);} };
 $('btn-doc').onclick = async()=>{
   const fd = new FormData();
   fd.append('kind',$('kind').value); fd.append('issuing_country',$('country').value);
@@ -92,13 +127,49 @@ $('btn-doc').onclick = async()=>{
   fd.append('doc_dob',$('ddob').value); fd.append('doc_expiry',$('dexpiry').value); fd.append('doc_number',$('dnum').value);
   if($('front').files[0]) fd.append('front',$('front').files[0]);
   if($('back').files[0]) fd.append('back',$('back').files[0]);
-  try{ await api('POST','/v1/flow/document',fd,true); msg('Document uploaded.'); show('s-selfie'); }catch(e){ msg(e.message,true);} };
+  try{ await api('POST','/v1/flow/document',fd,true); info.documents=[{}]; msg('Document uploaded.'); nextStep(); }catch(e){ msg(e.message,true);} };
 $('btn-selfie').onclick = async()=>{
   const fd = new FormData(); if($('selfie').files[0]) fd.append('selfie',$('selfie').files[0]);
-  try{ await api('POST','/v1/flow/selfie',fd,true); msg('Selfie uploaded.'); show('s-submit'); }catch(e){ msg(e.message,true);} };
+  try{ await api('POST','/v1/flow/selfie',fd,true); info.selfie_uploaded=true; msg('Selfie uploaded.'); nextStep(); }catch(e){ msg(e.message,true);} };
+// --- Liveness: active challenge (movement) ---
+let lvChallenge = null;
+async function startLiveness(){
+  show('s-liveness');
+  try{ const c = await api('POST','/v1/flow/liveness/challenge',{});
+    lvChallenge = c.challenge; $('lv-instruction').textContent = c.instruction;
+  }catch(e){ msg(e.message,true); }
+}
+async function uploadLiveness(blob, name){
+  const fd = new FormData(); fd.append('video', blob, name||'liveness.webm');
+  await api('POST','/v1/flow/liveness',fd,true);
+  info.liveness_uploaded = true; msg('Liveness video uploaded.'); nextStep();
+}
+$('btn-lv-start').onclick = async()=>{
+  try{
+    if(!lvChallenge) await startLiveness();
+    const stream = await navigator.mediaDevices.getUserMedia({video:true});
+    $('lv-video').srcObject = stream;
+    const rec = new MediaRecorder(stream); const chunks = [];
+    rec.ondataavailable = e => chunks.push(e.data);
+    rec.onstop = async()=>{ stream.getTracks().forEach(t=>t.stop());
+      try{ await uploadLiveness(new Blob(chunks,{type:rec.mimeType||'video/webm'}), 'liveness.webm'); }catch(e){ msg(e.message,true); } };
+    rec.start(); msg('Recording — follow the movement instruction now…');
+    setTimeout(()=>rec.stop(), 4500);
+  }catch(e){ msg('Camera unavailable ('+e.message+'). Use the video file upload instead.', true); }
+};
+$('btn-lv-upload').onclick = async()=>{
+  const f = $('lv-file').files[0]; if(!f){ msg('Choose a video file first.', true); return; }
+  try{ if(!lvChallenge) await startLiveness(); await uploadLiveness(f, f.name); }catch(e){ msg(e.message,true); }
+};
+$('btn-poa').onclick = async()=>{
+  const fd = new FormData(); if($('poa').files[0]) fd.append('document',$('poa').files[0]);
+  try{ await api('POST','/v1/flow/poa',fd,true); info.poa_uploaded=true; msg('Proof of address uploaded.'); nextStep(); }catch(e){ msg(e.message,true);} };
 $('btn-submit').onclick = async()=>{
-  try{ const r = await api('POST','/v1/flow/submit',{}); show('s-status');
-    $('status').textContent = 'Status: '+r.status+(r.status==='needs_review' ? ' — a reviewer will check your documents.' : '');
+  try{ const r = await api('POST','/v1/flow/submit',{});
+    show('s-status'); $('status').textContent = 'Status: '+r.status+(r.status==='needs_review' ? ' — a reviewer will check your documents.' : '');
+    if(r.status==='approved' && r.credential){ $('cred').style.display='block'; $('cred-json').textContent = JSON.stringify(r.credential.claims, null, 1); }
   }catch(e){ msg(e.message,true);} };
+$('btn-revoke').onclick = async()=>{
+  try{ await api('POST','/v1/flow/credential/revoke',{}); $('cred').style.display='none'; msg('Credential revoked.'); }catch(e){ msg(e.message,true);} };
 </script>
 </body></html>
