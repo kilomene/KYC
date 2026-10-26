@@ -1,0 +1,1129 @@
+{
+ "source_material": "owner's stored real captures + LFW faces",
+ "families": {
+  "replay": {
+   "label": "REAL artefacts (genuine videos replayed vs fresh challenges)",
+   "artefacts": [
+    {
+     "artefact": "owner_clean_take",
+     "kind": "video_replay_real",
+     "liveness_under_fresh_challenges": [
+      {
+       "challenge": [
+        "left",
+        "up"
+       ],
+       "liveness": "unclear",
+       "reason_codes": [
+        "liveness_challenge_incomplete"
+       ]
+      },
+      {
+       "challenge": [
+        "right",
+        "down"
+       ],
+       "liveness": "unclear",
+       "reason_codes": [
+        "liveness_challenge_incomplete"
+       ]
+      },
+      {
+       "challenge": [
+        "up",
+        "right"
+       ],
+       "liveness": "unclear",
+       "reason_codes": [
+        "liveness_challenge_incomplete"
+       ]
+      }
+     ],
+     "liveness_passed_fresh": 0,
+     "caught_by_freshness": true,
+     "defences": {
+      "legs": {
+       "liveness": {
+        "status": "unclear",
+        "reason_codes": [
+         "liveness_challenge_incomplete"
+        ],
+        "findings": {
+         "face_ratio": 1.0,
+         "centre_range": 0.0283,
+         "movements_made": []
+        }
+       },
+       "deepfake": {
+        "status": "unclear",
+        "reason_codes": [
+         "deepfake_signals_present"
+        ],
+        "findings": {
+         "face_ratio": 1.0,
+         "artifact_score": 0.11,
+         "pulse": {
+          "present": false,
+          "method_used": "pos",
+          "methods_present": [],
+          "pos": false,
+          "green": false
+         }
+        }
+       },
+       "face_track": {
+        "status": "pass",
+        "reason_codes": [],
+        "findings": {
+         "presence_ratio": 1.0,
+         "identity_min_cosine": 0.4632
+        }
+       },
+       "face_match": {
+        "status": "unclear",
+        "reason_codes": [
+         "no_face_in_document"
+        ],
+        "findings": {}
+       }
+      },
+      "combination_all_passing": false,
+      "rejected": false,
+      "blocked": true,
+      "signals": {
+       "moire": {
+        "name": "moire",
+        "strength": "none",
+        "score": 0.086,
+        "peak_to_mean": 64.2
+       },
+       "pixel_grid": {
+        "name": "pixel_grid",
+        "strength": "none",
+        "score": 0.148,
+        "x_share": 0.21,
+        "y_share": 0.148
+       }
+      }
+     }
+    },
+    {
+     "artefact": "owner_hard_take",
+     "kind": "video_replay_real",
+     "liveness_under_fresh_challenges": [
+      {
+       "challenge": [
+        "left",
+        "up"
+       ],
+       "liveness": "fail",
+       "reason_codes": [
+        "liveness_face_absent"
+       ]
+      },
+      {
+       "challenge": [
+        "right",
+        "down"
+       ],
+       "liveness": "fail",
+       "reason_codes": [
+        "liveness_face_absent"
+       ]
+      },
+      {
+       "challenge": [
+        "up",
+        "right"
+       ],
+       "liveness": "fail",
+       "reason_codes": [
+        "liveness_face_absent"
+       ]
+      }
+     ],
+     "liveness_passed_fresh": 0,
+     "caught_by_freshness": true,
+     "defences": {
+      "legs": {
+       "liveness": {
+        "status": "fail",
+        "reason_codes": [
+         "liveness_face_absent"
+        ],
+        "findings": {
+         "face_ratio": 0.733
+        }
+       },
+       "deepfake": {
+        "status": "unclear",
+        "reason_codes": [
+         "deepfake_signals_present"
+        ],
+        "findings": {
+         "face_ratio": 0.738,
+         "artifact_score": 0.11,
+         "pulse": {
+          "present": false,
+          "method_used": "pos",
+          "methods_present": [],
+          "pos": false,
+          "green": false
+         }
+        }
+       },
+       "face_track": {
+        "status": "fail",
+        "reason_codes": [
+         "face_track_identity_break"
+        ],
+        "findings": {
+         "presence_ratio": 0.8,
+         "identity_min_cosine": 0.1288
+        }
+       },
+       "face_match": {
+        "status": "unclear",
+        "reason_codes": [
+         "no_face_in_document"
+        ],
+        "findings": {}
+       }
+      },
+      "combination_all_passing": false,
+      "rejected": true,
+      "blocked": false,
+      "signals": {
+       "moire": {
+        "name": "moire",
+        "strength": "none",
+        "score": 0.063,
+        "peak_to_mean": 46.9
+       },
+       "pixel_grid": {
+        "name": "pixel_grid",
+        "strength": "none",
+        "score": 0.175,
+        "x_share": 0.192,
+        "y_share": 0.175
+       }
+      }
+     }
+    }
+   ],
+   "summary": {
+    "n": 2,
+    "caught_by_freshness": 2,
+    "liveness_passed_fresh_total": 0,
+    "liveness_fresh_evaluations": 6
+   }
+  },
+  "print": {
+   "label": "SIMULATED print (synthesised print texture on genuine photos)",
+   "artefacts": [
+    {
+     "artefact": "owner_selfie",
+     "kind": "simulated_print_presented",
+     "still_signals": {
+      "moire": {
+       "name": "moire",
+       "strength": "none",
+       "score": 0.056,
+       "peak_to_mean": 29.0
+      },
+      "pixel_grid": {
+       "name": "pixel_grid",
+       "strength": "none",
+       "score": 0.102,
+       "x_share": 0.172,
+       "y_share": 0.102
+      }
+     },
+     "defences": {
+      "legs": {
+       "liveness": {
+        "status": "unclear",
+        "reason_codes": [
+         "liveness_challenge_incomplete"
+        ],
+        "findings": {
+         "face_ratio": 1.0,
+         "centre_range": 0.0248,
+         "movements_made": []
+        }
+       },
+       "deepfake": {
+        "status": "pass",
+        "reason_codes": [],
+        "findings": {
+         "face_ratio": 1.0,
+         "artifact_score": 0.098,
+         "pulse": {
+          "present": true,
+          "method_used": "pos",
+          "methods_present": [
+           "pos"
+          ],
+          "pos": true,
+          "green": false
+         }
+        }
+       },
+       "face_track": {
+        "status": "pass",
+        "reason_codes": [],
+        "findings": {
+         "presence_ratio": 1.0,
+         "identity_min_cosine": 0.8182
+        }
+       },
+       "face_match": {
+        "status": "unclear",
+        "reason_codes": [
+         "no_face_in_document"
+        ],
+        "findings": {}
+       }
+      },
+      "combination_all_passing": false,
+      "rejected": false,
+      "blocked": true,
+      "signals": {
+       "moire": {
+        "name": "moire",
+        "strength": "none",
+        "score": 0.123,
+        "peak_to_mean": 96.1
+       },
+       "pixel_grid": {
+        "name": "pixel_grid",
+        "strength": "none",
+        "score": 0.123,
+        "x_share": 0.154,
+        "y_share": 0.123
+       }
+      }
+     }
+    },
+    {
+     "artefact": "lfw_0",
+     "kind": "simulated_print_presented",
+     "still_signals": {
+      "moire": {
+       "name": "moire",
+       "strength": "none",
+       "score": 0.093,
+       "peak_to_mean": 33.4
+      },
+      "pixel_grid": {
+       "name": "pixel_grid",
+       "strength": "none",
+       "score": 0.16,
+       "x_share": 0.24,
+       "y_share": 0.16
+      }
+     },
+     "defences": {
+      "legs": {
+       "liveness": {
+        "status": "unclear",
+        "reason_codes": [
+         "liveness_challenge_incomplete"
+        ],
+        "findings": {
+         "face_ratio": 1.0,
+         "centre_range": 0.0342,
+         "movements_made": []
+        }
+       },
+       "deepfake": {
+        "status": "pass",
+        "reason_codes": [],
+        "findings": {
+         "face_ratio": 1.0,
+         "artifact_score": 0.128,
+         "pulse": {
+          "present": true,
+          "method_used": "pos",
+          "methods_present": [
+           "pos",
+           "green"
+          ],
+          "pos": true,
+          "green": true
+         }
+        }
+       },
+       "face_track": {
+        "status": "pass",
+        "reason_codes": [],
+        "findings": {
+         "presence_ratio": 1.0,
+         "identity_min_cosine": 0.9218
+        }
+       },
+       "face_match": {
+        "status": "unclear",
+        "reason_codes": [
+         "no_face_in_document"
+        ],
+        "findings": {}
+       }
+      },
+      "combination_all_passing": false,
+      "rejected": false,
+      "blocked": true,
+      "signals": {
+       "moire": {
+        "name": "moire",
+        "strength": "none",
+        "score": 0.065,
+        "peak_to_mean": 54.2
+       },
+       "pixel_grid": {
+        "name": "pixel_grid",
+        "strength": "none",
+        "score": 0.17,
+        "x_share": 0.215,
+        "y_share": 0.17
+       }
+      }
+     }
+    },
+    {
+     "artefact": "lfw_1",
+     "kind": "simulated_print_presented",
+     "still_signals": {
+      "moire": {
+       "name": "moire",
+       "strength": "none",
+       "score": 0.085,
+       "peak_to_mean": 42.4
+      },
+      "pixel_grid": {
+       "name": "pixel_grid",
+       "strength": "moderate",
+       "score": 0.189,
+       "x_share": 0.222,
+       "y_share": 0.189
+      }
+     },
+     "defences": {
+      "legs": {
+       "liveness": {
+        "status": "unclear",
+        "reason_codes": [
+         "liveness_challenge_incomplete"
+        ],
+        "findings": {
+         "face_ratio": 1.0,
+         "centre_range": 0.0387,
+         "movements_made": []
+        }
+       },
+       "deepfake": {
+        "status": "unclear",
+        "reason_codes": [
+         "deepfake_signals_present"
+        ],
+        "findings": {
+         "face_ratio": 1.0,
+         "artifact_score": 0.118,
+         "pulse": {
+          "present": false,
+          "method_used": "pos",
+          "methods_present": [
+           "chrom"
+          ],
+          "pos": false,
+          "green": false
+         }
+        }
+       },
+       "face_track": {
+        "status": "pass",
+        "reason_codes": [],
+        "findings": {
+         "presence_ratio": 1.0,
+         "identity_min_cosine": 0.9252
+        }
+       },
+       "face_match": {
+        "status": "unclear",
+        "reason_codes": [
+         "no_face_in_document"
+        ],
+        "findings": {}
+       }
+      },
+      "combination_all_passing": false,
+      "rejected": false,
+      "blocked": true,
+      "signals": {
+       "moire": {
+        "name": "moire",
+        "strength": "none",
+        "score": 0.102,
+        "peak_to_mean": 107.6
+       },
+       "pixel_grid": {
+        "name": "pixel_grid",
+        "strength": "none",
+        "score": 0.165,
+        "x_share": 0.177,
+        "y_share": 0.165
+       }
+      }
+     }
+    }
+   ],
+   "summary": {
+    "n": 3,
+    "rejected": 0,
+    "blocked_not_rejected": 3,
+    "catch_rate_rejected": 0.0,
+    "blocked_or_rejected_rate": 1.0
+   }
+  },
+  "screen": {
+   "label": "SIMULATED screen replay (synthesised moire/grid/flicker on genuine frames)",
+   "artefacts": [
+    {
+     "artefact": "owner_clean_take",
+     "kind": "simulated_screen_replay",
+     "defences": {
+      "legs": {
+       "liveness": {
+        "status": "unclear",
+        "reason_codes": [
+         "liveness_challenge_incomplete"
+        ],
+        "findings": {
+         "face_ratio": 1.0,
+         "centre_range": 0.0456,
+         "movements_made": [
+          "left"
+         ]
+        }
+       },
+       "deepfake": {
+        "status": "unclear",
+        "reason_codes": [
+         "deepfake_signals_present"
+        ],
+        "findings": {
+         "face_ratio": 1.0,
+         "artifact_score": 0.221,
+         "pulse": {
+          "present": false,
+          "method_used": "pos",
+          "methods_present": [
+           "chrom",
+           "green"
+          ],
+          "pos": false,
+          "green": true
+         }
+        }
+       },
+       "face_track": {
+        "status": "pass",
+        "reason_codes": [],
+        "findings": {
+         "presence_ratio": 1.0,
+         "identity_min_cosine": 0.4623
+        }
+       },
+       "face_match": {
+        "status": "unclear",
+        "reason_codes": [
+         "no_face_in_document"
+        ],
+        "findings": {}
+       }
+      },
+      "combination_all_passing": false,
+      "rejected": false,
+      "blocked": true,
+      "signals": {
+       "moire": {
+        "name": "moire",
+        "strength": "none",
+        "score": 0.186,
+        "peak_to_mean": 126.8
+       },
+       "pixel_grid": {
+        "name": "pixel_grid",
+        "strength": "none",
+        "score": 0.131,
+        "x_share": 0.18,
+        "y_share": 0.131
+       }
+      }
+     }
+    },
+    {
+     "artefact": "owner_hard_take",
+     "kind": "simulated_screen_replay",
+     "defences": {
+      "legs": {
+       "liveness": {
+        "status": "fail",
+        "reason_codes": [
+         "liveness_face_absent"
+        ],
+        "findings": {
+         "face_ratio": 0.6
+        }
+       },
+       "deepfake": {
+        "status": "unclear",
+        "reason_codes": [
+         "deepfake_signals_present"
+        ],
+        "findings": {
+         "face_ratio": 0.619,
+         "artifact_score": 0.248,
+         "pulse": {
+          "present": false,
+          "method_used": "pos",
+          "methods_present": [
+           "chrom"
+          ],
+          "pos": false,
+          "green": false
+         }
+        }
+       },
+       "face_track": {
+        "status": "fail",
+        "reason_codes": [
+         "face_track_identity_break"
+        ],
+        "findings": {
+         "presence_ratio": 0.6,
+         "identity_min_cosine": 0.3981
+        }
+       },
+       "face_match": {
+        "status": "unclear",
+        "reason_codes": [
+         "no_face_in_document"
+        ],
+        "findings": {}
+       }
+      },
+      "combination_all_passing": false,
+      "rejected": true,
+      "blocked": false,
+      "signals": {
+       "moire": {
+        "name": "moire",
+        "strength": "moderate",
+        "score": 0.237,
+        "peak_to_mean": 155.7
+       },
+       "pixel_grid": {
+        "name": "pixel_grid",
+        "strength": "none",
+        "score": 0.167,
+        "x_share": 0.179,
+        "y_share": 0.167
+       }
+      }
+     }
+    }
+   ],
+   "summary": {
+    "n": 2,
+    "rejected": 1,
+    "blocked_not_rejected": 1,
+    "catch_rate_rejected": 0.5,
+    "blocked_or_rejected_rate": 1.0
+   }
+  },
+  "mask": {
+   "label": "SIMULATED rigid-mask proxy ONLY \u2014 physical masks UNMEASURED",
+   "artefacts": [
+    {
+     "artefact": "owner_selfie",
+     "kind": "simulated_rigid_mask_proxy",
+     "defences": {
+      "legs": {
+       "liveness": {
+        "status": "unclear",
+        "reason_codes": [
+         "liveness_challenge_incomplete"
+        ],
+        "findings": {
+         "face_ratio": 1.0,
+         "centre_range": 0.0815,
+         "movements_made": []
+        }
+       },
+       "deepfake": {
+        "status": "unclear",
+        "reason_codes": [
+         "deepfake_signals_present"
+        ],
+        "findings": {
+         "face_ratio": 1.0,
+         "artifact_score": 0.077,
+         "pulse": {
+          "present": false,
+          "method_used": "pos",
+          "methods_present": [
+           "chrom",
+           "green"
+          ],
+          "pos": false,
+          "green": true
+         }
+        }
+       },
+       "face_track": {
+        "status": "pass",
+        "reason_codes": [],
+        "findings": {
+         "presence_ratio": 1.0,
+         "identity_min_cosine": 0.6171
+        }
+       },
+       "face_match": {
+        "status": "unclear",
+        "reason_codes": [
+         "no_face_in_document"
+        ],
+        "findings": {}
+       }
+      },
+      "combination_all_passing": false,
+      "rejected": false,
+      "blocked": true,
+      "signals": {
+       "moire": {
+        "name": "moire",
+        "strength": "none",
+        "score": 0.063,
+        "peak_to_mean": 31.9
+       },
+       "pixel_grid": {
+        "name": "pixel_grid",
+        "strength": "none",
+        "score": 0.127,
+        "x_share": 0.161,
+        "y_share": 0.127
+       }
+      }
+     }
+    },
+    {
+     "artefact": "lfw_0",
+     "kind": "simulated_rigid_mask_proxy",
+     "defences": {
+      "legs": {
+       "liveness": {
+        "status": "unclear",
+        "reason_codes": [
+         "liveness_challenge_incomplete"
+        ],
+        "findings": {
+         "face_ratio": 1.0,
+         "centre_range": 0.0851,
+         "movements_made": []
+        }
+       },
+       "deepfake": {
+        "status": "pass",
+        "reason_codes": [],
+        "findings": {
+         "face_ratio": 1.0,
+         "artifact_score": 0.11,
+         "pulse": {
+          "present": true,
+          "method_used": "pos",
+          "methods_present": [
+           "pos",
+           "chrom",
+           "green"
+          ],
+          "pos": true,
+          "green": true
+         }
+        }
+       },
+       "face_track": {
+        "status": "pass",
+        "reason_codes": [],
+        "findings": {
+         "presence_ratio": 1.0,
+         "identity_min_cosine": 0.5029
+        }
+       },
+       "face_match": {
+        "status": "unclear",
+        "reason_codes": [
+         "no_face_in_document"
+        ],
+        "findings": {}
+       }
+      },
+      "combination_all_passing": false,
+      "rejected": false,
+      "blocked": true,
+      "signals": {
+       "moire": {
+        "name": "moire",
+        "strength": "none",
+        "score": 0.041,
+        "peak_to_mean": 20.8
+       },
+       "pixel_grid": {
+        "name": "pixel_grid",
+        "strength": "none",
+        "score": 0.131,
+        "x_share": 0.162,
+        "y_share": 0.131
+       }
+      }
+     }
+    }
+   ],
+   "summary": {
+    "n": 2,
+    "rejected": 0,
+    "blocked_not_rejected": 2,
+    "catch_rate_rejected": 0.0,
+    "blocked_or_rejected_rate": 1.0
+   }
+  },
+  "deepfake": {
+   "label": "SIMULATED morph/composite \u2014 DNN face-swap corpus UNMEASURED",
+   "artefacts": [
+    {
+     "artefact": "morph_owner_lfw",
+     "kind": "simulated_face_morph_still",
+     "face_match_vs_owner_doc": {
+      "status": "unclear",
+      "similarity": null
+     },
+     "face_match_vs_owner_selfie_reference": {
+      "status": "fail",
+      "similarity": 0.1219
+     }
+    },
+    {
+     "artefact": "morph_lfw_pair",
+     "kind": "simulated_face_morph_still",
+     "face_match_vs_owner_doc": {
+      "status": "unclear",
+      "similarity": null
+     },
+     "face_match_vs_owner_selfie_reference": {
+      "status": "fail",
+      "similarity": -0.1533
+     }
+    },
+    {
+     "artefact": "morph_composited_video",
+     "kind": "simulated_morph_video",
+     "defences": {
+      "legs": {
+       "liveness": {
+        "status": "unclear",
+        "reason_codes": [
+         "liveness_challenge_incomplete"
+        ],
+        "findings": {
+         "face_ratio": 1.0,
+         "centre_range": 0.0379,
+         "movements_made": []
+        }
+       },
+       "deepfake": {
+        "status": "unclear",
+        "reason_codes": [
+         "deepfake_signals_present"
+        ],
+        "findings": {
+         "face_ratio": 1.0,
+         "artifact_score": 0.133,
+         "pulse": {
+          "present": false,
+          "method_used": "pos",
+          "methods_present": [],
+          "pos": false,
+          "green": false
+         }
+        }
+       },
+       "face_track": {
+        "status": "fail",
+        "reason_codes": [
+         "face_track_identity_break"
+        ],
+        "findings": {
+         "presence_ratio": 1.0,
+         "identity_min_cosine": 0.1355
+        }
+       },
+       "face_match": {
+        "status": "unclear",
+        "reason_codes": [
+         "no_face_in_document"
+        ],
+        "findings": {}
+       }
+      },
+      "combination_all_passing": false,
+      "rejected": true,
+      "blocked": false,
+      "signals": {
+       "moire": {
+        "name": "moire",
+        "strength": "none",
+        "score": 0.084,
+        "peak_to_mean": 64.3
+       },
+       "pixel_grid": {
+        "name": "pixel_grid",
+        "strength": "none",
+        "score": 0.155,
+        "x_share": 0.226,
+        "y_share": 0.155
+       }
+      }
+     }
+    },
+    {
+     "artefact": "identity_crossfade_video",
+     "kind": "simulated_identity_swap_video",
+     "defences": {
+      "legs": {
+       "liveness": {
+        "status": "unclear",
+        "reason_codes": [
+         "liveness_challenge_incomplete"
+        ],
+        "findings": {
+         "face_ratio": 1.0,
+         "centre_range": 0.1306,
+         "movements_made": [
+          "left"
+         ]
+        }
+       },
+       "deepfake": {
+        "status": "unclear",
+        "reason_codes": [
+         "deepfake_signals_present"
+        ],
+        "findings": {
+         "face_ratio": 1.0,
+         "artifact_score": 0.117,
+         "pulse": {
+          "present": false,
+          "method_used": "pos",
+          "methods_present": [],
+          "pos": false,
+          "green": false
+         }
+        }
+       },
+       "face_track": {
+        "status": "fail",
+        "reason_codes": [
+         "face_track_identity_break"
+        ],
+        "findings": {
+         "presence_ratio": 1.0,
+         "identity_min_cosine": 0.3944
+        }
+       },
+       "face_match": {
+        "status": "unclear",
+        "reason_codes": [
+         "no_face_in_document"
+        ],
+        "findings": {}
+       }
+      },
+      "combination_all_passing": false,
+      "rejected": true,
+      "blocked": false,
+      "signals": {
+       "moire": {
+        "name": "moire",
+        "strength": "none",
+        "score": 0.091,
+        "peak_to_mean": 72.1
+       },
+       "pixel_grid": {
+        "name": "pixel_grid",
+        "strength": "none",
+        "score": 0.157,
+        "x_share": 0.223,
+        "y_share": 0.157
+       }
+      }
+     }
+    }
+   ],
+   "summary": {
+    "n": 2,
+    "rejected": 2,
+    "blocked_not_rejected": 0,
+    "catch_rate_rejected": 1.0,
+    "blocked_or_rejected_rate": 1.0
+   }
+  }
+ },
+ "controls": [
+  {
+   "artefact": "owner_clean_take",
+   "kind": "genuine_control",
+   "defences": {
+    "legs": {
+     "liveness": {
+      "status": "unclear",
+      "reason_codes": [
+       "liveness_challenge_incomplete"
+      ],
+      "findings": {
+       "face_ratio": 1.0,
+       "centre_range": 0.0283,
+       "movements_made": []
+      }
+     },
+     "deepfake": {
+      "status": "unclear",
+      "reason_codes": [
+       "deepfake_signals_present"
+      ],
+      "findings": {
+       "face_ratio": 1.0,
+       "artifact_score": 0.11,
+       "pulse": {
+        "present": false,
+        "method_used": "pos",
+        "methods_present": [],
+        "pos": false,
+        "green": false
+       }
+      }
+     },
+     "face_track": {
+      "status": "pass",
+      "reason_codes": [],
+      "findings": {
+       "presence_ratio": 1.0,
+       "identity_min_cosine": 0.4632
+      }
+     },
+     "face_match": {
+      "status": "unclear",
+      "reason_codes": [
+       "no_face_in_document"
+      ],
+      "findings": {}
+     }
+    },
+    "combination_all_passing": false,
+    "rejected": false,
+    "blocked": true,
+    "signals": {
+     "moire": {
+      "name": "moire",
+      "strength": "none",
+      "score": 0.086,
+      "peak_to_mean": 64.2
+     },
+     "pixel_grid": {
+      "name": "pixel_grid",
+      "strength": "none",
+      "score": 0.148,
+      "x_share": 0.21,
+      "y_share": 0.148
+     }
+    }
+   }
+  },
+  {
+   "artefact": "owner_hard_take",
+   "kind": "genuine_control",
+   "defences": {
+    "legs": {
+     "liveness": {
+      "status": "fail",
+      "reason_codes": [
+       "liveness_face_absent"
+      ],
+      "findings": {
+       "face_ratio": 0.733
+      }
+     },
+     "deepfake": {
+      "status": "unclear",
+      "reason_codes": [
+       "deepfake_signals_present"
+      ],
+      "findings": {
+       "face_ratio": 0.738,
+       "artifact_score": 0.11,
+       "pulse": {
+        "present": false,
+        "method_used": "pos",
+        "methods_present": [],
+        "pos": false,
+        "green": false
+       }
+      }
+     },
+     "face_track": {
+      "status": "fail",
+      "reason_codes": [
+       "face_track_identity_break"
+      ],
+      "findings": {
+       "presence_ratio": 0.8,
+       "identity_min_cosine": 0.1288
+      }
+     },
+     "face_match": {
+      "status": "unclear",
+      "reason_codes": [
+       "no_face_in_document"
+      ],
+      "findings": {}
+     }
+    },
+    "combination_all_passing": false,
+    "rejected": true,
+    "blocked": false,
+    "signals": {
+     "moire": {
+      "name": "moire",
+      "strength": "none",
+      "score": 0.063,
+      "peak_to_mean": 46.9
+     },
+     "pixel_grid": {
+      "name": "pixel_grid",
+      "strength": "none",
+      "score": 0.175,
+      "x_share": 0.192,
+      "y_share": 0.175
+     }
+    }
+   }
+  },
+  {
+   "artefact": "owner_doc_vs_selfie",
+   "kind": "genuine_control_still",
+   "face_match": {
+    "status": "unclear",
+    "similarity": null
+   }
+  }
+ ]
+}
