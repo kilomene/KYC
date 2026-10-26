@@ -21,10 +21,16 @@ Those facts drive real behaviour:
 Owner-specified facts (2026-10-26): Nigeria — passport, driver's
 licence, voter's card (INEC PVC, no expiry), NIN card (no expiry),
 NIN slip (no expiry). United States — passport, passport card,
-driver's license, state ID. For the other launch countries the
-passport / drivers_licence / national_id entries carry best-known
-facts (cards: sides 2, has_expiry True; passport data page: sides 1,
-MRZ True) pending the owner's per-country research merge.
+driver's license, state ID. Passports are supported for every launch
+country. Driver's licences are also listed for GB/CA/AU/DE/GH using
+generic ID-1 card facts pending the Phase 4 WS1 per-country template
+merge. A general national identity card is listed only where that
+document class exists in the launch set (NG national ID, DE national
+ID, GH Ghana Card). The United States, United Kingdom, Canada and
+Australia do not get a generic "national_id" entry: US state IDs and
+the other countries' state/provincial photo cards are distinct
+document classes and must be added as researched types, not relabelled
+as national IDs (WS0 claims audit, 2026-10-26).
 """
 
 # Passport: the data page is what is scanned -> sides 1, MRZ True.
@@ -48,11 +54,10 @@ DOCUMENT_REGISTRY = {
         # British-spelling alias kept for API backwards compatibility.
         "drivers_licence": {"label": "Driver's license", "sides": 2, "has_expiry": True, "mrz": False, "aspect": 1.586},
         "state_id": {"label": "State ID", "sides": 2, "has_expiry": True, "mrz": False, "aspect": 1.586},
-        "national_id": dict(_CARD_ID),
     },
-    "GB": {"passport": dict(_PASSPORT), "drivers_licence": dict(_CARD_LICENCE), "national_id": dict(_CARD_ID)},
-    "CA": {"passport": dict(_PASSPORT), "drivers_licence": dict(_CARD_LICENCE), "national_id": dict(_CARD_ID)},
-    "AU": {"passport": dict(_PASSPORT), "drivers_licence": dict(_CARD_LICENCE), "national_id": dict(_CARD_ID)},
+    "GB": {"passport": dict(_PASSPORT), "drivers_licence": dict(_CARD_LICENCE)},
+    "CA": {"passport": dict(_PASSPORT), "drivers_licence": dict(_CARD_LICENCE)},
+    "AU": {"passport": dict(_PASSPORT), "drivers_licence": dict(_CARD_LICENCE)},
     "DE": {"passport": dict(_PASSPORT), "drivers_licence": dict(_CARD_LICENCE), "national_id": dict(_CARD_ID)},
     "GH": {"passport": dict(_PASSPORT), "drivers_licence": dict(_CARD_LICENCE), "national_id": dict(_CARD_ID)},
     # Passport-only launch countries (passport accepted everywhere in the
