@@ -5,6 +5,21 @@ from helpers import Server, call, multipart, make_tenant, drive_flow, id_image_b
 from server import webhooks as WH
 
 class TestAPI(unittest.TestCase):
+    def test_tenant_bootstrap_requires_platform_admin(self):
+        # WS0 audit fix: tenant creation was unauthenticated in the local
+        # MVP and stayed open after go-live. It must refuse without the
+        # platform operator token, refuse a wrong token, and work with it.
+        from helpers import PLATFORM_ADMIN
+        with Server() as srv:
+            st, r = call(srv, "POST", "/v1/tenants", {"name": "Stranger", "country": "NG"})
+            self.assertEqual(st, 403, r)
+            st, r = call(srv, "POST", "/v1/tenants", {"name": "Stranger", "country": "NG"},
+                         raw_headers={"X-Platform-Admin": "wrong-token"})
+            self.assertEqual(st, 403, r)
+            st, r = call(srv, "POST", "/v1/tenants", {"name": "Operator", "country": "NG"},
+                         raw_headers={"X-Platform-Admin": PLATFORM_ADMIN})
+            self.assertEqual(st, 201, r)
+
     def test_tenant_keys_shown_once_and_hashed_flow(self):
         with Server() as srv:
             tid, test_key, live_key = make_tenant(srv)
@@ -122,11 +137,11 @@ class TestAPI(unittest.TestCase):
             self.assertEqual(st, 422)
 
     def test_expanded_launch_coverage(self):
-        # Passport accepted for a passport-only launch country (KE), and
-        # licence + national ID accepted for the licence/ID set (CA, GB).
+        # Passport accepted for a passport-only launch country (KE),
+        # licence accepted for CA, and national ID accepted for DE.
         with Server() as srv:
             tid, test_key, _ = make_tenant(srv)
-            for country, kind, applicant_country in (("KE", "passport", "KE"), ("CA", "drivers_licence", "CA"), ("GB", "national_id", "GB"), ("IN", "passport", "IN"), ("AE", "passport", "AE")):
+            for country, kind, applicant_country in (("KE", "passport", "KE"), ("CA", "drivers_licence", "CA"), ("DE", "national_id", "DE"), ("IN", "passport", "IN"), ("AE", "passport", "AE")):
                 st, app = call(srv, "POST", "/v1/applicants", {"first_name": "A", "last_name": "B", "dob": "1990-01-01", "country": applicant_country}, key=test_key)
                 self.assertEqual(st, 201, app)
                 st, sess = call(srv, "POST", "/v1/sessions", {"applicant_id": app["id"], "level": 1}, key=test_key)
