@@ -270,3 +270,39 @@ No public sentence may claim a capability that is not IMPLEMENTED above
 or in a later workstream's measured exit report. Design documents are
 labelled as targets at the top; the README and the live landing page
 describe only what runs.
+
+## 6. Addendum — identity-from-document (2026-10-26, owner's order)
+
+Post-WS3 build, owner-directed ("i'm only supposed to choose the kind
+of document i want… OCR fills everything in"). IMPLEMENTED and covered
+by `tests/test_identity_from_document.py` (19 tests):
+
+- Applicants carry `identity_source` (`declared` default / `document`).
+  The declared path is unchanged, including its validation. The
+  document path creates applicants and sessions with NO pre-declared
+  name/DOB (country still required).
+- The hosted flow has NO name/DOB/number inputs anywhere (asserted by
+  test against the shipped page). After the scan, the server reads
+  the document (`POST /v1/flow/document/process`: framing, multi-pass
+  OCR, MRZ, template extraction; trust order valid-MRZ > extraction >
+  upload) and the flow shows the read-back for confirm-or-rescan.
+  The documents row's `doc_*` fields are the server's read.
+- Consistency semantics per path are implemented as documented in
+  docs/API.md ("Identity source"), including document self-consistency
+  (`doc_*_reads_disagree` reasons) and adoption of the read identity
+  onto the applicant at decision time (empty fields only; a
+  contradicted declaration is never overwritten).
+- Proven end-to-end on synthetic fixtures with invented values: an
+  NG passport session on the document path APPROVES with the
+  applicant identity populated from OCR alone; the synthetic wide
+  NIN slip reads back completely (no DOB required — the type prints
+  none), self-agrees, and is adopted.
+- Honest limits of this build, measured in the same tests: a document
+  type that prints no DOB (standard NIN slip) gives the expiry/age
+  check no DOB on the document path, so that check reports
+  `dob_missing` (unclear) and the auto-decision engine treats the
+  session as incomplete — age cannot be verified from that document
+  alone, and no DOB is invented to fill the gap. Likewise the
+  data-consistency matrix can only compare sources that exist; a
+  single-source paper document compares the read-back read against
+  the submit extraction (two pipeline runs) and nothing else.
