@@ -21,7 +21,13 @@ from datetime import datetime, timedelta, timezone
 
 from .db import new_id, now_iso
 
-NEVER_INHERITED = {"face_match", "liveness"}
+# document_framing joins the biometrics here: it is evidence about ONE
+# capture in ONE session (a card filled that frame), not a portable
+# fact about the person — a credential must never satisfy it for a new
+# session. It is likewise excluded from the claims' checks_passed at
+# issuance (see NON_PORTABLE below).
+NEVER_INHERITED = {"face_match", "liveness", "document_framing"}
+NON_PORTABLE = {"document_framing"}
 DEFAULT_TTL_DAYS = 180
 
 def platform_secret(data_dir):
@@ -57,7 +63,7 @@ def issue_credential(db, data_dir, tenant_id, env, applicant, session, checks_pa
     claims = {"credential_id": new_id(), "applicant_ref": applicant["id"],
               "level": session["level"], "country": applicant["country"],
               "over_18": over_18, "issued_at": now.isoformat(), "expires_at": exp,
-              "checks_passed": sorted(set(checks_passed))}
+              "checks_passed": sorted(set(checks_passed) - NON_PORTABLE)}
     secret = platform_secret(data_dir)
     sig = _sign(secret, claims)
     db.execute("INSERT INTO credentials(id,tenant_id,env,applicant_id,session_id,claims,signature,status,issued_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
