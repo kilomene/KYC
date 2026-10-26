@@ -132,6 +132,9 @@ _MIGRATIONS = [
     ("tenant_users", "mfa_last_counter", "INTEGER NOT NULL DEFAULT -1"),  # last consumed TOTP counter (replay protection)
     ("webhook_deliveries", "next_attempt_at", "TEXT"),  # scheduled retry time (backoff); NULL = no retry pending
     ("webhook_deliveries", "dead_lettered_at", "TEXT"),  # set when the attempt budget is exhausted (status='dead_letter')
+    # ---- Identity-from-document (owner's order, 2026-10-26) ----
+    ("applicants", "identity_source", "TEXT NOT NULL DEFAULT 'declared'"),  # declared = tenant states name/DOB, document cross-checked; document = identity is read FROM the document (OCR), nothing pre-declared
+    ("applicants", "identity_document_id", "TEXT"),  # documents.id that supplied the adopted identity (document path, set at decision time)
 ]
 
 def now_iso():
