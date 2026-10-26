@@ -4,6 +4,13 @@
 and this document disagree, this document is wrong or the code is wrong —
 one of them gets fixed in the open, never silently.*
 
+*STATUS (WS0 audit, 2026-10-26): design blueprint, not an implementation
+report. Known divergences from the built system are recorded in
+docs/CLAIMS-AUDIT.md — e.g. §4's file-upload fallback and passive-first
+liveness were superseded by the owner's live-scanner spec (camera-only,
+no upload path, active challenge), and §4's reviewer-path alternative
+evidence is not part of the automatic standard path.*
+
 ---
 
 ## 1. Problem
