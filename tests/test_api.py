@@ -49,18 +49,30 @@ class TestAPI(unittest.TestCase):
             self.assertEqual(st, 200, view)
             # Phase 2: face_match RUNS now (it can no longer be not_run);
             # the synthetic drawing has no detectable real face, so it can
-            # never pass, and with no liveness video the session must go
-            # to review — still NO auto-approval. (This assertion replaces
-            # the Phase 1 'not_run' assertion, which Phase 2 obsoleted.)
-            self.assertEqual(view["status"], "needs_review", view)
+            # never pass, and with no liveness video the session cannot
+            # complete. Auto-decision doctrine (2026-10-26): that is now
+            # an automatic REJECTION, not a review queue — a case still
+            # opens so a reviewer may override (four-eyes, below).
+            self.assertEqual(view["status"], "rejected", view)
             self.assertIn(view["checks_summary"].get("face_match"), ("unclear", "error", "fail"))
             self.assertEqual(view["checks_summary"].get("liveness"), "not_run")
             self.assertIn("case_id", view)
             # reviewer needs a reason
             st, r = call(srv, "POST", f"/v1/cases/{view['case_id']}/decide", {"action": "approve", "reason": "  "}, key=test_key)
             self.assertEqual(st, 422)
+            # Overriding an engine rejection takes four eyes: reviewer A
+            # decides (parked), a DIFFERENT reviewer B confirms.
+            st, rev_a = call(srv, "POST", "/v1/users", {"name": "Reviewer A", "role": "reviewer"}, key=test_key)
+            self.assertEqual(st, 201, rev_a)
+            st, rev_b = call(srv, "POST", "/v1/users", {"name": "Reviewer B", "role": "reviewer"}, key=test_key)
+            self.assertEqual(st, 201, rev_b)
             st, r = call(srv, "POST", f"/v1/cases/{view['case_id']}/decide",
-                         {"action": "approve", "reason": "Document and selfie compared by eye; details match."}, key=test_key)
+                         {"action": "approve", "reason": "Document and selfie compared by eye; details match."},
+                         key=test_key, raw_headers={"X-Reviewer-Key": rev_a["token"]})
+            self.assertEqual(st, 202, r); self.assertEqual(r["status"], "awaiting_second")
+            st, r = call(srv, "POST", f"/v1/cases/{view['case_id']}/confirm",
+                         {"reason": "Second pair of eyes: agreed."},
+                         key=test_key, raw_headers={"X-Reviewer-Key": rev_b["token"]})
             self.assertEqual(st, 200, r); self.assertEqual(r["outcome"], "approved")
             st, sess = call(srv, "GET", f"/v1/sessions/{ctx['session']['id']}", key=test_key)
             self.assertEqual(sess["status"], "approved")
@@ -153,7 +165,10 @@ class TestAPI(unittest.TestCase):
             self.assertEqual(st, 201, r)
             st, view = call(srv, "POST", "/v1/flow/submit", {}, token=token)
             self.assertEqual(st, 200, view)
-            self.assertEqual(view["status"], "needs_review")
+            # L2 without a liveness video: incomplete verification ->
+            # automatic rejection under the 2026-10-26 doctrine (was
+            # needs_review). Resumability itself is what this test proves.
+            self.assertEqual(view["status"], "rejected")
 
     def test_fraud_signals_recorded_at_submit(self):
         with Server() as srv:
