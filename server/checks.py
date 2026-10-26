@@ -54,43 +54,17 @@ def check_capture_quality(path=None, data=None):
     return {"status": "fail", "findings": findings, "reason_codes": ["image_blurred"]}
 
 # ---------- OCR ----------
-def check_ocr(path):
-    """Run tesseract. If tesseract is not installed -> 'error', NEVER pass."""
-    exe = shutil.which("tesseract")
-    if not exe:
-        return {"status": "error", "findings": {"error": "tesseract_not_installed"}, "reason_codes": ["ocr_unavailable"], "text": ""}
-    ocr_path = path
-    tmp = None
-    if Image is not None:
-        # Preprocess for tesseract: greyscale + 2x upscale materially
-        # improves reads on phone-sized captures (and on small text).
-        try:
-            import tempfile, os
-            im = Image.open(path).convert("L")
-            im = im.resize((im.width * 2, im.height * 2), Image.LANCZOS)
-            fd, tmp = tempfile.mkstemp(suffix=".png"); os.close(fd)
-            im.save(tmp, format="PNG"); ocr_path = tmp
-        except Exception:
-            ocr_path = path
-    try:
-        # --psm 3 (auto page segmentation), NOT 6: measured 2026-10-26 —
-        # psm 6 mis-segments bordered, ID-like documents and returns
-        # gibberish ("VARESE ELSES") for a perfectly legible image, while
-        # psm 3/4 read it exactly. Real IDs have borders and blocks, so
-        # this matters in production, not just in tests.
-        out = subprocess.run([exe, ocr_path, "stdout", "--psm", "3"], capture_output=True, text=True, timeout=60)
-        text = (out.stdout or "").strip()
-    except Exception as e:
-        return {"status": "error", "findings": {"error": str(e)}, "reason_codes": ["ocr_error"], "text": ""}
-    finally:
-        if tmp:
-            try:
-                import os; os.unlink(tmp)
-            except Exception:
-                pass
-    if len(text) >= 10:
-        return {"status": "pass", "findings": {"chars": len(text)}, "reason_codes": [], "text": text}
-    return {"status": "unclear", "findings": {"chars": len(text)}, "reason_codes": ["ocr_low_text"], "text": text}
+def check_ocr(path, expect_mrz=True):
+    """OCR via the vision layer (server/vision.py): MULTI-PASS reading —
+    the known-good plain pass (greyscale + 2x upscale, --psm 3; NOT 6:
+    measured 2026-10-26, psm 6 mis-segments bordered ID-like documents)
+    plus an adaptive-threshold pass, best read wins (a check-digit-valid
+    MRZ outranks raw confidence). Same contract as the old single pass:
+    tesseract missing -> 'error', NEVER a pass. `expect_mrz` comes from
+    the document registry: card types carry no MRZ, so the band pass
+    is skipped for them (pure speed, no evidence lost)."""
+    from . import vision
+    return vision.read_document_text(path, expect_mrz=expect_mrz)
 
 # ---------- MRZ (TD3 / passport) ----------
 _CHARVAL = {c: i for i, c in enumerate("0123456789")}
