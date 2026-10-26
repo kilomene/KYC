@@ -27,6 +27,14 @@ pre{background:#f6f6f6;padding:.6rem;overflow:auto;font-size:.8rem;white-space:p
 @keyframes scanmove{0%{top:4%}50%{top:94%}100%{top:4%}}
 /* --- face oval overlay --- */
 .faceoval{position:absolute;left:50%;top:50%;width:56%;aspect-ratio:3/3.8;transform:translate(-50%,-52%);border:5px solid #cfd8ea;border-radius:50%;pointer-events:none;transition:border-color .18s ease}
+/* Owner rule (2026-10-26): the live selfie is NOT a mirror. iOS Safari
+   presents the front camera as a mirror image; this flip restores the
+   TRUE camera view — how a person facing you sees you. Captures are
+   drawn from the raw camera track and were never mirrored. The rear-
+   camera steps (document, proof of address) are not flipped. */
+#selfie-video, #lv-video{transform:scaleX(-1)}
+#voice-ind{display:none;margin-right:.5rem;font-size:.85rem;color:#2fbf71}
+#voice-ind.on{display:inline}
 .faceoval.good{border-color:#2fbf71}
 .hint{min-height:1.6em;font-weight:600;margin:.6rem 0 .2rem}
 .progress{height:8px;background:#e3e9f5;border-radius:4px;overflow:hidden;margin:.3rem 0 .6rem}
@@ -38,7 +46,7 @@ pre{background:#f6f6f6;padding:.6rem;overflow:auto;font-size:.8rem;white-space:p
 </style></head>
 <body>
 <h1>Verify your identity</h1>
-<div style="text-align:right"><button id="btn-mute" class="ghost" style="width:auto;margin-top:0;padding:.35rem .7rem">🔊 Voice on</button></div>
+<div style="text-align:right"><span id="voice-ind">🔊 speaking…</span><button id="btn-mute" class="ghost" style="width:auto;margin-top:0;padding:.35rem .7rem">🔊 Voice on</button></div>
 <div id="out"></div>
 
 <section class="step" id="s-consent">
@@ -440,12 +448,45 @@ const VOICE = {
       }
     }catch(e){}
   },
+  _ind(on){
+    const el = document.getElementById('voice-ind');
+    if (el) el.className = on ? 'on' : '';
+  },
+  _ensurePlayer(){
+    if (this.player) return this.player;
+    const p = new Audio();
+    p.preload = 'auto';
+    // The "speaking…" indicator mirrors ACTUAL playback, so a silent
+    // failure is visible on screen instead of passing for success.
+    p.addEventListener('playing', () => this._ind(true));
+    p.addEventListener('ended', () => this._ind(false));
+    p.addEventListener('pause', () => this._ind(false));
+    p.addEventListener('error', () => this._ind(false));
+    this.player = p;
+    return p;
+  },
+  // Pre-create the element and buffer the welcome clip at page load.
+  // Owner's live run 2026-10-26 16:00 was SILENT even with the clips
+  // live: creating the element, assigning src AND calling play() all
+  // inside the consent tap races the media load on iOS Safari and the
+  // first line can be swallowed whole. With the clip already buffered,
+  // the tap only has to start playback.
+  preload(){
+    try{
+      const p = this._ensurePlayer();
+      p.src = this._clipUrl('welcome');
+      p.load();
+    }catch(e){}
+  },
   _playClip(key){
     try{
-      if (!this.player){ this.player = new Audio(); this.player.preload = 'auto'; }
-      const p = this.player;
+      const p = this._ensurePlayer();
+      const url = this._clipUrl(key);
       p.onerror = () => { const g = GUIDANCE[key]; const line = g && (g.voice || g.text); if (line) this._speakSynth(line, false); };
-      p.src = this._clipUrl(key);
+      if ((p.getAttribute('src') || '') !== url && p.src !== location.origin + url){
+        p.src = url;
+        p.load();
+      }
       const pr = p.play();
       if (pr && pr.catch) pr.catch(() => { const g = GUIDANCE[key] || GUIDANCE.welcome; const line = g && (g.voice || g.text); if (line) this._speakSynth(line, false); });
       return true;
@@ -461,6 +502,9 @@ const VOICE = {
         const u = new SpeechSynthesisUtterance(line);
         u.lang = 'en-US'; if (this.voice) u.voice = this.voice;
         u.rate = 1.0; u.pitch = 1.0;
+        u.onstart = () => this._ind(true);
+        u.onend = () => this._ind(false);
+        u.onerror = () => this._ind(false);
         synth.speak(u);
       }catch(e){}
     };
@@ -481,6 +525,17 @@ const VOICE = {
     this._loadVoice();
     if (!this.enabled) return;
     this.lastKey = 'welcome'; this.lastAt = performance.now();
+    // The welcome clip was preloaded at page load; this play() call —
+    // still synchronously inside the consent tap — only starts it, and
+    // unlocks the shared element for every later line. Playback is
+    // VERIFIED, not assumed: if no 'playing' event arrives within
+    // 900ms (or play() rejects), the welcome is spoken by the fallback
+    // synthesis voice instead, so the first line is never just lost.
+    const p = this._ensurePlayer();
+    let heard = false;
+    const onPlaying = () => { heard = true; p.removeEventListener('playing', onPlaying); };
+    p.addEventListener('playing', onPlaying);
+    setTimeout(() => { if (!heard) this._speakSynth(GUIDANCE.welcome.voice, true); }, 900);
     if (!this._playClip('welcome')) this._speakSynth(GUIDANCE.welcome.voice, true);
   },
   say(key, force){
@@ -508,6 +563,7 @@ const VOICE = {
 if ('speechSynthesis' in window && 'onvoiceschanged' in speechSynthesis){
   speechSynthesis.onvoiceschanged = () => VOICE._loadVoice();
 }
+VOICE.preload();
 $('btn-mute').onclick = () => {
   VOICE.enabled = !VOICE.enabled;
   if (!VOICE.enabled) VOICE.stop();
@@ -902,6 +958,21 @@ function faceMetrics(fr){
   const ovalH = Math.min(0.92, ovalW * (W / H) * (3.8 / 3));
   const cy = 0.50 - 0.02 * ovalH;
   const y0 = Math.max(0, (cy - ovalH / 2 - 0.04)) * H, y1 = Math.min(1, (cy + ovalH / 2 + 0.04)) * H;
+  // Mean luminance of the oval band itself — the light ON THE FACE, as
+  // opposed to the whole-frame mean. Measured on the owner's frames:
+  // a normally lit face band reads ~60, a shadowed face ~49 while the
+  // whole frame still averages ~49 (above the old whole-frame gate),
+  // so the old judge skipped the dark verdict and issued GEOMETRY
+  // orders ("move back" / "move closer") for a face it simply could
+  // not see — it never scanned (owner live test 2026-10-26 16:04 PDT).
+  let bandLum = 0, bandN = 0;
+  for(let y = Math.floor(y0); y < y1; y += 2){
+    for(let x = 0; x < W; x += 2){
+      const i = (y * W + x) * 4;
+      bandLum += 0.299 * d[i] + 0.587 * d[i+1] + 0.114 * d[i+2]; bandN++;
+    }
+  }
+  const bandMean = bandN ? bandLum / bandN : 0;
   const isSkin = (x, y) => {
     const i = (y * W + x) * 4, r = d[i], g = d[i+1], b = d[i+2];
     return r > 60 && g > 30 && b > 15 && r > g && r >= b && (Math.max(r, g, b) - Math.min(r, g, b)) > 12;
@@ -937,16 +1008,20 @@ function faceMetrics(fr){
       if(runCy <= 0.68){ if(x < minx) minx = x; if(x > maxx) maxx = x; sumx += x; ncols++; }
     }
   }
-  if(!cnt || !bandRows || ncols < 3) return {present:false, ratio:0, widthFrac:0, centreOff:1};
+  if(!cnt || !bandRows || ncols < 3) return {present:false, ratio:0, widthFrac:0, centreOff:1, bandMean};
   const ratio = cnt / tot;
-  return {present: ratio >= 0.04, ratio,
+  return {present: ratio >= 0.04, ratio, bandMean,
           widthFrac: (maxx - minx) / W,
           centreOff: Math.abs((sumx / ncols) / W - 0.5)};
 }
 function evaluateFace(fr){
-  if(fr.mean < 45) return {state:'face_dark'};
-  if(fr.glareRatio > 0.30) return {state:'face_bright'};
   const fm = faceMetrics(fr);
+  // Light on the face is judged FIRST — before glare, before geometry.
+  // A face in shadow cannot be measured, so the only honest guidance
+  // is "face a light"; geometry verdicts on an unlit face sent the
+  // owner backwards and forwards forever without ever scanning.
+  if(fr.mean < 45 || fm.bandMean < 55) return {state:'face_dark'};
+  if(fr.glareRatio > 0.30) return {state:'face_bright'};
   if(!fm.present) return {state:'face_none'};
   if(fm.widthFrac > 0.74) return {state:'face_close'};
   if(fm.widthFrac < 0.18) return {state:'face_far'};
