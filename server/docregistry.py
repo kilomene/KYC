@@ -98,7 +98,12 @@ DOCUMENT_REGISTRY = {
         # _PAPER_SLIP range (rectification 2026-10-26; see above). The
         # old point value 1.41 (A-series ratio) described the sheet it
         # may be printed on, never the trimmed/folded slip itself.
-        "nin_slip": {"label": "NIN slip", "sides": 1, "has_expiry": False, "mrz": False, **_PAPER_SLIP},
+        # prints_dob False (owner-confirmed 2026-10-26): the NIN slip
+        # carries NO date of birth anywhere on its face — the age leg of
+        # expiry_age is not applicable to this type and must never hold
+        # a verification for a field the document does not print (the
+        # exact analogue of has_expiry False for its expiry leg).
+        "nin_slip": {"label": "NIN slip", "sides": 1, "has_expiry": False, "mrz": False, "prints_dob": False, **_PAPER_SLIP},
     },
     "US": {
         "passport": dict(_PASSPORT),
