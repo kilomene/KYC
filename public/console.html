@@ -60,12 +60,16 @@ async function openCase(id){
     }
     let cred='';
     if(v.credential){ cred='<h3>Verified credential</h3><pre>'+esc(JSON.stringify(v.credential,null,1))+'</pre>'; }
+    let layers='';
+    const lc=(v.checks||[]).find(c=>c.type==='verification_layers');
+    if(lc&&lc.findings){ layers='<p><b>Verification layers:</b> surface '+esc(lc.findings.surface||'-')+' · text '+esc(lc.findings.text||'-')+' · internal '+esc(lc.findings.internal||'-')+(lc.findings.internal_required?' (internal required — sources: '+esc((lc.findings.internal_sources||[]).join(', '))+')':' (no internal data carried)')+'</p>'; }
     let four='';
     if(v.case.status==='awaiting_second'){ four='<p><b>Awaiting a second reviewer.</b> The first decision is parked; a DIFFERENT reviewer must confirm it.</p><input id="confirm-reason" placeholder="Confirmation reason (required)" style="width:55%"> <button id="btn-confirm">Confirm decision</button>'; }
     $('detail').innerHTML='<div class="card"><h2>Case '+esc(v.case.id)+' ('+esc(v.case.status)+')</h2>'+
       '<p><b>Applicant:</b> '+esc(a.first_name||'')+' '+esc(a.last_name||'')+' · DOB '+esc(a.dob||'')+' · '+esc(a.country||'')+'<br>'+
       '<b>Document:</b> '+esc((d0.kind||'')+' '+(d0.issuing_country||''))+' · exp '+esc(d0.doc_expiry||'')+'<br>'+
-      '<b>Session status:</b> '+esc(v.session?v.session.status:'')+'</p>'+risk+assist+checks+
+      '<b>Session status:</b> '+esc(v.session?v.session.status:'')+'<br>'+
+      '<b>Client IP:</b> '+esc((v.session&&v.session.client_ip_masked)||'not recorded')+' · <b>IP country:</b> '+esc((v.session&&v.session.ip_country)||'unknown')+' · <b>VPN/proxy:</b> '+esc((v.session&&v.session.vpn_status)||'unknown')+'</p>'+layers+risk+assist+checks+
       '<p><b>Capture:</b> '+esc(captureSummary(d0))+'</p>'+
       '<div class="grid"><div><h3>Document — front</h3><img id="im-doc"></div><div><h3>Selfie</h3><img id="im-selfie"></div></div>'+
       (d0.back_image_url? '<div class="grid"><div><h3>Document — back</h3><img id="im-doc-back"></div><div></div></div>' : '')+
