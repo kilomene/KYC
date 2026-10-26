@@ -127,7 +127,15 @@ class TestRegistryAspects(unittest.TestCase):
     def test_aspect_hints_present(self):
         self.assertAlmostEqual(DOCREG.get_document("NG", "passport")["aspect"], 1.42)
         self.assertAlmostEqual(DOCREG.get_document("US", "drivers_license")["aspect"], 1.586)
-        self.assertAlmostEqual(DOCREG.get_document("NG", "nin_slip")["aspect"], 1.41)
+        # Rectification 2026-10-26: the NIN slip is PAPER with an
+        # aspect RANGE (the old 1.41 point value was the measured
+        # cause of the owner's live "No ID detected" failure — his
+        # real slip measures ~2.18:1 in frame).
+        slip = DOCREG.get_document("NG", "nin_slip")
+        self.assertEqual(slip["physical"], "paper")
+        self.assertAlmostEqual(slip["aspect_min"], 1.2)
+        self.assertAlmostEqual(slip["aspect_max"], 2.8)
+        self.assertAlmostEqual(slip["guide_aspect"], 2.0)
         for country, docs in DOCREG.DOCUMENT_REGISTRY.items():
             for kind, entry in docs.items():
                 self.assertIn("aspect", entry, f"{country}/{kind} missing aspect hint")
