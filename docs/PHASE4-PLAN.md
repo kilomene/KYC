@@ -86,6 +86,25 @@ needed). Numbers: benchmarks/BIOMETRICS.md, docs/CLAIMS-AUDIT.md §4.
   dependency/vulnerability scanning in CI; external penetration test
   commissioned when the above is green.
 
+**Status (2026-10-26): BUILT, with labelled remainders.** Tenant-
+isolation battery (9 tests, all cross-tenant access refused with the
+no-oracle 404 shape); reviewer TOTP MFA (RFC 6238, replay-protected;
+privileged actions gated; audited admin reset as the only recovery);
+rate limits (per-key / per-flow-token / per-IP, real 429 +
+Retry-After) and a request-body cap (413); webhook retries with
+exponential backoff, dead-letter state, operator replay, and an SSRF
+delivery guard; media encryption at rest (AES-256-GCM envelope,
+master key in env/file only, verifiable migration, fail-closed reads);
+checksummed backup + a real restore drill (0.27 MB backup, all smoke
+checks green — benchmarks/BACKUP-RESTORE.md); scripted self-pen-test
+32/32 probes, 0 findings (docs/PENTEST.md). REMAINDERS, stated
+plainly: the **external** penetration test is not yet commissioned
+(the self-test is green, which was its precondition); CI
+dependency/vulnerability scanning is not set up (no CI pipeline);
+the SQLite file itself is not encrypted (media files are); the rate
+limiter is per-process memory (WS5 architecture concern). Evidence:
+docs/CLAIMS-AUDIT.md §4, docs/PENTEST.md.
+
 ## Workstream 4 — Authoritative data (stop grading our own homework)
 - Live business registries where access is authorized: NG CAC, UK
   Companies House, + US/CA/AU equivalents — replacing format-only KYB.
