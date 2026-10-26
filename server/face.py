@@ -69,15 +69,49 @@ def similarity_decision(sim, pass_threshold=DEFAULT_THRESHOLD, margin=DEFAULT_MA
         return "unclear", ["face_match_near_threshold"]
     return "fail", ["face_mismatch"]
 
+MAX_DETECT_DIM = 1024  # see below: YuNet degrades measurably above this
+
 def detect_faces(img):
     """YuNet detection on a BGR image array. Returns list of face rows
-    (largest first) or [] when no face is found."""
+    (largest first) or [] when no face is found.
+
+    WS2 measurement (benchmarks/BIOMETRICS.md): on multi-megapixel
+    stills YuNet's boxes shrink and drift as the input grows, and
+    past ~1280px on the longest side the SFace alignment breaks —
+    measured on the owner's real 2316x3088 selfie against his own
+    liveness frame: cosine 0.435 at 512px, 0.390 at 1024, 0.205 at
+    1280, -0.052 at 1600, and no face at all at full size in the
+    pre-WS2 code. Detection therefore runs on a copy downscaled to
+    MAX_DETECT_DIM and the returned boxes/landmarks are rescaled to
+    the original coordinate frame for box consumers (portrait-region
+    and ROI logic). Embedding consumers use work_image() space
+    directly (extract_face_feature, facetrack) so their landmarks
+    are native. Images at or below the cap take the exact original
+    path — LFW (250px), video frames and flow captures are
+    unaffected."""
     h, w = img.shape[:2]
-    det = _detector(w, h)
-    _, faces = det.detect(img)
+    scale = 1.0
+    work = img
+    if max(h, w) > MAX_DETECT_DIM:
+        scale = MAX_DETECT_DIM / float(max(h, w))
+        work = cv2.resize(img, (max(1, int(w * scale)), max(1, int(h * scale))),
+                          interpolation=cv2.INTER_AREA)
+    wh, ww = work.shape[:2]
+    det = _detector(ww, wh)
+    _, faces = det.detect(work)
     if faces is None or len(faces) == 0:
         return []
-    return sorted([f for f in faces], key=lambda f: f[2] * f[3], reverse=True)
+    out = []
+    for f in faces:
+        f = [float(v) for v in f]
+        if scale != 1.0:
+            inv = 1.0 / scale
+            for i in (0, 2, 4, 6, 8, 10, 12):  # x, w, landmark xs
+                f[i] *= inv
+            for i in (1, 3, 5, 7, 9, 11, 13):  # y, h, landmark ys
+                f[i] *= inv
+        out.append(np.array(f, dtype=np.float32) if np is not None else f)
+    return sorted(out, key=lambda f: f[2] * f[3], reverse=True)
 
 def largest_face(img):
     faces = detect_faces(img)
@@ -90,15 +124,34 @@ def face_feature(img, face_row):
     feat = rec.feature(aligned)
     return feat.ravel()
 
+def work_image(img):
+    """The image in detection/embedding space: downscaled to
+    MAX_DETECT_DIM when larger. SFace normalises every aligned crop
+    to 112x112, so embedding in this space loses nothing measurable
+    (LFW operates at 250px) — while embedding at full phone-photo
+    resolution measurably corrupts the result, because YuNet's box
+    shrinks/drifts with input size (WS2 scale sweep in
+    benchmarks/BIOMETRICS.md: same-face cosine vs a video frame
+    falls from 0.435 at 512px to -0.05 at 1600px)."""
+    h, w = img.shape[:2]
+    if max(h, w) <= MAX_DETECT_DIM:
+        return img
+    scale = MAX_DETECT_DIM / float(max(h, w))
+    return cv2.resize(img, (max(1, int(w * scale)), max(1, int(h * scale))),
+                      interpolation=cv2.INTER_AREA)
+
 def extract_face_feature(path):
-    """-> (feature, face_row, error_dict). On success error_dict is None."""
+    """-> (feature, face_row, error_dict). On success error_dict is
+    None. Detection + embedding both run in work_image space so the
+    landmarks alignCrop consumes are native to the image embedded."""
     img = cv2.imread(path)
     if img is None:
         return None, None, {"status": "unclear", "findings": {"error": "image_unreadable"}, "reason_codes": ["face_image_unreadable"]}
-    face = largest_face(img)
+    work = work_image(img)
+    face = largest_face(work)
     if face is None:
         return None, None, None  # no face found (distinct from an error)
-    return face_feature(img, face), face, None
+    return face_feature(work, face), face, None
 
 def _error(reason, detail):
     return {"status": "error", "findings": {"error": detail}, "reason_codes": [reason]}
