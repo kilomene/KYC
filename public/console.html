@@ -7,6 +7,7 @@
 <p>Paste a tenant API key (test or live). Cases in that environment only. Your reviewer token (optional) identifies you for four-eyes decisions — ask your tenant admin to create one via <code>POST /v1/users</code>.</p>
 <input id="key" placeholder="kyc_test_… or kyc_live_…" style="width:55%">
 <input id="rtoken" placeholder="reviewer token (optional)" style="width:30%">
+<input id="rtotp" placeholder="MFA code (if enrolled)" style="width:16%" inputmode="numeric" autocomplete="one-time-code">
 <button id="load">Load cases</button>
 <button id="load-biz">Businesses</button>
 <button id="load-cfg">Flow config</button>
@@ -19,7 +20,7 @@
 <script>
 const $=id=>document.getElementById(id);
 let KEY='';
-function H(){const h={'Authorization':'Bearer '+KEY,'Content-Type':'application/json'}; const rt=$('rtoken').value.trim(); if(rt) h['X-Reviewer-Key']=rt; return h;}
+function H(){const h={'Authorization':'Bearer '+KEY,'Content-Type':'application/json'}; const rt=$('rtoken').value.trim(); if(rt) h['X-Reviewer-Key']=rt; const rc=$('rtotp').value.trim(); if(rc) h['X-Reviewer-TOTP']=rc; return h;}
 async function api(m,p,b){const r=await fetch(p,{method:m,headers:H(),body:b?JSON.stringify(b):undefined});const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error((j.error&&j.error.message)||('HTTP '+r.status));return j;}
 async function imgInto(el,url){const r=await fetch(url,{headers:{'Authorization':'Bearer '+KEY}});if(!r.ok){el.alt='image unavailable';return;}const b=await r.blob();el.src=URL.createObjectURL(b);}
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
