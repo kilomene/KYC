@@ -1,51 +1,123 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Review console — KYC (Nova Inc)</title>
-<style>body{font-family:system-ui,sans-serif;max-width:900px;margin:1rem auto;padding:0 1rem;line-height:1.5}input,button,select{font-size:1rem;padding:.5rem}button{background:#0b5fff;color:#fff;border:0;border-radius:8px;cursor:pointer}.card{border:1px solid #ddd;border-radius:10px;padding:1rem;margin:.8rem 0}img{max-width:100%;border:1px solid #ccc;border-radius:8px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem}@media(max-width:600px){.grid{grid-template-columns:1fr}}pre{background:#f6f6f6;padding:.6rem;overflow:auto;font-size:.8rem}table{border-collapse:collapse}td,th{border-bottom:1px solid #eee;padding:.35rem .6rem;text-align:left}</style></head>
+<style>body{font-family:system-ui,sans-serif;max-width:900px;margin:1rem auto;padding:0 1rem;line-height:1.5}input,button,select{font-size:1rem;padding:.5rem}button{background:#0b5fff;color:#fff;border:0;border-radius:8px;cursor:pointer}.card{border:1px solid #ddd;border-radius:10px;padding:1rem;margin:.8rem 0}img{max-width:100%;border:1px solid #ccc;border-radius:8px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem}@media(max-width:600px){.grid{grid-template-columns:1fr}}pre{background:#f6f6f6;padding:.6rem;overflow:auto;font-size:.8rem}table{border-collapse:collapse}td,th{border-bottom:1px solid #eee;padding:.35rem .6rem;text-align:left}.warn{background:#fff7e6;border-color:#e6a23c}.sla-over{color:#b3261e;font-weight:bold}</style></head>
 <body>
 <h1>Review console</h1>
-<p>Paste a tenant API key (test or live). Cases in that environment only.</p>
-<input id="key" placeholder="kyc_test_… or kyc_live_…" style="width:70%">
+<p>Paste a tenant API key (test or live). Cases in that environment only. Your reviewer token (optional) identifies you for four-eyes decisions — ask your tenant admin to create one via <code>POST /v1/users</code>.</p>
+<input id="key" placeholder="kyc_test_… or kyc_live_…" style="width:55%">
+<input id="rtoken" placeholder="reviewer token (optional)" style="width:30%">
 <button id="load">Load cases</button>
+<button id="load-biz">Businesses</button>
+<button id="load-cfg">Flow config</button>
+<button id="rescreen">Re-run screening (monitoring)</button>
 <div id="out"></div>
 <div id="cases"></div>
+<div id="biz"></div>
+<div id="cfg"></div>
 <div id="detail"></div>
 <script>
 const $=id=>document.getElementById(id);
-let KEY=''; const blobUrls={};
-function H(){return {'Authorization':'Bearer '+KEY,'Content-Type':'application/json'};}
+let KEY='';
+function H(){const h={'Authorization':'Bearer '+KEY,'Content-Type':'application/json'}; const rt=$('rtoken').value.trim(); if(rt) h['X-Reviewer-Key']=rt; return h;}
 async function api(m,p,b){const r=await fetch(p,{method:m,headers:H(),body:b?JSON.stringify(b):undefined});const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error((j.error&&j.error.message)||('HTTP '+r.status));return j;}
 async function imgInto(el,url){const r=await fetch(url,{headers:{'Authorization':'Bearer '+KEY}});if(!r.ok){el.alt='image unavailable';return;}const b=await r.blob();el.src=URL.createObjectURL(b);}
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+
 async function loadCases(){
-  KEY=$('key').value.trim(); $('out').textContent='';
+  KEY=$('key').value.trim(); $('out').textContent=''; $('biz').innerHTML=''; $('cfg').innerHTML='';
   try{ const r=await api('GET','/v1/cases');
-    $('cases').innerHTML = r.cases.length? '' : '<p>No cases in this environment.</p>';
+    $('cases').innerHTML = r.cases.length? '' : '<p>No open cases in this environment.</p>';
+    const now = Date.now();
     r.cases.forEach(c=>{ const d=document.createElement('div'); d.className='card';
-      d.innerHTML='<b>Case</b> '+c.id+'<br>Status: '+c.status+' · Session: '+c.session_id+' · Level '+(c.level??'')+' · '+c.created_at+'<br>';
+      const over = c.sla_due_at && Date.parse(c.sla_due_at) < now && c.status==='open';
+      d.innerHTML='<b>Case</b> '+esc(c.id)+'<br>Status: '+esc(c.status)+(c.status==='awaiting_second'?' — <b>needs a second reviewer to confirm</b>':'')+
+        ' · Session: '+esc(c.session_id)+' · Level '+(c.level??'')+' · '+esc(c.created_at)+
+        '<br>SLA due: '+(c.sla_due_at? '<span class="'+(over?'sla-over':'')+'">'+esc(c.sla_due_at)+'</span>' : '—')+'<br>';
       const btn=document.createElement('button'); btn.textContent='Open case'; btn.onclick=()=>openCase(c.id); d.appendChild(btn);
       $('cases').appendChild(d); });
   }catch(e){ $('out').textContent=e.message; }
 }
+
 async function openCase(id){
   try{ const v=await api('GET','/v1/cases/'+id);
-    const a=v.applicant||{}; const d0=(v.documents||[])[0]||{}; const b0=(v.biometrics||[])[0];
-    let checks='<table><tr><th>Check</th><th>Status</th><th>Reasons</th></tr>'+v.checks.map(c=>'<tr><td>'+c.type+'</td><td>'+c.status+'</td><td>'+(c.reason_codes||[]).join(', ')+'</td></tr>').join('')+'</table>';
-    $('detail').innerHTML='<div class="card"><h2>Case '+v.case.id+' ('+v.case.status+')</h2>'+
-      '<p><b>Applicant:</b> '+(a.first_name||'')+' '+(a.last_name||'')+' · DOB '+(a.dob||'')+' · '+(a.country||'')+'<br>'+
-      '<b>Document:</b> '+((d0.kind||'')+' '+(d0.issuing_country||''))+' · exp '+(d0.doc_expiry||'')+'<br>'+
-      '<b>Session status:</b> '+(v.session?v.session.status:'')+'</p>'+checks+
-      '<div class="grid"><div><h3>Document image</h3><img id="im-doc"></div><div><h3>Selfie (compare by eye — Phase 1 has no automated face match)</h3><img id="im-selfie"></div></div>'+
+    const a=v.applicant||{}; const d0=(v.documents||[])[0]||{}; const b0=(v.biometrics||[]).find(b=>b.media_kind==='selfie')||(v.biometrics||[])[0];
+    let checks='<table><tr><th>Check</th><th>Status</th><th>Reasons</th></tr>'+v.checks.map(c=>'<tr><td>'+esc(c.type)+'</td><td>'+esc(c.status)+'</td><td>'+esc((c.reason_codes||[]).join(', '))+'</td></tr>').join('')+'</table>';
+    const dec=v.session&&v.session.decision;
+    let risk = dec&&dec.risk_score!=null ? '<p><b>Risk:</b> '+dec.risk_score+' ('+esc(dec.risk_band||'')+') — '+esc((dec.risk_contributions||[]).map(c=>c.source+' +'+c.points).join(', '))+' · config '+esc(dec.config_version||'')+'</p>' : '';
+    const as=v.assist||{};
+    let assist='<div class="card warn"><h3>'+esc(as.label||'Assist — a human decides.')+'</h3>'+
+      '<p><b>Suggested disposition:</b> '+esc(as.suggested_disposition||'')+'</p>'+
+      (as.suggestion_reasons&&as.suggestion_reasons.length? '<p>Why: '+esc(as.suggestion_reasons.join('; '))+'</p>':'')+
+      (as.mismatches&&as.mismatches.length? '<p><b>Mismatches / open items:</b></p><ul>'+as.mismatches.map(m=>'<li>'+esc(m.check)+': '+esc(m.status)+(m.reason?' ('+esc(m.reason)+')':'')+'</li>').join('')+'</ul>':'<p>No mismatches.</p>')+'</div>';
+    let hits='';
+    if((v.screening_hits||[]).length){
+      hits='<h3>Screening hits</h3>'+v.screening_hits.map(h=>'<div class="card"><b>'+esc(h.matched_name)+'</b> · score '+h.score+' · '+esc(h.list_source)+' · status '+esc(h.status)+
+        (h.status==='pending'? '<br><input id="hit-reason-'+h.id+'" placeholder="Disposition reason (required)" style="width:55%"> <button data-hit="'+h.id+'" data-d="confirmed">Confirm hit</button> <button data-hit="'+h.id+'" data-d="false_positive">False positive</button>':'')+'</div>').join('');
+    }
+    let cred='';
+    if(v.credential){ cred='<h3>Verified credential</h3><pre>'+esc(JSON.stringify(v.credential,null,1))+'</pre>'; }
+    let four='';
+    if(v.case.status==='awaiting_second'){ four='<p><b>Awaiting a second reviewer.</b> The first decision is parked; a DIFFERENT reviewer must confirm it.</p><input id="confirm-reason" placeholder="Confirmation reason (required)" style="width:55%"> <button id="btn-confirm">Confirm decision</button>'; }
+    $('detail').innerHTML='<div class="card"><h2>Case '+esc(v.case.id)+' ('+esc(v.case.status)+')</h2>'+
+      '<p><b>Applicant:</b> '+esc(a.first_name||'')+' '+esc(a.last_name||'')+' · DOB '+esc(a.dob||'')+' · '+esc(a.country||'')+'<br>'+
+      '<b>Document:</b> '+esc((d0.kind||'')+' '+(d0.issuing_country||''))+' · exp '+esc(d0.doc_expiry||'')+'<br>'+
+      '<b>Session status:</b> '+esc(v.session?v.session.status:'')+'</p>'+risk+assist+checks+
+      '<div class="grid"><div><h3>Document image</h3><img id="im-doc"></div><div><h3>Selfie</h3><img id="im-selfie"></div></div>'+
+      hits+cred+four+
       '<h3>Decide (reason is required)</h3><input id="reason" placeholder="Reason" style="width:60%"> '+
       '<button data-a="approve">Approve</button> <button data-a="reject">Reject</button> <button data-a="request_more">Request more</button>'+
-      '<pre>'+JSON.stringify(v.checks.map(c=>({type:c.type,status:c.status,findings:c.findings})),null,1)+'</pre></div>';
+      '<pre>'+esc(JSON.stringify(v.checks.map(c=>({type:c.type,status:c.status,findings:c.findings})),null,1))+'</pre></div>';
     if(d0.image_url) imgInto($('im-doc'), d0.image_url);
     if(b0&&b0.image_url) imgInto($('im-selfie'), b0.image_url);
     document.querySelectorAll('#detail [data-a]').forEach(btn=>btn.onclick=async()=>{
       const reason=$('reason').value.trim(); if(!reason){alert('Reason is required');return;}
-      try{ const r=await api('POST','/v1/cases/'+id+'/decide',{action:btn.dataset.a,reason}); alert('Outcome: '+r.outcome); loadCases(); }
+      try{ const r=await api('POST','/v1/cases/'+id+'/decide',{action:btn.dataset.a,reason});
+        alert(r.status==='awaiting_second' ? 'Parked: a second reviewer must confirm this decision.' : 'Outcome: '+r.outcome); loadCases(); }
       catch(e){ alert(e.message); }});
+    document.querySelectorAll('#detail [data-hit]').forEach(btn=>btn.onclick=async()=>{
+      const reason=($('hit-reason-'+btn.dataset.hit)||{}).value||''; if(!reason.trim()){alert('Disposition reason is required');return;}
+      try{ const r=await api('POST','/v1/cases/'+id+'/hits/'+btn.dataset.hit+'/dispose',{disposition:btn.dataset.d,reason});
+        alert(r.outcome? 'Hit disposed — session outcome: '+r.outcome : 'Hit disposed as false positive.'); openCase(id); }
+      catch(e){ alert(e.message); }});
+    const cb=$('btn-confirm'); if(cb) cb.onclick=async()=>{
+      const reason=$('confirm-reason').value.trim(); if(!reason){alert('Confirmation reason is required');return;}
+      try{ const r=await api('POST','/v1/cases/'+id+'/confirm',{reason}); alert('Confirmed — outcome: '+r.outcome); loadCases(); }
+      catch(e){ alert(e.message); }};
   }catch(e){ alert(e.message); }
 }
+
+async function loadBiz(){
+  KEY=$('key').value.trim();
+  try{ const r=await api('GET','/v1/businesses');
+    $('biz').innerHTML = '<h2>Businesses (KYB)</h2>'+(r.businesses.length? '' : '<p>No businesses yet.</p>');
+    r.businesses.forEach(b=>{ const d=document.createElement('div'); d.className='card';
+      d.innerHTML='<b>'+esc(b.legal_name)+'</b> · '+esc(b.country)+' · reg '+esc(b.registration_number)+'<br>Status: '+esc(b.status)+' · registry: '+esc(b.registry_status)+'<br>People: '+b.people.map(p=>esc(p.role)+' '+(p.verified_l2plus?'✓ verified L2+':'— not verified')).join(', ')+'<br>';
+      const ev=document.createElement('button'); ev.textContent='Evaluate'; ev.onclick=async()=>{ try{ const x=await api('POST','/v1/businesses/'+b.id+'/evaluate',{}); alert('Status: '+x.status+(x.evaluation.reasons.length? ' — '+x.evaluation.reasons.join('; ') : '')); loadBiz(); }catch(e){ alert(e.message); } };
+      d.appendChild(ev); $('biz').appendChild(d); });
+  }catch(e){ alert(e.message); }
+}
+
+async function loadCfg(){
+  KEY=$('key').value.trim();
+  try{ let html='<h2>Flow config (no-code foundations)</h2>';
+    for(const lvl of [1,2,3]){ const r=await api('GET','/v1/config?level='+lvl);
+      html+='<div class="card"><b>Level '+lvl+'</b> · version '+r.version+'<pre>'+esc(JSON.stringify(r.config,null,1))+'</pre>'+
+      'risk ceiling <input id="cfg-ceil-'+lvl+'" type="number" value="'+r.config.risk_auto_approve_ceiling+'" style="width:70px"> '+
+      'face threshold <input id="cfg-face-'+lvl+'" type="number" step="0.001" value="'+r.config.face_pass_threshold+'" style="width:80px"> '+
+      '<button data-cfg="'+lvl+'">Save new version</button></div>'; }
+    $('cfg').innerHTML=html;
+    document.querySelectorAll('[data-cfg]').forEach(btn=>btn.onclick=async()=>{ const lvl=btn.dataset.cfg;
+      try{ const r=await api('PUT','/v1/config',{level:+lvl, patch:{risk_auto_approve_ceiling:+$('cfg-ceil-'+lvl).value, face_pass_threshold:+$('cfg-face-'+lvl).value}});
+        alert('Level '+lvl+' config is now version '+r.version); loadCfg(); }catch(e){ alert(e.message); } });
+  }catch(e){ alert(e.message); }
+}
+
 $('load').onclick=loadCases;
+$('load-biz').onclick=loadBiz;
+$('load-cfg').onclick=loadCfg;
+$('rescreen').onclick=async()=>{ KEY=$('key').value.trim();
+  try{ const r=await api('POST','/v1/monitoring/rescreen',{}); alert('Rescreen complete: '+r.screened+' approved applicants, '+r.new_hits+' new hit(s).'); loadCases(); }
+  catch(e){ alert(e.message); } };
 </script>
 </body></html>
