@@ -24,6 +24,8 @@ REASON_POINTS = {
     "velocity_high": 25,
     "injection_signal_present": 15,
     "image_blurred": 15,
+    "document_not_detected": 25,
+    "document_too_small_in_frame": 15,
     "authenticity_signals_present": 15,
     "face_match_near_threshold": 12,
     "liveness_challenge_incomplete": 12,
