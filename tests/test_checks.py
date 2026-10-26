@@ -110,9 +110,12 @@ class TestSupportedDocuments(unittest.TestCase):
         self.assertEqual(set(SUPPORTED_DOCUMENTS), expected)
         for c in expected:  # passport for ALL launch countries
             self.assertIn("passport", SUPPORTED_DOCUMENTS[c], c)
-        for c in ("NG","US","GB","CA","AU","DE","GH"):  # licence/ID named set
+        for c in ("NG","US","GB","CA","AU","DE","GH"):  # licence set
             self.assertIn("drivers_licence", SUPPORTED_DOCUMENTS[c], c)
+        for c in ("NG","DE","GH"):  # general national identity cards
             self.assertIn("national_id", SUPPORTED_DOCUMENTS[c], c)
+        for c in ("US","GB","CA","AU"):  # no generic national_id class
+            self.assertNotIn("national_id", SUPPORTED_DOCUMENTS[c], c)
         self.assertNotIn("UK", SUPPORTED_DOCUMENTS)  # ISO code is GB
 
 class TestOCR(unittest.TestCase):
