@@ -39,7 +39,28 @@ this workstream).
   server/vpncheck.py; test_vpn_gate) — IMPLEMENTED
 - Country-template document classification (full NG + US, generic TD3,
   coarse for the rest). (server/templates.py; test_classification) —
-  IMPLEMENTED at that stated depth, no deeper.
+  IMPLEMENTED at that stated depth, no deeper. **WS1 update
+  (2026-10-26): FULL layout templates now cover every registry type;
+  non-NG/US passports use the generic TD3 template; the coarse
+  fallback remains only for future untemplated types, and findings
+  state the level that ran.**
+- Per-document field-extraction templates for every registry type
+  (zones, label anchors incl. DE/FR/NL local labels, per-type number
+  format validators, Verhoeff + NRIC check digits), recorded on the
+  case as the `field_extraction` check. (server/fieldtemplates.py;
+  test_fieldtemplates) — IMPLEMENTED (WS1)
+- Payload semantics: AAMVA parsed in full with element format
+  validation (semantic); Aadhaar secure QR decompressed and
+  cross-checked (structural+consistency — UIDAI signature NOT
+  verified); NG NIN-slip QR and PhilID QR structurally validated with
+  cross-checks (issuers publish no payload grammar in the research
+  corpus). (server/payloads.py; test_payloads) — IMPLEMENTED at the
+  labelled depths (WS1)
+- Labelled extraction-accuracy benchmark over a synthetic,
+  template-conformant corpus with named degradations.
+  (scripts/benchmark_vision.py; benchmarks/RESULTS.md;
+  test_benchmark) — IMPLEMENTED with the synthetic-corpus limit
+  recorded in RESULTS.md (WS1)
 - KYB is format validation + document + reviewer confirmation, with NO
   live government registry connection — labelled that way in the API,
   console, and README. — IMPLEMENTED as labelled
@@ -90,14 +111,19 @@ unit takes the token from an optional `data/platform-admin.env` file.
 
 ## 4. Open gaps, assigned (the honest not-done list)
 
-- **WS1 — Fortified Vision, finished.** Per-document field-extraction
-  templates exist only for NG + US (generic TD3 + coarse elsewhere);
-  semantic payload validation beyond AAMVA (NG NIN-slip QR, Aadhaar
-  secure QR, PhilID QR) not built; no labelled accuracy benchmark;
-  font-consistency calibration is fixture-based; registry facts for
-  GB/CA/AU/DE/GH licences are generic ID-1 card facts pending the
-  researched merge; state/provincial photo cards must be added as
-  researched document types.
+- **WS1 — Fortified Vision, finished. CLOSED 2026-10-26** (numbers in
+  benchmarks/RESULTS.md): registry merge done (researched KE/ZA/IN/
+  PH/SG/AE/FR/NL/IE types + AU/CA photo cards + GB PASS card, incl.
+  the ZA green-book validity window, enforced by the expiry check);
+  field-extraction templates for every registry type; FULL
+  classification templates for every registry type; payload semantics
+  at labelled depths (AAMVA semantic; Aadhaar structural+consistency,
+  UIDAI signature not verified; NIN-slip/PhilID structural — no issuer
+  grammar is published in the research corpus). Remaining open inside
+  WS1's scope: the benchmark corpus is synthetic (no licensed specimen
+  corpus was available), so accuracy numbers bound the extraction
+  wiring, not real-world documents; font-consistency calibration is
+  still fixture-based, not corpus-calibrated.
 - **WS2 — Biometrics, measured.** No FAR/FRR benchmark; no
   presentation-attack suite results; demographic fairness testing
   (COMPLIANCE §3) not done; rPPG is evidence-only; passive liveness not
