@@ -1,0 +1,672 @@
+{
+ "overall": {
+  "documents": 144,
+  "field_values": 672,
+  "exact_match": 0.9554,
+  "mean_cer": 0.0288,
+  "per_field": {
+   "dob": {
+    "exact_match": 1.0,
+    "mean_cer": 0.0,
+    "n": 144
+   },
+   "expiry": {
+    "exact_match": 1.0,
+    "mean_cer": 0.0,
+    "n": 96
+   },
+   "given_names": {
+    "exact_match": 1.0,
+    "mean_cer": 0.0,
+    "n": 144
+   },
+   "number": {
+    "exact_match": 0.8264,
+    "mean_cer": 0.0636,
+    "n": 144
+   },
+   "surname": {
+    "exact_match": 0.9653,
+    "mean_cer": 0.0708,
+    "n": 144
+   }
+  }
+ },
+ "per_type": {
+  "DE/national_id": {
+   "documents": 12,
+   "field_values": 60,
+   "exact_match": 0.9333,
+   "mean_cer": 0.0375,
+   "per_field": {
+    "dob": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 12
+    },
+    "expiry": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 12
+    },
+    "given_names": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 12
+    },
+    "number": {
+     "exact_match": 0.6667,
+     "mean_cer": 0.1875,
+     "n": 12
+    },
+    "surname": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 12
+    }
+   }
+  },
+  "GB/drivers_licence": {
+   "documents": 12,
+   "field_values": 60,
+   "exact_match": 0.9667,
+   "mean_cer": 0.0042,
+   "per_field": {
+    "dob": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 12
+    },
+    "expiry": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 12
+    },
+    "given_names": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 12
+    },
+    "number": {
+     "exact_match": 0.8333,
+     "mean_cer": 0.0208,
+     "n": 12
+    },
+    "surname": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 12
+    }
+   }
+  },
+  "IN/aadhaar": {
+   "documents": 12,
+   "field_values": 48,
+   "exact_match": 0.9375,
+   "mean_cer": 0.1213,
+   "per_field": {
+    "dob": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 12
+    },
+    "given_names": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 12
+    },
+    "number": {
+     "exact_match": 0.9167,
+     "mean_cer": 0.0833,
+     "n": 12
+    },
+    "surname": {
+     "exact_match": 0.8333,
+     "mean_cer": 0.4018,
+     "n": 12
+    }
+   }
+  },
+  "NG/drivers_licence": {
+   "documents": 12,
+   "field_values": 60,
+   "exact_match": 0.9667,
+   "mean_cer": 0.0042,
+   "per_field": {
+    "dob": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 12
+    },
+    "expiry": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 12
+    },
+    "given_names": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 12
+    },
+    "number": {
+     "exact_match": 0.8333,
+     "mean_cer": 0.0208,
+     "n": 12
+    },
+    "surname": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 12
+    }
+   }
+  },
+  "NG/nin_card": {
+   "documents": 12,
+   "field_values": 48,
+   "exact_match": 0.9375,
+   "mean_cer": 0.0885,
+   "per_field": {
+    "dob": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 12
+    },
+    "given_names": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 12
+    },
+    "number": {
+     "exact_match": 0.8333,
+     "mean_cer": 0.1667,
+     "n": 12
+    },
+    "surname": {
+     "exact_match": 0.9167,
+     "mean_cer": 0.1875,
+     "n": 12
+    }
+   }
+  },
+  "NG/nin_slip": {
+   "documents": 12,
+   "field_values": 48,
+   "exact_match": 0.9583,
+   "mean_cer": 0.0038,
+   "per_field": {
+    "dob": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 12
+    },
+    "given_names": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 12
+    },
+    "number": {
+     "exact_match": 0.8333,
+     "mean_cer": 0.0151,
+     "n": 12
+    },
+    "surname": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 12
+    }
+   }
+  },
+  "NG/passport": {
+   "documents": 12,
+   "field_values": 60,
+   "exact_match": 0.95,
+   "mean_cer": 0.0539,
+   "per_field": {
+    "dob": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 12
+    },
+    "expiry": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 12
+    },
+    "given_names": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 12
+    },
+    "number": {
+     "exact_match": 0.8333,
+     "mean_cer": 0.0926,
+     "n": 12
+    },
+    "surname": {
+     "exact_match": 0.9167,
+     "mean_cer": 0.1771,
+     "n": 12
+    }
+   }
+  },
+  "NG/voter_card": {
+   "documents": 12,
+   "field_values": 48,
+   "exact_match": 0.9583,
+   "mean_cer": 0.0052,
+   "per_field": {
+    "dob": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 12
+    },
+    "given_names": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 12
+    },
+    "number": {
+     "exact_match": 0.8333,
+     "mean_cer": 0.0208,
+     "n": 12
+    },
+    "surname": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 12
+    }
+   }
+  },
+  "US/drivers_license": {
+   "documents": 12,
+   "field_values": 60,
+   "exact_match": 0.9667,
+   "mean_cer": 0.0042,
+   "per_field": {
+    "dob": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 12
+    },
+    "expiry": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 12
+    },
+    "given_names": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 12
+    },
+    "number": {
+     "exact_match": 0.8333,
+     "mean_cer": 0.0208,
+     "n": 12
+    },
+    "surname": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 12
+    }
+   }
+  },
+  "US/passport": {
+   "documents": 12,
+   "field_values": 60,
+   "exact_match": 0.95,
+   "mean_cer": 0.0352,
+   "per_field": {
+    "dob": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 12
+    },
+    "expiry": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 12
+    },
+    "given_names": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 12
+    },
+    "number": {
+     "exact_match": 0.8333,
+     "mean_cer": 0.0926,
+     "n": 12
+    },
+    "surname": {
+     "exact_match": 0.9167,
+     "mean_cer": 0.0833,
+     "n": 12
+    }
+   }
+  },
+  "US/passport_card": {
+   "documents": 12,
+   "field_values": 60,
+   "exact_match": 0.9667,
+   "mean_cer": 0.0042,
+   "per_field": {
+    "dob": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 12
+    },
+    "expiry": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 12
+    },
+    "given_names": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 12
+    },
+    "number": {
+     "exact_match": 0.8333,
+     "mean_cer": 0.0208,
+     "n": 12
+    },
+    "surname": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 12
+    }
+   }
+  },
+  "US/state_id": {
+   "documents": 12,
+   "field_values": 60,
+   "exact_match": 0.9667,
+   "mean_cer": 0.0042,
+   "per_field": {
+    "dob": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 12
+    },
+    "expiry": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 12
+    },
+    "given_names": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 12
+    },
+    "number": {
+     "exact_match": 0.8333,
+     "mean_cer": 0.0208,
+     "n": 12
+    },
+    "surname": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 12
+    }
+   }
+  }
+ },
+ "per_level": {
+  "blur_heavy": {
+   "documents": 24,
+   "field_values": 112,
+   "exact_match": 0.7679,
+   "mean_cer": 0.1452,
+   "per_field": {
+    "dob": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 24
+    },
+    "expiry": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 16
+    },
+    "given_names": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 24
+    },
+    "number": {
+     "exact_match": 0.125,
+     "mean_cer": 0.2526,
+     "n": 24
+    },
+    "surname": {
+     "exact_match": 0.7917,
+     "mean_cer": 0.4249,
+     "n": 24
+    }
+   }
+  },
+  "blur_light": {
+   "documents": 24,
+   "field_values": 112,
+   "exact_match": 1.0,
+   "mean_cer": 0.0,
+   "per_field": {
+    "dob": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 24
+    },
+    "expiry": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 16
+    },
+    "given_names": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 24
+    },
+    "number": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 24
+    },
+    "surname": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 24
+    }
+   }
+  },
+  "clean": {
+   "documents": 24,
+   "field_values": 112,
+   "exact_match": 1.0,
+   "mean_cer": 0.0,
+   "per_field": {
+    "dob": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 24
+    },
+    "expiry": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 16
+    },
+    "given_names": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 24
+    },
+    "number": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 24
+    },
+    "surname": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 24
+    }
+   }
+  },
+  "dark": {
+   "documents": 24,
+   "field_values": 112,
+   "exact_match": 1.0,
+   "mean_cer": 0.0,
+   "per_field": {
+    "dob": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 24
+    },
+    "expiry": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 16
+    },
+    "given_names": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 24
+    },
+    "number": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 24
+    },
+    "surname": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 24
+    }
+   }
+  },
+  "downscale_50": {
+   "documents": 24,
+   "field_values": 112,
+   "exact_match": 1.0,
+   "mean_cer": 0.0,
+   "per_field": {
+    "dob": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 24
+    },
+    "expiry": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 16
+    },
+    "given_names": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 24
+    },
+    "number": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 24
+    },
+    "surname": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 24
+    }
+   }
+  },
+  "rotate_4": {
+   "documents": 24,
+   "field_values": 112,
+   "exact_match": 0.9643,
+   "mean_cer": 0.0276,
+   "per_field": {
+    "dob": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 24
+    },
+    "expiry": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 16
+    },
+    "given_names": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 24
+    },
+    "number": {
+     "exact_match": 0.8333,
+     "mean_cer": 0.1288,
+     "n": 24
+    },
+    "surname": {
+     "exact_match": 1.0,
+     "mean_cer": 0.0,
+     "n": 24
+    }
+   }
+  }
+ },
+ "clean": {
+  "documents": 24,
+  "field_values": 112,
+  "exact_match": 1.0,
+  "mean_cer": 0.0,
+  "per_field": {
+   "dob": {
+    "exact_match": 1.0,
+    "mean_cer": 0.0,
+    "n": 24
+   },
+   "expiry": {
+    "exact_match": 1.0,
+    "mean_cer": 0.0,
+    "n": 16
+   },
+   "given_names": {
+    "exact_match": 1.0,
+    "mean_cer": 0.0,
+    "n": 24
+   },
+   "number": {
+    "exact_match": 1.0,
+    "mean_cer": 0.0,
+    "n": 24
+   },
+   "surname": {
+    "exact_match": 1.0,
+    "mean_cer": 0.0,
+    "n": 24
+   }
+  }
+ },
+ "corpus": {
+  "types": [
+   "NG/passport",
+   "NG/drivers_licence",
+   "NG/voter_card",
+   "NG/nin_card",
+   "NG/nin_slip",
+   "US/passport",
+   "US/passport_card",
+   "US/drivers_license",
+   "US/state_id",
+   "GB/drivers_licence",
+   "DE/national_id",
+   "IN/aadhaar"
+  ],
+  "identities_per_type": 2,
+  "levels": [
+   "clean",
+   "blur_light",
+   "blur_heavy",
+   "downscale_50",
+   "dark",
+   "rotate_4"
+  ],
+  "documents": 144
+ }
+}
