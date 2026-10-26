@@ -373,7 +373,7 @@ def _number_agree(a, b):
 
 _FIELD_COMPARE = {"name": _name_agree, "dob": _date_agree, "expiry": _date_agree, "number": _number_agree}
 
-def build_data_consistency(doc_fields=None, applicant=None, mrz_parsed=None, ocr_text="", aamva=None):
+def build_data_consistency(doc_fields=None, applicant=None, mrz_parsed=None, ocr_text="", aamva=None, extracted=None):
     """Pairwise agreement record across every data source present:
     printed (document fields), ocr (extracted from the image text),
     mrz, barcode (decoded AAMVA payload), applicant (profile) — over
@@ -381,10 +381,25 @@ def build_data_consistency(doc_fields=None, applicant=None, mrz_parsed=None, ocr
     agree | disagree | not_available. ANY disagree fails the check
     with named findings (e.g. mrz_vs_barcode_number_disagree) plus the
     generic data_inconsistency reason: for auto-approval, no disagree
-    may exist among available pairs."""
+    may exist among available pairs.
+
+    `extracted` (identity-from-document build): the template field
+    extraction findings["fields"] dict, added as an "extraction"
+    source. The caller passes it ONLY when nothing was declared (the
+    document path): there the matrix compares the document's own
+    reads — extraction vs the labelled-date printed source, vs the
+    MRZ, vs a decoded payload — and the applicant source is empty, so
+    no applicant pair can ever disagree. On the declared path the
+    argument is omitted and behaviour is exactly as before."""
     doc_fields = doc_fields or {}
     applicant = applicant or {}
     sources = {}
+    if extracted:
+        def _ev(name):
+            return (extracted.get(name) or {}).get("value") or None
+        ex_name = f"{_ev('given_names') or ''} {_ev('surname') or ''}".strip()
+        sources["extraction"] = {"name": ex_name or None, "dob": _ev("dob"),
+                                  "number": _ev("number"), "expiry": _ev("expiry")}
     # "printed" = the fields as EXTRACTED from the document image
     # (Addition 10A's "printed OCR fields") — built below from the OCR
     # text; the submitted doc_fields serve only as read candidates.
@@ -427,7 +442,7 @@ def build_data_consistency(doc_fields=None, applicant=None, mrz_parsed=None, ocr
         printed["name"] = pname
     if any(printed.values()):
         sources["printed"] = printed
-    sources = {k: sources[k] for k in ("printed", "applicant", "mrz", "barcode") if k in sources}
+    sources = {k: sources[k] for k in ("printed", "extraction", "applicant", "mrz", "barcode") if k in sources}
     names = list(sources.keys())
     matrix = {}
     disagreements = []
