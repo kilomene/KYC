@@ -16,7 +16,7 @@ from .db import DB, new_id, now_iso, row_to_dict
 from . import checks as C
 from . import framing as FRAMING
 from . import docregistry as DOCREG
-from .engine import decide, required_for
+from .engine import decide, required_for, verification_layers, biometric_evidence, document_evidence
 from . import webhooks as WH
 from . import face as FACE
 from . import liveness as LV
@@ -27,6 +27,11 @@ from . import credentials as CRED
 from . import flowconfig as FC
 from . import assist as ASSIST
 from . import monitoring as MON
+from . import vpncheck as VPN
+from . import vision as VISION
+from . import deepfake as DEEPFAKE
+from . import facetrack as FACETRACK
+from . import templates as TEMPLATES
 
 # KYB registry-number FORMAT rules per country (Phase 3). Format
 # validation only — the local build has NO live government registry
@@ -69,6 +74,24 @@ def parse_capture_meta(raw):
     except Exception:
         return {}
 
+def _keep_client_signals(meta_in, capture_meta):
+    """Carry the browser's client_signals (deepfake defence: camera
+    track label + device-motion telemetry) from the client's
+    capture_meta into the stored record — whitelisted and truncated;
+    the values are evidence for server/deepfake.py, never trusted."""
+    cs = meta_in.get("client_signals")
+    if not isinstance(cs, dict):
+        return
+    clean = {}
+    if isinstance(cs.get("track_label"), str):
+        clean["track_label"] = cs["track_label"][:160]
+    m = cs.get("motion")
+    if isinstance(m, dict):
+        clean["motion"] = {k: m[k] for k in ("sensor_present", "samples", "variance")
+                           if isinstance(m.get(k), (int, float, bool))}
+    if clean:
+        capture_meta["client_signals"] = clean
+
 def sha256(s): return hashlib.sha256(s.encode()).hexdigest()
 def iso_in(hours): return (datetime.now(timezone.utc) + timedelta(hours=hours)).isoformat()
 
@@ -101,6 +124,18 @@ def field_text(parts, name):
     p = parts.get(name)
     if p is None: return None
     return p["data"].decode("utf-8", "replace") if isinstance(p["data"], bytes) else p["data"]
+
+def mask_ip(ip):
+    """Partially mask an IP for display and check findings: an IPv4
+    address keeps its first two octets (41.203.x.x); anything else
+    keeps a short prefix. The full IP stays on the session row."""
+    if not ip:
+        return None
+    parts = str(ip).split(".")
+    if len(parts) == 4 and all(p.isdigit() for p in parts):
+        return f"{parts[0]}.{parts[1]}.x.x"
+    s = str(ip)
+    return s[:6] + "…" if len(s) > 6 else s
 
 class Ctx:
     def __init__(self, db): self.db = db
@@ -158,6 +193,21 @@ def make_handler(db: DB, data_dir: str):
                 return None
             if row["status"] in ("cancelled", "expired"): return None
             return row
+        def _client_geo(self):
+            """Client IP + IP country for the location check (owner's
+            order, 2026-10-26: 'apart from the camera we harvest their
+            IP address'). Through the tunnel the Worker stamps
+            X-Client-IP (from CF-Connecting-IP) and X-IP-Country (from
+            request.cf.country); direct edge connections may carry
+            CF-Connecting-IP / CF-IPCountry; a local/dev connection has
+            only the socket peer and NO country — unknown, which the
+            location check records honestly and never as a mismatch."""
+            h = self.headers
+            ip = (h.get("X-Client-IP") or h.get("CF-Connecting-IP")
+                  or (h.get("X-Forwarded-For") or "").split(",")[0].strip()
+                  or (self.client_address[0] if self.client_address else None))
+            country = ((h.get("X-IP-Country") or h.get("CF-IPCountry") or "").strip().upper() or None)
+            return {"ip": ip, "country": country, "user_agent": h.get("User-Agent", "")}
 
         # ================= GET =================
         def do_GET(self):
@@ -182,7 +232,8 @@ def make_handler(db: DB, data_dir: str):
                 except Exception: challenge = None
                 issued = db.one("SELECT id FROM credentials WHERE session_id=? AND status='active'", (s["id"],))
                 return self._send(200, {"session": {"id": s["id"], "level": s["level"], "status": s["status"], "env": s["env"],
-                                                     "consent_at": s["consent_at"], "credential_session": bool(s["credential_id"])},
+                                                     "consent_at": s["consent_at"], "credential_session": bool(s["credential_id"]),
+                                                     "vpn_status": (s["vpn_status"] if "vpn_status" in s.keys() else None)},
                                         "applicant": row_to_dict(app), "documents": [row_to_dict(d, ("capture_meta",)) for d in docs],
                                         "document_registry": DOCREG.registry_view(),
                                         "selfie_uploaded": any(b["media_kind"] == "selfie" for b in bio),
@@ -293,8 +344,12 @@ def make_handler(db: DB, data_dir: str):
             summary = {}
             for r in rows: summary[r["type"]] = r["status"]
             dec = row_to_dict(d, ("reason_codes", "risk_contributions")) if d else None
+            client_ip = s["client_ip"] if "client_ip" in s.keys() else None
+            ip_country = s["ip_country"] if "ip_country" in s.keys() else None
+            vpn_status = s["vpn_status"] if "vpn_status" in s.keys() else None
             out = {"id": s["id"], "tenant_id": s["tenant_id"], "env": s["env"], "applicant_id": s["applicant_id"],
                    "level": s["level"], "status": s["status"], "expires_at": s["expires_at"], "created_at": s["created_at"],
+                   "client_ip_masked": mask_ip(client_ip), "ip_country": ip_country, "vpn_status": vpn_status,
                    "checks_summary": summary, "decision": dec}
             return out
 
@@ -799,8 +854,39 @@ def make_handler(db: DB, data_dir: str):
                 db.execute("INSERT INTO consents(id,tenant_id,applicant_id,session_id,text_version,locale,granted_at) VALUES(?,?,?,?,?,?,?)",
                            (new_id(), tid, s["applicant_id"], s["id"], b.get("text_version") or CONSENT_TEXT_VERSION, b.get("locale") or "en", now_iso()))
                 db.execute("UPDATE sessions SET consent_at=?, status='in_progress', updated_at=? WHERE id=?", (now_iso(), now_iso(), s["id"]))
-                db.audit("applicant", s["applicant_id"], tid, "consent.grant", "session", s["id"])
-                return self._send(200, {"consented": True})
+                # Harvest the client IP + IP country at flow start
+                # (disclosed in consent text v2): the raw material of
+                # the location check at submit.
+                geo = self._client_geo()
+                if geo["ip"] and not s["client_ip"]:
+                    db.execute("UPDATE sessions SET client_ip=?, ip_country=?, updated_at=? WHERE id=?",
+                               (geo["ip"], geo["country"], now_iso(), s["id"]))
+                elif geo["country"] and not s["ip_country"]:
+                    db.execute("UPDATE sessions SET ip_country=?, updated_at=? WHERE id=?",
+                               (geo["country"], now_iso(), s["id"]))
+                db.audit("applicant", s["applicant_id"], tid, "consent.grant", "session", s["id"],
+                         metadata={"client_ip": geo["ip"], "ip_country": geo["country"]})
+                # Client corroboration signals from the flow page
+                # (record-only): device timezone + WebRTC candidates.
+                device_tz = b.get("device_tz") if isinstance(b.get("device_tz"), str) else None
+                webrtc_ips = b.get("webrtc_ips") if isinstance(b.get("webrtc_ips"), list) else None
+                db.execute("UPDATE sessions SET device_tz=?, webrtc_ips=?, updated_at=? WHERE id=?",
+                           (device_tz, json.dumps(webrtc_ips) if webrtc_ips is not None else None, now_iso(), s["id"]))
+                # VPN / proxy HARD GATE at flow start (owner's order):
+                # detected -> the flow blocks here; the scanner never
+                # starts. The verdict is stored on the session and
+                # re-checked at submit.
+                app_row = db.one("SELECT country FROM applicants WHERE id=?", (s["applicant_id"],))
+                vpn = VPN.check_ip(db, geo["ip"], device_tz=device_tz,
+                                   declared_country=(app_row["country"] if app_row else None))
+                db.execute("UPDATE sessions SET vpn_status=?, updated_at=? WHERE id=?", (vpn["verdict"], now_iso(), s["id"]))
+                if vpn.get("ip_country") and not s["ip_country"] and not geo["country"]:
+                    db.execute("UPDATE sessions SET ip_country=?, updated_at=? WHERE id=?", (vpn["ip_country"], now_iso(), s["id"]))
+                if vpn["verdict"] == "detected":
+                    db.audit("system", None, tid, "flow.vpn_blocked", "session", s["id"],
+                             metadata={"client_ip": geo["ip"], "findings": vpn["findings"]})
+                    return self._err(403, "VPN or proxy detected. Turn off your VPN or proxy and try again.", "vpn_proxy_detected")
+                return self._send(200, {"consented": True, "vpn_status": vpn["verdict"]})
             if p == "/v1/flow/document":
                 if not s["consent_at"]: return self._err(422, "consent required before upload")
                 body = self._body()
@@ -872,8 +958,19 @@ def make_handler(db: DB, data_dir: str):
                 with open(os.path.join(data_dir, rel), "wb") as fh: fh.write(f["data"])
                 meta_in = parse_capture_meta(field_text(parts, "capture_meta"))
                 capture_meta = {"method": meta_in.get("method") or "not_declared"}
+                _keep_client_signals(meta_in, capture_meta)
                 db.execute("INSERT INTO biometric_captures(id,tenant_id,env,session_id,storage_path,liveness_method,media_kind,capture_meta,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
                            (bid, tid, env, s["id"], rel, "none", "selfie", json.dumps(capture_meta), now_iso()))
+                # Selfie burst frames (continuous face tracking): the
+                # scanner sends ~4 extra frames from the same second;
+                # they join the selfie in the face track at submit.
+                for i in range(5):
+                    bf = parts.get(f"burst_{i}")
+                    if bf and bf["data"]:
+                        brid = new_id(); brel = os.path.join(rel_dir, f"{brid}_burst{i}.jpg")
+                        with open(os.path.join(data_dir, brel), "wb") as fh: fh.write(bf["data"])
+                        db.execute("INSERT INTO biometric_captures(id,tenant_id,env,session_id,storage_path,liveness_method,media_kind,capture_meta,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                                   (brid, tid, env, s["id"], brel, "none", "selfie_burst", json.dumps({"method": "live_camera_burst"}), now_iso()))
                 db.audit("applicant", s["applicant_id"], tid, "selfie.upload", "biometric_capture", bid,
                          metadata={"capture": capture_meta})
                 return self._send(201, {"biometric_id": bid})
@@ -901,6 +998,7 @@ def make_handler(db: DB, data_dir: str):
                 with open(os.path.join(data_dir, rel), "wb") as fh: fh.write(f["data"])
                 meta_in = parse_capture_meta(field_text(parts, "capture_meta"))
                 capture_meta = {"method": meta_in.get("method") or "not_declared"}
+                _keep_client_signals(meta_in, capture_meta)
                 db.execute("INSERT INTO biometric_captures(id,tenant_id,env,session_id,storage_path,liveness_method,media_kind,capture_meta,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
                            (bid, tid, env, s["id"], rel, "active_challenge", "liveness_video", json.dumps(capture_meta), now_iso()))
                 db.audit("applicant", s["applicant_id"], tid, "liveness.upload", "biometric_capture", bid)
@@ -927,9 +1025,7 @@ def make_handler(db: DB, data_dir: str):
                 db.audit("applicant", s["applicant_id"], tid, "credential.revoke_by_applicant", "credential", cred["id"])
                 return self._send(200, {"revoked": True, "credential_id": cred["id"]})
             if p == "/v1/flow/submit":
-                req_info = {"ip": (self.headers.get("X-Forwarded-For") or "").split(",")[0].strip() or (self.client_address[0] if self.client_address else None),
-                            "user_agent": self.headers.get("User-Agent", "")}
-                return self._submit(s, req_info)
+                return self._submit(s, self._client_geo())
             return self._err(404, "not found")
 
         def _submit(self, s, req_info=None):
@@ -939,6 +1035,22 @@ def make_handler(db: DB, data_dir: str):
             cfg, cfg_version = FC.get_config(db, tid, env, s["level"])
             required = cfg["required_checks"]
             app = db.one("SELECT * FROM applicants WHERE id=?", (s["applicant_id"],))
+            # Location evidence: the submit request's own IP wins when
+            # it differs from the one harvested at flow start — a VPN
+            # switched on mid-flow must not hide behind the old IP.
+            # Persisted on the session with the submission.
+            submit_ip = req_info.get("ip")
+            if submit_ip and s["client_ip"] and submit_ip != s["client_ip"]:
+                client_ip = submit_ip
+                ip_country = req_info.get("country")
+                db.execute("UPDATE sessions SET client_ip=?, ip_country=?, updated_at=? WHERE id=?",
+                           (client_ip, ip_country, now_iso(), s["id"]))
+            else:
+                client_ip = s["client_ip"] or submit_ip
+                ip_country = s["ip_country"] or req_info.get("country")
+                if client_ip and not s["client_ip"]:
+                    db.execute("UPDATE sessions SET client_ip=?, ip_country=?, updated_at=? WHERE id=?",
+                               (client_ip, ip_country, now_iso(), s["id"]))
             doc = db.one("SELECT * FROM documents WHERE session_id=? AND kind!='proof_of_address' ORDER BY created_at DESC LIMIT 1", (s["id"],))
             is_credential_session = bool(s["credential_id"])
             if not doc and not is_credential_session: return self._err(422, "document required before submit")
@@ -958,6 +1070,10 @@ def make_handler(db: DB, data_dir: str):
             front_path = os.path.join(data_dir, doc["storage_path"]) if doc and doc["storage_path"] else None
             ocr_text = ""
             parsed = None
+            doc_entry = {}
+            code_found = False
+            auth_findings = {}
+            df_client = None
             if doc:
                 # Fresh evidence beats credential inheritance: if a
                 # document was uploaded in this session, its checks run
@@ -970,33 +1086,111 @@ def make_handler(db: DB, data_dir: str):
                 if doc["back_storage_path"]:
                     back_framing = FRAMING.check_document_framing(path=os.path.join(data_dir, doc["back_storage_path"]))
                 record("document_framing", FRAMING.combine_framing(front_framing, back_framing), provider="opencv-framing")
-                ocr = C.check_ocr(front_path)
-                record("ocr", ocr, provider="tesseract")
-                ocr_text = ocr.get("text", "")
-                mrz = C.check_mrz(ocr_text)
-                record("mrz", mrz, provider="local-mrz")
-                parsed = mrz.get("parsed")
-                db.execute("UPDATE documents SET ocr_text=?, mrz_raw=? WHERE id=?", (ocr_text[:8000], (parsed or {}).get("line2"), doc["id"]))
-                doc_entry = DOCREG.get_document(doc["issuing_country"], doc["kind"]) or {}
-                record("expiry_age", C.check_expiry_age(parsed if parsed and parsed.get("valid") else None,
-                                                        doc_expiry=doc["doc_expiry"], doc_dob=doc["doc_dob"], applicant_dob=app["dob"],
-                                                        has_expiry=doc_entry.get("has_expiry", True)))
-                record("consistency", C.check_consistency(app["first_name"], app["last_name"], app["dob"],
-                                                          mrz_parsed=parsed, doc_first=doc["doc_first_name"], doc_last=doc["doc_last_name"],
-                                                          doc_dob=doc["doc_dob"], ocr_text=ocr_text))
-                # Document authenticity signals (Phase 2).
-                record("authenticity", AUTH.check_authenticity(front_path, kind=doc["kind"], country=doc["issuing_country"],
-                                                               doc_number=doc["doc_number"], ocr_text=ocr_text,
-                                                               mrz_found=bool(parsed)), provider="local-authenticity")
-                # Face match (Phase 2): YuNet + SFace. Missing pieces are
-                # recorded honestly (not_run / unclear / error), never pass.
-                if "face_match" in required:
-                    if not selfie_path:
-                        record("face_match", {"status": "not_run", "findings": {"reason": "selfie_missing"}, "reason_codes": ["face_match_not_run"]}, provider="yunet-sface")
-                    else:
-                        record("face_match", FACE.check_face_match(front_path, selfie_path,
-                                                                   pass_threshold=cfg["face_pass_threshold"], margin=cfg["face_margin"]),
-                               provider="yunet-sface")
+                framing_failed = results.get("document_framing", {}).get("status") == "fail"
+                if framing_failed:
+                    # Fail-fast (2026-10-26): no document was detected in the
+                    # frame, so deep analysis of a non-document is meaningless
+                    # and slow (multi-pass OCR on noise) — the decision is
+                    # already an automatic rejection on framing. The remaining
+                    # document checks are recorded as not_run so the case shows
+                    # exactly what did and did not run, and why.
+                    for _ct in ("ocr", "mrz", "expiry_age", "consistency", "authenticity",
+                                "code_decode", "document_classification", "data_consistency"):
+                        record(_ct, {"status": "not_run", "findings": {"reason": "framing_failed"},
+                                     "reason_codes": ["framing_failed"]})
+                    if "face_match" in required:
+                        record("face_track", {"status": "not_run", "findings": {"reason": "framing_failed"}, "reason_codes": ["framing_failed"]}, provider="yunet-sface-track")
+                        record("face_match", {"status": "not_run", "findings": {"reason": "framing_failed"}, "reason_codes": ["framing_failed"]}, provider="yunet-sface")
+                if not framing_failed:
+                    doc_entry = DOCREG.get_document(doc["issuing_country"], doc["kind"]) or {}
+                    ocr = C.check_ocr(front_path, expect_mrz=bool(doc_entry.get("mrz")))
+                    record("ocr", ocr, provider="tesseract")
+                    ocr_text = ocr.get("text", "")
+                    mrz = C.check_mrz(ocr_text)
+                    record("mrz", mrz, provider="local-mrz")
+                    parsed = mrz.get("parsed")
+                    db.execute("UPDATE documents SET ocr_text=?, mrz_raw=? WHERE id=?", (ocr_text[:8000], (parsed or {}).get("line2"), doc["id"]))
+                    record("expiry_age", C.check_expiry_age(parsed if parsed and parsed.get("valid") else None,
+                                                            doc_expiry=doc["doc_expiry"], doc_dob=doc["doc_dob"], applicant_dob=app["dob"],
+                                                            has_expiry=doc_entry.get("has_expiry", True)))
+                    record("consistency", C.check_consistency(app["first_name"], app["last_name"], app["dob"],
+                                                              mrz_parsed=parsed, doc_first=doc["doc_first_name"], doc_last=doc["doc_last_name"],
+                                                              doc_dob=doc["doc_dob"], ocr_text=ocr_text))
+                    # Document authenticity signals (Phase 2 + screen/portrait
+                    # evidence, 2026-10-26).
+                    _auth = AUTH.check_authenticity(front_path, kind=doc["kind"], country=doc["issuing_country"],
+                                                    doc_number=doc["doc_number"], ocr_text=ocr_text,
+                                                    mrz_found=bool(parsed))
+                    auth_findings = _auth.get("findings") or {}
+                    record("authenticity", _auth, provider="local-authenticity")
+                    # Vision layer (2026-10-26): MRZ <-> visual-zone cross-
+                    # validation — a forged document must fool BOTH zones —
+                    # and machine-readable code decoding (QR via OpenCV,
+                    # PDF417/barcodes via zxing when installed) whose
+                    # structured payload must AGREE with the printed fields.
+                    if parsed and parsed.get("valid"):
+                        record("mrz_viz_consistency", VISION.cross_check_mrz_viz(ocr_text, parsed), provider="local-vision")
+                    _code = VISION.decode_codes(front_path,
+                                                os.path.join(data_dir, doc["back_storage_path"]) if doc["back_storage_path"] else None,
+                                                doc_fields=dict(doc))
+                    code_found = bool(_code["findings"].get("found_any"))
+                    record("code_decode", _code, provider="local-vision")
+                    # Document classification (Addition 9): the image must
+                    # classify AS the claimed type by layout — template
+                    # aspect, portrait position, printed labels, number
+                    # zone, MRZ zone — not merely be a rectangle.
+                    record("document_classification",
+                           TEMPLATES.check_classification(front_path, doc["issuing_country"], doc["kind"],
+                                                          ocr_text=ocr_text,
+                                                          mrz_parsed=parsed if parsed and parsed.get("valid") else None),
+                           provider="local-templates")
+                    # Data-consistency matrix (Addition 10A): every data
+                    # source present, pairwise, per field. Any DISAGREE is
+                    # a named finding and fails the check — no disagreement
+                    # may exist among available pairs for auto-approval.
+                    record("data_consistency",
+                           VISION.build_data_consistency(doc_fields=dict(doc), applicant=dict(app),
+                                                         mrz_parsed=parsed if parsed and parsed.get("valid") else None,
+                                                         ocr_text=ocr_text,
+                                                         aamva=_code["findings"].get("aamva")),
+                           provider="local-vision")
+                    # Face match (Phase 2 + continuous tracking, 2026-10-26):
+                    # the liveness frames + selfie + burst frames form a
+                    # TRACK (presence, trajectory, identity continuity);
+                    # the match itself compares the document portrait with
+                    # the track's AGGREGATE embedding — never one frame.
+                    if "face_match" in required:
+                        if not selfie_path:
+                            record("face_track", {"status": "not_run", "findings": {"reason": "selfie_missing"}, "reason_codes": ["face_track_not_run"]}, provider="yunet-sface-track")
+                            record("face_match", {"status": "not_run", "findings": {"reason": "selfie_missing"}, "reason_codes": ["face_match_not_run"]}, provider="yunet-sface")
+                        else:
+                            vid_row = db.one("SELECT * FROM biometric_captures WHERE session_id=? AND media_kind='liveness_video' ORDER BY created_at DESC LIMIT 1", (s["id"],))
+                            burst_rows = db.all("SELECT * FROM biometric_captures WHERE session_id=? AND media_kind='selfie_burst' ORDER BY created_at ASC", (s["id"],))
+                            track = FACETRACK.check_face_track(
+                                os.path.join(data_dir, vid_row["storage_path"]) if vid_row else None,
+                                extra_image_paths=[selfie_path] + [os.path.join(data_dir, b["storage_path"]) for b in burst_rows],
+                                pass_threshold=cfg["face_pass_threshold"], margin=cfg["face_margin"])
+                            record("face_track", track, provider="yunet-sface-track")
+                            agg = track.get("aggregate_embedding")
+                            if agg:
+                                doc_feat, doc_face, ferr = FACE.extract_face_feature(front_path)
+                                if ferr:
+                                    record("face_match", ferr, provider="yunet-sface")
+                                elif doc_face is None:
+                                    record("face_match", {"status": "unclear", "findings": {"face_in_document": False}, "reason_codes": ["no_face_in_document"]}, provider="yunet-sface")
+                                else:
+                                    sim = FACE.cosine_similarity(doc_feat, agg)
+                                    mstatus, mreasons = FACE.similarity_decision(sim, cfg["face_pass_threshold"], cfg["face_margin"])
+                                    record("face_match", {"status": mstatus,
+                                                          "findings": {"similarity": round(float(sim), 4), "method": "document_vs_track_median_embedding",
+                                                                       "track_frames": track["findings"].get("frames_with_face")},
+                                                          "reason_codes": mreasons}, provider="yunet-sface")
+                            else:
+                                # No track could be built (e.g. no video):
+                                # fall back to the still-vs-still comparison.
+                                record("face_match", FACE.check_face_match(front_path, selfie_path,
+                                                                           pass_threshold=cfg["face_pass_threshold"], margin=cfg["face_margin"]),
+                                       provider="yunet-sface")
             # Liveness (Phase 2): active challenge video. Never inherited
             # from a credential — a past verification is not a live human.
             if "liveness" in required:
@@ -1008,6 +1202,21 @@ def make_handler(db: DB, data_dir: str):
                     try: challenge = json.loads(s["liveness_challenge"] or "null")
                     except Exception: challenge = None
                     record("liveness", LV.check_liveness(os.path.join(data_dir, video["storage_path"]), challenge), provider="active-challenge")
+                # Deepfake / fake-camera defence (2026-10-26): rPPG pulse,
+                # generation-artifact FFT, motion trajectory, and the
+                # client capture signals sent with the uploads. A known
+                # virtual-camera label or no-pulse + high artifacts is a
+                # decisive machine failure — never a human task.
+                df_client = None
+                for _cap in (video, selfie):
+                    if df_client or not _cap:
+                        continue
+                    try:
+                        df_client = (json.loads(_cap["capture_meta"] or "{}") or {}).get("client_signals")
+                    except Exception:
+                        df_client = None
+                record("deepfake", DEEPFAKE.check_deepfake(os.path.join(data_dir, video["storage_path"]) if video else None,
+                                                           selfie_path, client_signals=df_client), provider="local-deepfake")
             # Proof of address (Phase 3, Level 3).
             if "poa" in required:
                 poa_doc = db.one("SELECT * FROM documents WHERE session_id=? AND kind='proof_of_address' ORDER BY created_at DESC LIMIT 1", (s["id"],))
@@ -1026,10 +1235,47 @@ def make_handler(db: DB, data_dir: str):
             if "screening_sanctions" in required:
                 scr = SCR.run_screening(db, data_dir, tid, env, app, origin="submit", session_id=s["id"], threshold=cfg["screening_threshold"])
                 record("screening_sanctions", {"status": scr["status"], "findings": scr["findings"], "reason_codes": scr["reason_codes"]}, provider="local-lists")
+            # VPN / proxy HARD GATE — re-check at submit (owner's
+            # order, 2026-10-26). Detection ran at flow start; the
+            # cached lookup makes this cheap. Detected -> fail with the
+            # hard-fail reason vpn_proxy_detected, and the engine
+            # rejects outright whatever else the checks say. Unknown is
+            # recorded honestly as unclear — never a fake pass.
+            declared_country = (app["country"] or "").upper() if app else ""
+            vpn = VPN.check_ip(db, client_ip,
+                               device_tz=(s["device_tz"] if "device_tz" in s.keys() else None),
+                               declared_country=declared_country or None)
+            if vpn.get("ip_country") and not ip_country:
+                ip_country = vpn["ip_country"]
+                db.execute("UPDATE sessions SET ip_country=?, updated_at=? WHERE id=?", (ip_country, now_iso(), s["id"]))
+            db.execute("UPDATE sessions SET vpn_status=?, updated_at=? WHERE id=?", (vpn["verdict"], now_iso(), s["id"]))
+            if vpn["verdict"] == "detected":
+                record("vpn_proxy", {"status": "fail", "findings": vpn["findings"], "reason_codes": ["vpn_proxy_detected"]}, provider="ip-intel")
+            elif vpn["verdict"] == "clean":
+                record("vpn_proxy", {"status": "pass", "findings": vpn["findings"], "reason_codes": []}, provider="ip-intel")
+            else:
+                record("vpn_proxy", {"status": "unclear", "findings": vpn["findings"], "reason_codes": ["vpn_check_unknown"]}, provider="ip-intel")
+            # Location consistency (2026-10-26): IP country vs the
+            # applicant's DECLARED country. Match -> pass. Unknown (no
+            # geo header — local/dev) -> honest unclear. Mismatch ->
+            # unclear with reason ip_country_mismatch: a RISK signal
+            # (+15 in server/risk.py), never an auto-reject on its own
+            # (VPNs and travel exist); it is stored on the session and
+            # shown masked in the console.
+            loc_findings = {"ip": mask_ip(client_ip), "ip_country": ip_country, "declared_country": declared_country or None}
+            if not ip_country:
+                record("location_consistency", {"status": "unclear",
+                                                "findings": {**loc_findings, "note": "IP country unknown (local/dev or no geo header) — not treated as a mismatch"},
+                                                "reason_codes": ["ip_country_unknown"]}, provider="ip-geo")
+            elif declared_country and ip_country == declared_country:
+                record("location_consistency", {"status": "pass", "findings": loc_findings, "reason_codes": []}, provider="ip-geo")
+            else:
+                record("location_consistency", {"status": "unclear",
+                                                "findings": {**loc_findings, "note": "IP country differs from the declared country — risk signal only (VPN/travel possible), never an auto-reject on its own"},
+                                                "reason_codes": ["ip_country_mismatch"]}, provider="ip-geo")
             # --- Proportionate risk / injection signals (AMBITION) ---
             # Signals only: stored structured, never a silent auto-reject.
-            ip = req_info.get("ip"); ua = (req_info.get("user_agent") or "")[:200]
-            ip_country = (self.headers.get("X-IP-Country") if hasattr(self, "headers") else None) or None
+            ip = client_ip; ua = (req_info.get("user_agent") or "")[:200]
             doc_country = doc["issuing_country"] if doc else (app["country"] if app else None)
             one_hour_ago = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
             velocity = db.one("SELECT COUNT(*) AS n FROM sessions WHERE tenant_id=? AND created_at>=?", (tid, one_hour_ago))["n"]
@@ -1058,7 +1304,7 @@ def make_handler(db: DB, data_dir: str):
                     sig_reasons.append("injection_signal_present")
             record("fraud_signals", {
                 "status": "unclear" if sig_reasons else "pass",
-                "findings": {"ip": ip, "ip_country": ip_country or "unknown_no_geoip_in_local_build",
+                "findings": {"ip": mask_ip(ip), "ip_country": ip_country or "unknown_no_geoip_in_local_build",
                              "document_country": doc_country, "ip_document_country_mismatch": mismatch,
                              "user_agent_summary": ua, "device_class": "mobile" if any(k in ua.lower() for k in ("android", "iphone", "mobile")) else "desktop_or_unknown",
                              "tenant_sessions_last_hour": velocity, "velocity_threshold": 20,
@@ -1067,7 +1313,52 @@ def make_handler(db: DB, data_dir: str):
                 "reason_codes": sig_reasons}, provider="local-signals")
             # --- Explainable risk + decision (Phases 2/3) ---
             risk = RISK.compute_risk(results)
+            # Verification layers (owner's "beyond" doctrine, 2026-10-26):
+            # surface / text / internal recorded with the case, and the
+            # internal layer is decision-bearing — where the document
+            # type carries internal data (registry MRZ, or a code was
+            # decoded from the image), unreadable or disagreeing
+            # internal data auto-rejects; it is never silently approved
+            # on surface + text alone.
+            layers, internal_forced = verification_layers(results, doc_entry=doc_entry, code_found=code_found)
+            _lvals = [layers["surface"], layers["text"], layers["internal"]]
+            _lstatus = "fail" if (internal_forced or "fail" in _lvals) else (
+                "pass" if all(v in ("pass", "not_available") for v in _lvals) else "unclear")
+            record("verification_layers", {"status": _lstatus, "findings": layers,
+                                           "reason_codes": [internal_forced] if internal_forced else []}, provider="local-engine")
             outcome, reasons = decide(s["level"], results, config=cfg, risk_score=risk)
+            if internal_forced:
+                outcome = "rejected"
+                if internal_forced not in reasons:
+                    reasons = sorted(set(reasons) | {internal_forced})
+            # Document evidence combination (Addition 10C): the
+            # auditable record of the combined document evidence —
+            # classification, text, machine-readable, portrait,
+            # quality, security features — mirroring the biometric
+            # evidence block below.
+            if doc:
+                _de = document_evidence(results, auth_findings)
+                record("document_evidence",
+                       {"status": "fail" if _de["any_failed"] else ("pass" if _de["all_passing"] else "unclear"),
+                        "findings": _de, "reason_codes": []}, provider="local-engine")
+            # Biometric combination gate (2026-10-26): an automatic
+            # approval must be a COMBINATION — continuous face track,
+            # liveness, track-based face match, capture quality, device
+            # signals and the deepfake check, ALL present and passing
+            # together. The evidence block is recorded with the case so
+            # the decision visibly rests on the combination. A failed
+            # component has already rejected via the required checks; a
+            # merely ABSENT one (e.g. no device signals recorded)
+            # blocks auto-approval and routes the case to a human.
+            if s["level"] >= 2 and doc:
+                bio = biometric_evidence(results, DEEPFAKE.client_signal_findings(df_client))
+                record("biometric_evidence", {"status": "pass" if bio["all_passing"] else ("fail" if bio["any_failed"] else "unclear"),
+                                              "findings": bio,
+                                              "reason_codes": [] if bio["all_passing"] else ["biometric_evidence_incomplete"]},
+                       provider="local-engine")
+                if outcome == "approved" and not bio["all_passing"]:
+                    outcome = "needs_review"
+                    reasons = sorted(set(reasons) | {"biometric_evidence_incomplete"})
             did = new_id()
             db.execute("INSERT INTO decisions(id,session_id,tenant_id,env,outcome,decided_by,reason_codes,rules_version,risk_score,risk_band,risk_contributions,config_version,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                        (did, s["id"], tid, env, outcome, "engine", json.dumps(reasons), RULES_VERSION,
