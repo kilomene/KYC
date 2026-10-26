@@ -2,7 +2,9 @@
 
 Every supported document is described by FACTS, not just a name:
 
-    {id, label, sides (1|2), has_expiry (bool), mrz (bool), aspect}
+    {id, label, sides (1|2), has_expiry (bool), mrz (bool), aspect,
+     physical ('card'|'paper'|'booklet'), and for paper/booklet types
+     aspect_min / aspect_max / guide_aspect}
 
 plus, where the research supports them, honest extra facts:
     validity_end  ISO date after which the document TYPE stops being
@@ -24,11 +26,21 @@ Those facts drive real behaviour:
     NIN slip, NIN card or voter's card — NEVER fails or goes unclear
     for a missing expiry date; it has none; a validity_end, where
     present, IS enforced as a document-validity window),
-  * the live scanner's document detector: `aspect` is the document's
-    width/height ratio (ISO/IEC 7810 ID-1 cards = 1.586, passport data
-    page ~1.42, NIN slip / A-series paper ~1.41). The scanner only
-    auto-captures when a detected quadrilateral matches this ratio —
-    a still, textured room can no longer pass as a document.
+  * the live scanner's document detector: geometry is modelled per
+    PHYSICAL class (`physical`), because documents are not all rigid
+    cards. Plastic cards / passport data pages carry a single nominal
+    `aspect` (ISO/IEC 7810 ID-1 = 1.586, passport data page ~1.42)
+    with a tight ±10% acceptance. PAPER documents (the Nigerian NIN
+    slip) and booklet pages (the ZA green ID book) have no fixed card
+    aspect: print-shop trimming, folding and lamination vary the
+    printed area, and a hand-held sheet bows — they carry an aspect
+    RANGE (`aspect_min`..`aspect_max`) and a `guide_aspect` the flow's
+    guide frame draws at. The scanner only auto-captures when a
+    detected outline matches the type's geometry — a still, textured
+    room can no longer pass as a document. (Rectification 2026-10-26:
+    the registry previously modelled the NIN slip as A-series paper
+    at 1.41; the owner's real slip measures ~2.18:1 in frame and
+    could never pass — see the nin_slip entry.)
 
 Facts come from research/*.md (researched 2026-10-26, sources named
 there); nothing in this registry is invented. `mrz` means "an MRZ is
@@ -52,9 +64,28 @@ and the AU/CA photo cards from research/*.md.
 """
 
 # Passport: the data page is what is scanned -> sides 1, MRZ True.
-_PASSPORT = {"label": "Passport", "sides": 1, "has_expiry": True, "mrz": True, "aspect": 1.42}
-_CARD_LICENCE = {"label": "Driver's licence", "sides": 2, "has_expiry": True, "mrz": False, "aspect": 1.586}
-_CARD_ID = {"label": "National ID", "sides": 2, "has_expiry": True, "mrz": False, "aspect": 1.586}
+_PASSPORT = {"label": "Passport", "sides": 1, "has_expiry": True, "mrz": True, "aspect": 1.42, "physical": "card"}
+_CARD_LICENCE = {"label": "Driver's licence", "sides": 2, "has_expiry": True, "mrz": False, "aspect": 1.586, "physical": "card"}
+_CARD_ID = {"label": "National ID", "sides": 2, "has_expiry": True, "mrz": False, "aspect": 1.586, "physical": "card"}
+
+# Paper geometry (rectification 2026-10-26). The NIN slip is a paper
+# printout (research/docs-africa.md): NIMC prints it as a PDF/printout
+# (A4 or card-sized print), and print shops trim, fold and laminate
+# it — the surviving printed area has NO fixed aspect. The owner's
+# real slip, photographed hand-held in the scanner, measures ~2.18:1
+# (wide strip, centre fold, laminated, bowed). The flat printed area
+# of the slip class runs ~1.8-2.4; the acceptance range is widened to
+# 1.2..2.8 to include perspective-foreshortened hand-held views (a
+# slip tilted away shortens vertically, a slip photographed along its
+# length shortens horizontally). The guide frame draws at the
+# representative 2.0.
+_PAPER_SLIP = {"physical": "paper", "aspect": 2.0, "aspect_min": 1.2, "aspect_max": 2.8, "guide_aspect": 2.0}
+# Booklet geometry: the scanned artefact is ONE PAGE of a paper
+# booklet (nominal page ~1.42, passport-book proportions); pages bow
+# and are held open by hand, so the page gets a paper-style range —
+# narrower than the slip's, because the page's own proportions are
+# fixed by the book's binding even when it curves.
+_BOOKLET_PAGE = {"physical": "booklet", "aspect_min": 1.15, "aspect_max": 1.85, "guide_aspect": 1.42}
 
 DOCUMENT_REGISTRY = {
     "NG": {
@@ -63,7 +94,11 @@ DOCUMENT_REGISTRY = {
         "national_id": {"label": "National ID", "sides": 2, "has_expiry": False, "mrz": False, "aspect": 1.586},
         "voter_card": {"label": "Voter's card (INEC PVC)", "sides": 2, "has_expiry": False, "mrz": False, "aspect": 1.586},
         "nin_card": {"label": "NIN card", "sides": 2, "has_expiry": False, "mrz": False, "aspect": 1.586},
-        "nin_slip": {"label": "NIN slip", "sides": 1, "has_expiry": False, "mrz": False, "aspect": 1.41},
+        # NIN slip: a PAPER printout, not a card — geometry is the
+        # _PAPER_SLIP range (rectification 2026-10-26; see above). The
+        # old point value 1.41 (A-series ratio) described the sheet it
+        # may be printed on, never the trimmed/folded slip itself.
+        "nin_slip": {"label": "NIN slip", "sides": 1, "has_expiry": False, "mrz": False, **_PAPER_SLIP},
     },
     "US": {
         "passport": dict(_PASSPORT),
@@ -131,6 +166,7 @@ DOCUMENT_REGISTRY = {
         # 2028-03-31 (DHA phase-out) — a document-type validity window,
         # enforced by the expiry/validity check via validity_end.
         "green_id_book": {"label": "Green ID book", "sides": 1, "has_expiry": False, "mrz": False, "aspect": 1.42,
+                          **_BOOKLET_PAGE,
                           "validity_end": "2028-03-31",
                           "note": "Bar-coded green ID book: no printed expiry, but not recognised as valid ID after 2028-03-31 (DHA phase-out; production ends 2027-03-31)."},
         "drivers_licence": {"label": "Driving licence card", "sides": 2, "has_expiry": True, "mrz": False, "aspect": 1.586,
@@ -193,6 +229,16 @@ DOCUMENT_REGISTRY = {
                      "note": "Garda Age Card: NO expiry date by design; proof-of-age document (lower assurance)."},
     },
 }
+
+# Geometry normalisation: every entry carries a physical class. The
+# literal entries above that predate the geometry model are rigid
+# cards/passport pages; anything not explicitly paper/booklet is a
+# card with the tight point-aspect tolerance.
+for _docs in DOCUMENT_REGISTRY.values():
+    for _entry in _docs.values():
+        _entry.setdefault("physical", "card")
+        if _entry["physical"] == "card":
+            _entry.setdefault("guide_aspect", _entry.get("aspect", 1.586))
 
 def get_document(country, kind):
     """-> registry entry dict (with 'id') or None."""
