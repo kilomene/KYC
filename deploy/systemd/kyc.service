@@ -11,6 +11,10 @@ Environment=HOME=/home/hatch
 # KYC_PLATFORM_ADMIN_TOKEN=<token> to enable tenant creation; when the
 # file is absent, tenant creation stays disabled (fail closed).
 EnvironmentFile=-/home/hatch/workspace/KYC/data/platform-admin.env
+# WS3 storage encryption: master key for stored document/biometric files
+# (AES-256-GCM envelope). The key VALUE lives only in that file
+# (chmod 600, gitignored data/); without it media reads fail closed (503).
+Environment=KYC_MASTER_KEY_FILE=/home/hatch/workspace/KYC/data/kyc-master.key
 WorkingDirectory=/home/hatch/workspace/KYC
 ExecStart=/usr/bin/python3 -m server --port 8790
 Restart=always
