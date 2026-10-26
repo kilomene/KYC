@@ -191,7 +191,12 @@ def parse_iso_date(s):
     return _safe_date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
 
 # ---------- expiry / age ----------
-def check_expiry_age(mrz_parsed=None, doc_expiry=None, doc_dob=None, applicant_dob=None, today=None):
+def check_expiry_age(mrz_parsed=None, doc_expiry=None, doc_dob=None, applicant_dob=None, today=None, has_expiry=True):
+    """Expiry + age. `has_expiry` comes from the document registry
+    (server/docregistry.py): document types with NO expiry date (e.g.
+    NG NIN slip / NIN card / voter's card) must NEVER fail or go
+    unclear for a missing expiry date — there is none. For those, this
+    check passes on expiry outright and only the age leg applies."""
     today = today or date.today()
     expiry = dob = None; source = None
     if mrz_parsed and mrz_parsed.get("valid"):
@@ -202,7 +207,18 @@ def check_expiry_age(mrz_parsed=None, doc_expiry=None, doc_dob=None, applicant_d
         expiry = parse_iso_date(doc_expiry); source = source or "document_fields"
     if dob is None:
         dob = parse_iso_date(doc_dob) or parse_iso_date(applicant_dob); source = source or "document_fields"
-    findings = {"source": source, "expiry": expiry.isoformat() if expiry else None, "dob": dob.isoformat() if dob else None}
+    findings = {"source": source, "expiry": expiry.isoformat() if expiry else None, "dob": dob.isoformat() if dob else None,
+                "has_expiry": bool(has_expiry)}
+    if not has_expiry:
+        findings["detail"] = "document type has no expiry date"
+        findings["expiry"] = None
+        if dob is None:
+            return {"status": "unclear", "findings": findings, "reason_codes": ["dob_missing"]}
+        age = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+        findings["age"] = age
+        if age < 18:
+            return {"status": "fail", "findings": findings, "reason_codes": ["underage"]}
+        return {"status": "pass", "findings": findings, "reason_codes": []}
     if expiry is None or dob is None:
         return {"status": "unclear", "findings": findings, "reason_codes": ["expiry_or_dob_missing"]}
     if expiry < today:
