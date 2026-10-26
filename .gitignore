@@ -1,5 +1,6 @@
 data/
 models/
+benchmarks/corpus/
 .tmp/
 __pycache__/
 *.db
