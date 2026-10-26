@@ -26,7 +26,7 @@ design, our rules — informed by what the category does, copying none of it.
 > **four-eyes review with reviewer roles and case SLAs**, a reviewer
 > **assist** pre-read, **reusable signed verified credentials**, human
 > review console, signed webhooks, audit log, erasure and retention.
-> 213 automated tests + a live Level 3 end-to-end run, all green.
+> 242 automated tests + a live Level 3 end-to-end run, all green.
 > The application currently runs on the Nova origin service and is
 > reached publicly through a Cloudflare tunnel; it is not on Supabase.
 > Final Cloudflare-native hosting is Phase 4 WS5 (DECISIONS D4/D6),
@@ -42,7 +42,7 @@ python3 scripts/fetch_models.py        # one-time: YuNet + SFace ONNX models int
 python3 -m server --port 8765          # data lives in ./data/ (gitignored)
 # Landing:  http://127.0.0.1:8765/
 # Console:  http://127.0.0.1:8765/console   (paste a tenant API key)
-python3 -m unittest discover tests     # 213 tests
+python3 -m unittest discover tests     # 242 tests
 python3 scripts/e2e_local.py           # live Level 3 end-to-end run
 python3 -m server.retention --days 90  # delete images of old decided sessions
 python3 scripts/fetch_ofac.py          # optional: real OFAC SDN list into data/lists/
@@ -271,6 +271,54 @@ code decoding**.
   numbers bound the extraction wiring, not real-world accuracy —
   that limit is printed in RESULTS.md and travels with the numbers.
 
+### Biometric measurement + attack resistance (Phase 4 WS2, 2026-10-26)
+
+Full write-up with sources and honest limits: `benchmarks/BIOMETRICS.md`
+(raw data: `benchmarks/biometrics.json`, `benchmarks/attacks.json`).
+
+- *FAR/FRR, measured on real faces*: the full LFW View-2 protocol
+  (all 6,000 official pairs, deep-funneled release) through the
+  production pipeline — **EER 1.07%; at the production threshold
+  0.363: FAR 0.10%, FRR 2.00%, accuracy 98.95%; standard protocol
+  accuracy 99.13% ± 0.38%; detection failures 0 on this corpus**
+  (pre-cropped faces — not a real-world detection claim). Threshold
+  analysis from the measured curve **keeps 0.363** (it delivers the
+  target FAR; the data-derived auto-approve point is 0.351) and
+  records a high-assurance option (0.413 → FAR 0/3,000, FRR 3.33%)
+  for tenant configuration. Simulated condition slices (dark /
+  downscale / blur, labelled simulations) tax FRR up to ~2× and open
+  no FAR hole. **Demographic slicing is UNMEASURED** — LFW carries no
+  demographic attributes and no lawfully downloadable
+  attribute-labelled set was reachable; no fairness claim is made.
+- *Presentation attacks, measured*: replay (REAL artefacts — the
+  owner's genuine videos vs fresh challenges: liveness passed 0/6),
+  print / screen / mask / deepfake families (SIMULATED, methods and
+  labels in BIOMETRICS.md; physical masks and DNN face-swap corpora
+  are **UNMEASURED** — they cannot be produced in this environment).
+  No attack artefact achieved auto-approval (blocked-or-rejected
+  100% per family); strict auto-rejection is carried by challenge
+  freshness, the movement liveness, and face-track identity
+  continuity — **not** by the deepfake pulse leg, which fired on
+  some jittered photo presentations and is therefore evidence-only.
+- *rPPG hardening*: the pulse leg now runs POS + CHROM + green under
+  a signal-quality gate; re-measured on the owner's real captures it
+  produces a plausible POS peak (1.34 Hz, clean take) but still
+  below the evidentiary bar on 4.5 s clips — **evidence-only
+  stands**. The flow's liveness window is now ~9 s at a raised
+  bitrate so new captures can be measured properly.
+- *Detection-at-resolution fix*: YuNet boxes shrink/drift with
+  input size and break SFace alignment on multi-megapixel stills
+  (measured scale sweep in BIOMETRICS.md). Detection/embedding now
+  run in a ≤1024 px work space (`server/face.py`), which restored
+  correct matching on the owner's full-resolution captures. A
+  document portrait in a far/angled full-card photo can still go
+  undetected — that returns *unclear* (fail closed), never a guess.
+- *Provider adapter* (`server/bioprovider.py`): the own SFace
+  pipeline is provider #1 through a real adapter interface (the
+  benchmark runs through it). External provider slots fail closed
+  (`provider_not_configured`) — a head-to-head still needs vendor
+  accounts/keys; the evaluation is open, not faked.
+
 ### Screen-replay + portrait-substitution defence (2026-10-26)
 
 A document shown on another phone/monitor screen and held to the
@@ -320,7 +368,8 @@ case records a `biometric_evidence` block listing every component:
   (median) embedding**, never a single frame.
 - **Liveness**: the server-issued movement challenge (unchanged).
 - **Deepfake / injection** (`server/deepfake.py`): rPPG pulse scoring
-  (green-channel cheek series, 0.7–3 Hz band periodicity/SNR),
+  (POS + CHROM + green-channel cheek series, 0.7–3 Hz band
+  periodicity/SNR under a signal-quality gate — WS2),
   generation-artifact FFT scoring on face crops, motion-trajectory
   statistics, and the client capture signals the flow sends (camera
   track label — a known virtual camera such as OBS/ManyCam/Snap
@@ -343,12 +392,19 @@ track passed his clean take (presence 0.96, identity min-cosine
 0.91); his hard head-turn take collapsed on both identity metrics
 (0.13 / 0.10) — at ≤24 sampled frames an extreme pose change between
 samples is indistinguishable from a discontinuity, and the tracker
-fails closed (a re-scan, not a review). The rPPG leg produced **no
-measurement on either real take** (series too weak at webm quality),
-while the artifact leg read clean (0.11) — so in the combination gate
-the deepfake leg is required to be *not failing*, per its design,
-rather than a positive pass. No deepfake detector is claimed to be
-conclusive; this is layered evidence, not a proof.
+fails closed (a re-scan, not a review). **WS2 update:** the pulse leg
+now runs POS + CHROM + green under a signal-quality gate; on the same
+real takes POS measures a plausible 1.34 Hz peak (SNR 3.2) but still
+below the evidentiary bar, and the WS2 attack suite measured the leg
+firing "pulse present" on some jittered presentations of real photos
+— so it remains **evidence-only**, and the flow now records ~9 s
+liveness clips to give it a measurable window (unmeasured on real
+captures until one exists). The artifact leg read clean (0.11) on the
+owner's takes — so in the combination gate the deepfake leg is
+required to be *not failing*, per its design, rather than a positive
+pass. No deepfake detector is claimed to be conclusive; this is
+layered evidence, not a proof. Measured detail: benchmarks/
+BIOMETRICS.md.
 
 ### Voice guidance, phone-only, IP harvest + VPN gate (2026-10-26)
 
