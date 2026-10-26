@@ -78,13 +78,17 @@ class TestEngineFailClosed(unittest.TestCase):
         c = dict(self.BASE); c["ocr"] = {"status": "error", "reason_codes": ["ocr_unavailable"]}
         out, _ = decide(1, c); self.assertEqual(out, "needs_review")
     def test_unclear_never_approves(self):
+        # Auto-decision doctrine (2026-10-26): an unclear REQUIRED check
+        # in the standard path auto-REJECTS (the applicant re-does the
+        # verification); it no longer parks the case with a human.
         c = dict(self.BASE); c["consistency"] = {"status": "unclear", "reason_codes": ["name_partial_match"]}
-        out, _ = decide(1, c); self.assertEqual(out, "needs_review")
+        out, _ = decide(1, c); self.assertEqual(out, "rejected")
     def test_not_run_biometric_blocks_level2(self):
+        # Same doctrine: biometrics that never ran auto-reject at L2.
         c = dict(self.BASE); c["mrz"] = {"status": "pass", "reason_codes": []}
         c["face_match"] = {"status": "not_run", "reason_codes": ["face_match_not_run"]}
         c["liveness"] = {"status": "not_run", "reason_codes": ["liveness_not_run"]}
-        out, _ = decide(2, c); self.assertEqual(out, "needs_review")
+        out, _ = decide(2, c); self.assertEqual(out, "rejected")
     def test_elevated_risk_signal_routes_clean_case_to_review(self):
         c = dict(self.BASE)
         c["fraud_signals"] = {"status": "unclear", "reason_codes": ["velocity_high"]}
