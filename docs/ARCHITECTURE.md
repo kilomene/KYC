@@ -1,7 +1,13 @@
 # KYC — Architecture (Proposed)
 
-*Proposal, following the owner's proven stack pattern (Supabase +
-Cloudflare). Final stack confirmation is an owner decision — DECISIONS.md.*
+*STATUS (WS0 audit, 2026-10-26): this is the original Phase 0 proposal
+and is SUPERSEDED in part. The built system is a Python application
+(stdlib HTTP server + Pillow + OpenCV + tesseract) with SQLite and
+local private file storage, served publicly at kyc.novamail.store
+through a Cloudflare tunnel. Supabase was dropped as a target
+(DECISIONS D4). Final Cloudflare-native hosting is Phase 4 WS5. Read
+this document as design history and target shape — for what actually
+runs today, see README.md and docs/CLAIMS-AUDIT.md.*
 
 ## 1. Shape
 
