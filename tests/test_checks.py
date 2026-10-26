@@ -66,6 +66,21 @@ class TestExpiryAge(unittest.TestCase):
     def test_missing_dates_unclear(self):
         r = C.check_expiry_age()
         self.assertEqual(r["status"], "unclear")
+    def test_no_dob_document_type_passes_without_dob(self):
+        # NG NIN slip shape (owner-confirmed 2026-10-26): the type
+        # prints NO date of birth, so a missing DOB is not a defect —
+        # the age leg is not applicable and must not hold the verdict.
+        r = C.check_expiry_age(has_expiry=False, prints_dob=False)
+        self.assertEqual(r["status"], "pass")
+        self.assertEqual(r["reason_codes"], [])
+        self.assertFalse(r["findings"]["dob_applicable"])
+    def test_no_dob_type_still_fails_underage_when_dob_known(self):
+        young = date.today().replace(year=date.today().year - 10).isoformat()
+        r = C.check_expiry_age(doc_dob=young, has_expiry=False, prints_dob=False)
+        self.assertEqual(r["status"], "fail"); self.assertIn("underage", r["reason_codes"])
+    def test_no_dob_type_still_fails_expired(self):
+        r = C.check_expiry_age(doc_expiry="2020-01-01", has_expiry=True, prints_dob=False)
+        self.assertEqual(r["status"], "fail"); self.assertIn("document_expired", r["reason_codes"])
 
 class TestEngineFailClosed(unittest.TestCase):
     BASE = {"capture_quality": {"status": "pass", "reason_codes": []},
