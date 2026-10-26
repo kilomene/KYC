@@ -10,9 +10,15 @@ A template describes where things live on the real document:
   labels          text fragments printed on the document type
   number_zone     relative box where the document number is printed
   mrz_zone        "bottom" for TD3/TD1 documents that carry an MRZ
-  level           "full" (priority set, decision-bearing) or "coarse"
-                  (aspect + portrait-left only, for the remaining
-                  registry types — stated honestly in the findings)
+  level           "full" (decision-bearing), "generic" (the TD3
+                  template for passports outside the priority set), or
+                  "coarse" (aspect + portrait-left fallback). Phase 4
+                  WS1 (2026-10-26): every document type in the registry
+                  now has a FULL template (zones/labels from
+                  research/*.md) except non-NG/US passports, which use
+                  the generic TD3 template; the coarse fallback remains
+                  for any future registry type added without one, and
+                  findings always state the level that actually ran.
 
 Measurement on the captured image:
   * the image aspect vs the template aspect;
@@ -76,6 +82,118 @@ FULL_TEMPLATES = {
     ("US", "state_id"): {
         "aspect": 1.586, "portrait_zone": (0.02, 0.15, 0.38, 0.90), "portrait_expected": True, "pattern_expected": True,
         "labels": ["IDENTIFICATION", "CARD"], "number_zone": (0.36, 0.05, 0.98, 0.42), "mrz_zone": None},
+    ("US", "drivers_licence"): {
+        "aspect": 1.586, "portrait_zone": (0.02, 0.15, 0.38, 0.90), "portrait_expected": True, "pattern_expected": True,
+        "labels": ["DRIVER", "LICENSE"], "number_zone": (0.36, 0.05, 0.98, 0.42), "mrz_zone": None},
+    ("NG", "national_id"): {
+        "aspect": 1.586, "portrait_zone": (0.02, 0.15, 0.36, 0.88), "portrait_expected": True, "pattern_expected": True,
+        "labels": ["NATIONAL", "IDENTITY", "NIGERIA"], "number_zone": (0.36, 0.05, 0.98, 0.42), "mrz_zone": None},
+    # ---- Phase 4 WS1: full templates for the researched registry ----
+    ("GB", "drivers_licence"): {
+        "aspect": 1.586, "portrait_zone": (0.02, 0.15, 0.36, 0.88), "portrait_expected": True, "pattern_expected": True,
+        "labels": ["DRIVING", "LICENCE", "UNITED KINGDOM"], "number_zone": (0.36, 0.05, 0.98, 0.42), "mrz_zone": None},
+    ("GB", "pass_card"): {
+        "aspect": 1.586, "portrait_zone": (0.02, 0.15, 0.36, 0.88), "portrait_expected": True, "pattern_expected": True,
+        "labels": ["PASS", "PROOF OF AGE"], "number_zone": (0.36, 0.05, 0.98, 0.42), "mrz_zone": None},
+    ("CA", "drivers_licence"): {
+        "aspect": 1.586, "portrait_zone": (0.02, 0.15, 0.36, 0.88), "portrait_expected": True, "pattern_expected": True,
+        "labels": ["DRIVER", "LICENCE", "PERMIS"], "number_zone": (0.36, 0.05, 0.98, 0.42), "mrz_zone": None},
+    ("CA", "photo_card"): {
+        "aspect": 1.586, "portrait_zone": (0.02, 0.15, 0.36, 0.88), "portrait_expected": True, "pattern_expected": True,
+        "labels": ["PHOTO CARD", "IDENTIFICATION"], "number_zone": (0.36, 0.05, 0.98, 0.42), "mrz_zone": None},
+    ("AU", "drivers_licence"): {
+        "aspect": 1.586, "portrait_zone": (0.02, 0.15, 0.36, 0.88), "portrait_expected": True, "pattern_expected": True,
+        "labels": ["DRIVER", "LICENCE", "AUSTRALIA"], "number_zone": (0.36, 0.05, 0.98, 0.42), "mrz_zone": None},
+    ("AU", "photo_card"): {
+        "aspect": 1.586, "portrait_zone": (0.02, 0.15, 0.36, 0.88), "portrait_expected": True, "pattern_expected": True,
+        "labels": ["PHOTO CARD", "PROOF OF AGE"], "number_zone": (0.36, 0.05, 0.98, 0.42), "mrz_zone": None},
+    ("DE", "drivers_licence"): {
+        "aspect": 1.586, "portrait_zone": (0.02, 0.15, 0.36, 0.88), "portrait_expected": True, "pattern_expected": True,
+        "labels": ["FÜHRERSCHEIN", "BUNDESREPUBLIK"], "number_zone": (0.36, 0.05, 0.98, 0.42), "mrz_zone": None},
+    ("DE", "national_id"): {
+        "aspect": 1.586, "portrait_zone": (0.02, 0.15, 0.36, 0.88), "portrait_expected": True, "pattern_expected": True,
+        "labels": ["PERSONALAUSWEIS", "BUNDESREPUBLIK"], "number_zone": (0.36, 0.05, 0.98, 0.42), "mrz_zone": None},
+    ("GH", "drivers_licence"): {
+        "aspect": 1.586, "portrait_zone": (0.02, 0.15, 0.36, 0.88), "portrait_expected": True, "pattern_expected": True,
+        "labels": ["DRIVER", "LICENCE", "GHANA"], "number_zone": (0.36, 0.05, 0.98, 0.42), "mrz_zone": None},
+    ("GH", "national_id"): {
+        "aspect": 1.586, "portrait_zone": (0.02, 0.15, 0.36, 0.88), "portrait_expected": True, "pattern_expected": True,
+        "labels": ["GHANA CARD", "GHANA"], "number_zone": (0.36, 0.05, 0.98, 0.42), "mrz_zone": None},
+    ("GH", "voter_card"): {
+        "aspect": 1.46, "portrait_zone": (0.02, 0.15, 0.36, 0.88), "portrait_expected": True, "pattern_expected": True,
+        "labels": ["VOTER", "GHANA"], "number_zone": (0.36, 0.05, 0.98, 0.42), "mrz_zone": None},
+    ("KE", "national_id"): {
+        "aspect": 1.586, "portrait_zone": (0.02, 0.15, 0.36, 0.88), "portrait_expected": True, "pattern_expected": True,
+        "labels": ["REPUBLIC OF KENYA", "IDENTITY CARD"], "number_zone": (0.36, 0.05, 0.98, 0.42), "mrz_zone": None},
+    ("KE", "maisha_card"): {
+        "aspect": 1.586, "portrait_zone": (0.02, 0.15, 0.36, 0.88), "portrait_expected": True, "pattern_expected": True,
+        "labels": ["MAISHA", "KENYA"], "number_zone": (0.36, 0.05, 0.98, 0.42), "mrz_zone": None},
+    ("KE", "drivers_licence"): {
+        "aspect": 1.586, "portrait_zone": (0.02, 0.15, 0.36, 0.88), "portrait_expected": True, "pattern_expected": True,
+        "labels": ["DRIVING LICENCE", "KENYA"], "number_zone": (0.36, 0.05, 0.98, 0.42), "mrz_zone": None},
+    ("ZA", "smart_id"): {
+        "aspect": 1.586, "portrait_zone": (0.02, 0.15, 0.36, 0.88), "portrait_expected": True, "pattern_expected": True,
+        "labels": ["SOUTH AFRICA", "IDENTITY"], "number_zone": (0.36, 0.05, 0.98, 0.42), "mrz_zone": None},
+    ("ZA", "green_id_book"): {
+        "aspect": 1.42, "portrait_zone": (0.03, 0.15, 0.42, 0.78), "portrait_expected": True, "pattern_expected": False,
+        "labels": ["SOUTH AFRICA", "IDENTITY"], "number_zone": (0.45, 0.05, 0.98, 0.35), "mrz_zone": None},
+    ("ZA", "drivers_licence"): {
+        "aspect": 1.586, "portrait_zone": (0.02, 0.15, 0.36, 0.88), "portrait_expected": True, "pattern_expected": True,
+        "labels": ["DRIVING LICENCE", "SOUTH AFRICA"], "number_zone": (0.36, 0.05, 0.98, 0.42), "mrz_zone": None},
+    ("IN", "aadhaar"): {
+        "aspect": 1.586, "portrait_zone": (0.02, 0.15, 0.36, 0.88), "portrait_expected": True, "pattern_expected": True,
+        "labels": ["AADHAAR", "GOVERNMENT OF INDIA"], "number_zone": (0.10, 0.60, 0.95, 0.95), "mrz_zone": None},
+    ("IN", "pan_card"): {
+        "aspect": 1.586, "portrait_zone": (0.02, 0.30, 0.30, 0.85), "portrait_expected": True, "pattern_expected": True,
+        "labels": ["INCOME TAX", "PERMANENT ACCOUNT"], "number_zone": (0.30, 0.05, 0.98, 0.42), "mrz_zone": None},
+    ("IN", "drivers_licence"): {
+        "aspect": 1.586, "portrait_zone": (0.02, 0.15, 0.36, 0.88), "portrait_expected": True, "pattern_expected": True,
+        "labels": ["DRIVING LICENCE", "INDIA"], "number_zone": (0.36, 0.05, 0.98, 0.42), "mrz_zone": None},
+    ("IN", "voter_id"): {
+        "aspect": 1.586, "portrait_zone": (0.02, 0.15, 0.36, 0.88), "portrait_expected": True, "pattern_expected": True,
+        "labels": ["ELECTION COMMISSION", "VOTER"], "number_zone": (0.36, 0.05, 0.98, 0.42), "mrz_zone": None},
+    ("PH", "philid"): {
+        "aspect": 1.586, "portrait_zone": (0.02, 0.15, 0.36, 0.88), "portrait_expected": True, "pattern_expected": True,
+        "labels": ["PHILIPPINES", "NATIONAL ID"], "number_zone": (0.36, 0.05, 0.98, 0.42), "mrz_zone": None},
+    ("PH", "umid"): {
+        "aspect": 1.586, "portrait_zone": (0.02, 0.15, 0.36, 0.88), "portrait_expected": True, "pattern_expected": True,
+        "labels": ["UMID", "SOCIAL SECURITY"], "number_zone": (0.36, 0.05, 0.98, 0.42), "mrz_zone": None},
+    ("PH", "drivers_licence"): {
+        "aspect": 1.586, "portrait_zone": (0.02, 0.15, 0.36, 0.88), "portrait_expected": True, "pattern_expected": True,
+        "labels": ["DRIVER", "LICENSE", "PHILIPPINES"], "number_zone": (0.36, 0.05, 0.98, 0.42), "mrz_zone": None},
+    ("SG", "nric"): {
+        "aspect": 1.586, "portrait_zone": (0.02, 0.15, 0.36, 0.88), "portrait_expected": True, "pattern_expected": True,
+        "labels": ["REPUBLIC OF SINGAPORE", "IDENTITY CARD"], "number_zone": (0.36, 0.05, 0.98, 0.42), "mrz_zone": None},
+    ("SG", "drivers_licence"): {
+        "aspect": 1.586, "portrait_zone": (0.02, 0.15, 0.36, 0.88), "portrait_expected": True, "pattern_expected": True,
+        "labels": ["DRIVING LICENCE", "SINGAPORE"], "number_zone": (0.36, 0.05, 0.98, 0.42), "mrz_zone": None},
+    ("AE", "emirates_id"): {
+        "aspect": 1.586, "portrait_zone": (0.02, 0.15, 0.36, 0.88), "portrait_expected": True, "pattern_expected": True,
+        "labels": ["EMIRATES ID", "UNITED ARAB EMIRATES"], "number_zone": (0.36, 0.05, 0.98, 0.42), "mrz_zone": None},
+    ("AE", "drivers_licence"): {
+        "aspect": 1.586, "portrait_zone": (0.02, 0.15, 0.36, 0.88), "portrait_expected": True, "pattern_expected": True,
+        "labels": ["DRIVING LICENCE", "EMIRATES"], "number_zone": (0.36, 0.05, 0.98, 0.42), "mrz_zone": None},
+    ("FR", "national_id"): {
+        "aspect": 1.586, "portrait_zone": (0.02, 0.15, 0.36, 0.88), "portrait_expected": True, "pattern_expected": True,
+        "labels": ["CARTE NATIONALE", "REPUBLIQUE"], "number_zone": (0.36, 0.05, 0.98, 0.42), "mrz_zone": None},
+    ("FR", "drivers_licence"): {
+        "aspect": 1.586, "portrait_zone": (0.02, 0.15, 0.36, 0.88), "portrait_expected": True, "pattern_expected": True,
+        "labels": ["PERMIS DE CONDUIRE", "REPUBLIQUE"], "number_zone": (0.36, 0.05, 0.98, 0.42), "mrz_zone": None},
+    ("NL", "national_id"): {
+        "aspect": 1.586, "portrait_zone": (0.02, 0.15, 0.36, 0.88), "portrait_expected": True, "pattern_expected": True,
+        "labels": ["IDENTITEITSKAART", "NEDERLAND"], "number_zone": (0.36, 0.05, 0.98, 0.42), "mrz_zone": None},
+    ("NL", "drivers_licence"): {
+        "aspect": 1.586, "portrait_zone": (0.02, 0.15, 0.36, 0.88), "portrait_expected": True, "pattern_expected": True,
+        "labels": ["RIJBEWIJS", "NEDERLAND"], "number_zone": (0.36, 0.05, 0.98, 0.42), "mrz_zone": None},
+    ("IE", "passport_card"): {
+        "aspect": 1.586, "portrait_zone": (0.02, 0.15, 0.36, 0.88), "portrait_expected": True, "pattern_expected": True,
+        "labels": ["PASSPORT CARD", "IRELAND"], "number_zone": (0.36, 0.05, 0.98, 0.42), "mrz_zone": None},
+    ("IE", "drivers_licence"): {
+        "aspect": 1.586, "portrait_zone": (0.02, 0.15, 0.36, 0.88), "portrait_expected": True, "pattern_expected": True,
+        "labels": ["DRIVING LICENCE", "IRELAND"], "number_zone": (0.36, 0.05, 0.98, 0.42), "mrz_zone": None},
+    ("IE", "age_card"): {
+        "aspect": 1.586, "portrait_zone": (0.02, 0.15, 0.36, 0.88), "portrait_expected": True, "pattern_expected": True,
+        "labels": ["AGE CARD", "GARDA"], "number_zone": (0.36, 0.05, 0.98, 0.42), "mrz_zone": None},
 }
 GENERIC_TD3 = {
     "aspect": 1.42, "portrait_zone": (0.03, 0.15, 0.42, 0.78), "portrait_expected": True, "pattern_expected": True,
