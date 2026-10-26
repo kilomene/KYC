@@ -1,15 +1,80 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8">
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>KYC — a Nova Inc product</title>
-<style>body{font-family:system-ui,sans-serif;max-width:720px;margin:2rem auto;padding:0 1rem;line-height:1.5;color:#111}a{color:#0b5fff}.card{border:1px solid #ddd;border-radius:12px;padding:1rem 1.25rem;margin:1rem 0}</style></head>
+<title>KYC — Identity Verification by Nova Inc</title>
+<meta name="description" content="KYC is Nova Inc's identity verification platform: live document scanning, automatic decisions, face verification, liveness, screening and business verification.">
+<style>
+  :root{color-scheme:light dark;--bg:#f6f7fb;--card:#fff;--ink:#10131a;--muted:#5b6472;--line:#dde2ec;--accent:#0b5fff;--good:#087f5b;--warn:#9a6700}
+  @media (prefers-color-scheme:dark){:root{--bg:#0b0e14;--card:#131824;--ink:#eef1f7;--muted:#9aa4b5;--line:#263047}}
+  *{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--ink);line-height:1.55}
+  main{max-width:880px;margin:0 auto;padding:3rem 1.25rem 4rem}
+  .brand{font-size:.85rem;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);font-weight:700}
+  h1{font-size:3rem;line-height:1.05;margin:.4rem 0 .6rem} h2{font-size:1.25rem;margin:0 0 .6rem} p{margin:.45rem 0}
+  .lede{font-size:1.15rem;color:var(--muted);max-width:42rem}
+  .status{display:inline-flex;gap:.5rem;align-items:center;border:1px solid var(--line);background:var(--card);border-radius:999px;padding:.35rem .8rem;font-weight:600;margin:1rem 0}
+  .dot{width:.6rem;height:.6rem;border-radius:50%;background:var(--good)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:1rem;margin:1.25rem 0}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:1.1rem 1.25rem}
+  ul{margin:.4rem 0 .2rem;padding-left:1.2rem} li{margin:.25rem 0}
+  a{color:var(--accent)} .links{display:flex;flex-wrap:wrap;gap:.75rem;margin-top:1rem}
+  .btn{display:inline-block;border:1px solid var(--accent);border-radius:10px;padding:.55rem 1rem;text-decoration:none;font-weight:600}
+  .btn.primary{background:var(--accent);color:#fff}
+  footer{color:var(--muted);font-size:.92rem;margin-top:2rem;border-top:1px solid var(--line);padding-top:1rem}
+</style>
+</head>
 <body>
-<h1>KYC</h1>
-<p><strong>Know Your Customer, built our way.</strong> A Nova Inc product.</p>
-<div class="card"><h2>Status — honest</h2>
-<p><strong>Phase 1 local MVP.</strong> This build runs locally: tenant API keys, hosted applicant flow (consent → document → selfie → submit), real checks (image quality, OCR, MRZ check digits, expiry/age, name/DOB consistency), a fail-closed decision engine, and human review in the console.</p>
-<p><strong>Not yet built:</strong> face match and liveness are Phase 2 — so Level 2/3 sessions cannot auto-approve here; they go to a human reviewer who compares the document and selfie images. Proof of address, sanctions screening, and KYB are Phase 3. Nothing on this page claims a certification we do not hold.</p></div>
-<div class="card"><h2>Links</h2>
-<p><a href="/console">Tenant review console</a> — paste an API key to work the review queue.</p>
-<p>Applicant flow links are created per session by a tenant through the API (<code>POST /v1/sessions</code>) and look like <code>/flow/&lt;token&gt;</code>.</p></div>
-<p style="color:#666;font-size:.9em">KYC is a Nova Inc product. Local development build — not a public deployment.</p>
-</body></html>
+<main>
+  <div class="brand">Nova Inc</div>
+  <h1>KYC</h1>
+  <p class="lede"><strong>Know Your Customer, built our way.</strong> An identity
+  verification platform for businesses that need to confirm a person is who
+  they claim to be — before giving them an account, money, or access.</p>
+
+  <div class="status"><span class="dot"></span> Live at kyc.novamail.store</div>
+
+  <div class="grid">
+    <section class="card">
+      <h2>What is live</h2>
+      <ul>
+        <li>Tenant API keys with strict test/live separation</li>
+        <li>Phone-only hosted flow with a live camera document scanner</li>
+        <li>Automatic capture — the scanner must detect a real document first</li>
+        <li>Automatic decisions in the standard path</li>
+        <li>Document classification, multi-pass OCR, MRZ and barcode cross-checks</li>
+        <li>Continuous face tracking, face match and active liveness</li>
+        <li>Screen/forgery evidence, deepfake signals, VPN/proxy hard gate</li>
+        <li>Proof of address, sanctions screening and ongoing monitoring</li>
+        <li>KYB business verification and reusable verified credentials</li>
+        <li>Review console for audit, exceptions and required dispositions</li>
+      </ul>
+    </section>
+    <section class="card">
+      <h2>Honest limits</h2>
+      <ul>
+        <li>KYB has <strong>no live government registry connection</strong> yet — it is format validation, document evidence and reviewer confirmation, labelled as such.</li>
+        <li>Liveness is an <strong>active movement challenge</strong>. It is not passive liveness and carries no iBeta or ISO certification.</li>
+        <li>Face and liveness accuracy benchmarks (FAR/FRR) are Phase 4 work; no benchmark number is claimed yet.</li>
+        <li>Webhook delivery is one signed attempt, logged. Retries and replay are not built yet.</li>
+        <li>The service is reached through a Cloudflare tunnel; final Cloudflare-native hosting is Phase 4 work.</li>
+      </ul>
+    </section>
+  </div>
+
+  <section class="card">
+    <h2>Access</h2>
+    <p>Tenant teams work cases in the review console. Applicant verification
+    links are created per session by a tenant through the API and look like
+    <code>/flow/&lt;token&gt;</code>.</p>
+    <div class="links">
+      <a class="btn primary" href="/console">Open the review console</a>
+      <a class="btn" href="/healthz">Service health</a>
+    </div>
+  </section>
+
+  <footer>KYC is a Nova Inc product. No certification, partnership, or
+  capability is claimed here unless it has been built, tested, and measured.</footer>
+</main>
+</body>
+</html>
