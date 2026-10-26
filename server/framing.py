@@ -13,8 +13,15 @@ whole image decides:
 
     ratio >= 0.25          -> pass
     0.10 <= ratio < 0.25   -> unclear (document present but small in
-                              frame — a human looks / user re-scans)
+                              frame)
     no 4-point contour, or ratio < 0.10 -> fail
+
+This check is REQUIRED and decision-bearing for document sessions
+(server/flowconfig.py + server/engine.py): fail auto-rejects with
+reason document_not_detected, and unclear auto-rejects with reason
+document_quality_rescan — the live scanner gates capture on its own
+client-side document detection, so a submitted fail/unclear framing
+is a bad capture to redo, never a case queued for a human.
 
 If OpenCV is unavailable the check returns 'error' — never a pass
 (the fail-closed pattern used by every check in this codebase).
