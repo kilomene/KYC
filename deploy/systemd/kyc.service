@@ -1,0 +1,15 @@
+[Unit]
+Description=KYC identity verification platform (Nova Inc) — local server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=HOME=/home/hatch
+WorkingDirectory=/home/hatch/workspace/KYC
+ExecStart=/usr/bin/python3 -m server --port 8790
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
