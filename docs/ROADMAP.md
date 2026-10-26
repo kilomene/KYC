@@ -54,27 +54,92 @@ private storage) behind the docs/API.md contract. Not deployed anywhere.
   beyond OCR/MRZ/consistency (Phase 2), PoA + screening (Phase 3), KYB
   (Phase 3), billing, webhook backoff/replay.
 
-## Phase 2 — Automation: face match, liveness, authenticity
+## Phase 2 — Automation: face match, liveness, authenticity ✅ BUILT LOCALLY (2026-10-26)
 
-- Face match + liveness integrated behind the check interface;
-  demographic performance testing per COMPLIANCE §3.
-- Document authenticity signals beyond OCR (template, recapture,
-  tamper signals).
-- Decision engine auto-decides clean passes and clear fails; everything
-  borderline routes to review.
-- Fraud/velocity signals v1 (duplicate document/face/device per tenant,
-  with privacy review before any cross-tenant signal is even considered —
-  default: per-tenant only).
-- **Acceptance:** published internal benchmarks (false accept / false
-  reject on our test sets), reviewer overturn rate measured, provider
-  outage drill → system degrades fail-closed.
+- [x] Face match behind the check interface: YuNet detection + SFace
+      embeddings, cosine decision vs OpenCV's published 0.363 threshold
+      (configurable per tenant, with a near-threshold `unclear` band);
+      missing models → `error`/`model_missing`, never a fake pass.
+      Models fetched by `scripts/fetch_models.py` (YuNet 2023mar;
+      SFace — the zoo ships `2021dec`, there is no `2023dec` file).
+- [x] Liveness v1 — **active liveness (movement challenge)**:
+      server-issued random movement sequence, applicant records/uploads
+      a short video, server analyses YuNet frame features (face
+      presence ≥80%, challenged displacement, static-replay rejection).
+      Frame-feature analysis is a pure, unit-tested function.
+- [x] Document authenticity: one check combining block-wise ELA,
+      editor/screenshot metadata, moiré FFT energy-share and
+      template/format consistency; combined evidence decides, one weak
+      signal alone never fails. Thresholds calibrated on measured
+      synthetic images (recorded in `server/authenticity.py`).
+- [x] Explainable risk engine (`server/risk.py`): named point
+      contributions per check/fraud signal, 0–100 score + band, stored
+      with every decision; bands feed routing only.
+- [x] Auto-decision upgrade: Level 2 with all required checks passing
+      AND risk at/below the tenant ceiling auto-approves
+      (`decided_by=engine`); hard fails still auto-reject; the
+      fail-closed invariant is unchanged (tested).
+- [x] Versioned no-code flow config foundations: per-tenant per-level
+      required checks, face thresholds, risk ceiling, PoA window,
+      screening threshold, SLA hours, four-eyes toggle —
+      `GET/PUT /v1/config`; decisions record `config_version`
+      (config-change-affects-decision is tested).
+- [x] Injection/virtual-camera signals (editor metadata on "captures",
+      missing camera EXIF on JPEG selfies) feed `fraud_signals` and
+      risk — they route, never silently reject.
+- [ ] Demographic performance testing per COMPLIANCE §3 — **not done**;
+      no accuracy claim is made yet.
+- [ ] Fraud/velocity v2 (duplicate document/face/device per tenant):
+      v1 velocity + IP/UA signals exist from Phase 1; duplicate-face /
+      duplicate-document detection is **not** built.
+- **Acceptance — partially met:** fail-closed degradation is tested
+  (missing model/tesseract paths return `error`, decisions never
+  auto-approve on them). **Not yet:** published FAR/FRR benchmarks and
+  reviewer overturn-rate measurement (need real traffic / a labelled
+  evaluation set).
 
-## Phase 3 — Enhanced + KYB
+## Phase 3 — Enhanced + KYB ✅ BUILT LOCALLY (2026-10-26)
 
-- Proof of address, sanctions/PEP/adverse-media screening with human
-  disposition of hits, ongoing monitoring + re-screening alerts.
-- KYB: registry checks, directors/UBOs each verified at Level 2+.
-- Four-eyes review option; reviewer roles and SLA tooling.
+- [x] Proof of address (Level 3): OCR + date-within-window (default
+      90 days, tenant-configurable) + name/address token matching;
+      no date found → `unclear`, stale date → fail (all tested).
+- [x] Screening engine (`server/screening.py`): CSV lists
+      (`data/lists/*.csv` + repo `lists/`), normalised-token +
+      difflib similarity + DOB proximity; hits are `pending` rows that
+      block auto-approval; reviewer disposition endpoint (confirmed →
+      rejected with `sanctions_hit_confirmed`; a name match alone
+      never auto-rejects). Ships with a clearly-labelled SAMPLE
+      fixture list; `scripts/fetch_ofac.py` downloads the real OFAC
+      SDN list (verified: 7,519 entries). PEP/adverse-media lists are
+      drop-in CSVs, not bundled.
+- [x] Ongoing monitoring: `POST /v1/monitoring/rescreen` + CLI
+      (`python3 -m server.monitoring`) re-screens approved applicants
+      against current lists; new hits create alert rows, a
+      `screening.hit_new` webhook and a reopened case (tested,
+      including no-duplicate-alerts on re-run).
+- [x] KYB: businesses API, people (directors/UBOs with ownership %)
+      each a normal applicant who must reach Level 2+ approved;
+      registry leg = registration-number **format** validation
+      (NG/US/GB/CA/AU/DE/GH) + company document upload + reviewer
+      confirmation — **no live government registry connection** in
+      this build, labelled as such. Business is `verified` only when
+      registry is confirmed AND all people are approved (tested).
+- [x] Four-eyes + roles + SLA: named reviewer tokens via
+      `POST /v1/users` (roles admin/reviewer); overriding an engine
+      rejection, or approving after a false-positive disposition,
+      requires a second distinct reviewer (`awaiting_second` →
+      `POST /v1/cases/{id}/confirm`; same-reviewer confirm is refused
+      — tested). Cases carry `sla_due_at` (default +24h, config) and
+      the queue sorts by SLA. All audited.
+- [x] Reviewer assist: deterministic `assist` block on the case view
+      (mismatches, risk summary, suggested disposition with evidence),
+      labelled "Assist — a human decides" (logic unit-tested).
+- [x] Reusable verified credential: HMAC-SHA256-signed claims issued
+      on approval; verify (any tenant, claims only), revoke (issuing
+      tenant / the applicant), and credential-based sessions that
+      inherit shared checks with `provider='verified_credential'` —
+      biometrics/liveness are never inherited; tampered, revoked,
+      expired and under-level credentials are all refused (tested).
 
 ## Phase 4 — Scale & polish
 
