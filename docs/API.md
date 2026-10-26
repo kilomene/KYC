@@ -34,10 +34,10 @@ keys, and is **platform-operator only** — it requires the server-side
 
 | Method & path | Purpose |
 |---|---|
-| `POST /v1/applicants` | Create applicant from name / DOB / country (+ optional external_ref) |
+| `POST /v1/applicants` | Create applicant: declared name / DOB / country (+ optional external_ref), or `identity_source: "document"` with country only — see "Identity source" below |
 | `GET /v1/applicants/{id}` | Applicant summary (no document images by default) |
 | `DELETE /v1/applicants/{id}` | Erasure (audited, synchronous, confirmed by webhook `applicant.deleted`) |
-| `POST /v1/sessions` | Create session: applicant_id, level, optional allowed document types/countries, expiry override |
+| `POST /v1/sessions` | Create session: applicant_id, level, optional allowed document types/countries, expiry override. With `{identity_source: "document", country, level}` and no applicant_id, a document-sourced applicant shell is created inline (see "Identity source"). The response carries `applicant_id` and `identity_source` |
 | `GET /v1/sessions/{id}` | Status, decision, reason codes, timestamps |
 | `POST /v1/sessions/{id}/cancel` | Cancel a live session; its link dies immediately |
 | `POST /v1/sessions/{id}/documents` | **NOT IMPLEMENTED (draft)** — API-only upload when not using the hosted flow |
@@ -91,9 +91,67 @@ Hosted-flow additions (flow token auth):
 | `POST /v1/flow/liveness/challenge` | Issue the server-generated movement challenge for this session (random 2-direction sequence); returns the challenge + a plain-language instruction |
 | `POST /v1/flow/liveness` | Multipart upload of the liveness video (`video` part, webm/mp4) — analysed server-side (face presence, challenged movement, static-replay rejection). Labelled in the UI as **active liveness (movement challenge)** |
 | `POST /v1/flow/document/back` | Attach the BACK side scan to an existing flow document (`document_id` + `back` part). 422 if the document type has no back side (per-country registry, `server/docregistry.py`). Document/selfie/liveness uploads accept a `capture_meta` JSON field (e.g. `{"method":"live_camera","side":"front"}`), stored per side and shown in the review console. The hosted flow itself is a live camera scanner — it has no file-upload path |
+| `POST /v1/flow/document/process` | Read-back step: the server reads the session's uploaded document (framing + multi-pass OCR + MRZ + template field extraction) and returns `{document_id, document_label, framing, read: {first_name, last_name, dob, number, expiry}, missing[], complete}`. The hosted flow shows the applicant what was read and lets them confirm or rescan — there is no form; rescan is the only correction path |
 | `POST /v1/flow/poa` | Multipart proof-of-address upload (`document` part) for Level 3 |
 | `GET /v1/flow/credential` | The applicant's own issued credential for this session (claims + signature) |
 | `POST /v1/flow/credential/revoke` | The applicant revokes their own credential |
+
+## Identity source: declared vs read-from-document
+
+Every applicant carries `identity_source` — `"declared"` (default) or
+`"document"`.
+
+**Declared (the original contract).** `POST /v1/applicants` requires
+`first_name`, `last_name`, `dob` and `country` (`422` otherwise). The
+document is cross-checked against the declaration (the `consistency`
+check and the `data_consistency` matrix's applicant source).
+
+**Document (owner's order, 2026-10-26).** With
+`{"identity_source": "document", "country": "NG"}` the tenant declares
+NO name/DOB — the applicant only picks a document in the flow, and the
+platform reads the identity from it. Rules:
+
+- `country` is still required (the jurisdiction whose document the
+  applicant will present); `first_name` / `last_name` / `dob` are
+  optional. An `identity_source` other than `declared`/`document` →
+  `422`.
+- Sessions: pass the applicant's id as usual, or create the session
+  inline with `{identity_source: "document", country, level}` — a
+  document-sourced applicant shell is created for you (`422` without
+  `country`). Session responses carry `identity_source`.
+- Reading: the flow's read-back (`POST /v1/flow/document/process`) and
+  submit both run the same reader — framing, multi-pass OCR, MRZ,
+  template field extraction — merged by trust order: check-digit-valid
+  MRZ > template extraction > any uploaded `doc_*` fields. The merged
+  read is stored on the document (`doc_first_name` etc. are the
+  SERVER's read, never the client's typing; the hosted flow collects
+  no typed fields at all — there are no name/DOB/number inputs in it).
+- Read-back contract: `missing` lists required identity fields that
+  could not be read — `name` and `number` always; `dob` only where the
+  document type carries an MRZ (an MRZ always encodes a DOB). Document
+  types that print no DOB (e.g. the standard NG NIN slip) are never
+  faulted for a missing DOB. `complete` is true only when framing
+  passed and nothing required is missing.
+- Consistency semantics: where tenant-declared details ARE present
+  they are cross-checked exactly as on the declared path. Where
+  nothing was declared, `consistency` evaluates agreement across the
+  document's own reads (template extraction vs check-digit-valid MRZ
+  vs the OCR text read; disagreements fail with `doc_*_reads_disagree`
+  reason codes) and the `data_consistency` matrix compares the
+  extraction against the printed/MRZ/payload sources with the
+  applicant source empty — an applicant mismatch is impossible on
+  this path by construction.
+- Adoption: at decision time the read identity is written onto the
+  applicant record as the verified identity (`identity_document_id`
+  records the source document; audit action `identity.adopt`). Only
+  empty fields are filled — a declared field is never overwritten,
+  and when a declaration contradicted the document
+  (`name_mismatch`/`dob_mismatch` in the decision) the declared
+  record stands untouched.
+- Screening, PoA name matching and the expiry/age check consume the
+  session identity (declared fields, or the document read where
+  nothing was declared), so a Level 3 document-sourced session is
+  screened on the name read from its document.
 
 Screening list format (`data/lists/*.csv`, one header row):
 `full_name,dob,country,list_source,entry_id` — DOB as `YYYY-MM-DD`.
