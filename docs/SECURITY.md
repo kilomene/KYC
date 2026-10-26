@@ -3,6 +3,15 @@
 *A platform holding ID documents and faces is a high-value target.
 Security here is not a phase; it is the precondition for every phase.*
 
+*STATUS (WS0 audit, 2026-10-26): this document is the threat model and
+the control TARGETS. It is not a statement that every control below is
+implemented today. Section 2 is headed "baseline controls", but the
+audit found several of them partial or not yet built (reviewer MFA,
+encryption at rest, malware scanning, backup/restore testing, CI
+vulnerability scanning, independent penetration test). The verified
+implementation status of each control lives in docs/CLAIMS-AUDIT.md;
+closing the gaps is Phase 4 WS3.*
+
 ## 1. Threat model (top threats)
 
 | Threat | Example | Primary controls |
