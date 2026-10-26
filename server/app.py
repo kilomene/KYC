@@ -34,6 +34,9 @@ from . import deepfake as DEEPFAKE
 from . import facetrack as FACETRACK
 from . import templates as TEMPLATES
 from . import fieldtemplates as FIELDTEMPLATES
+from . import storage as STORAGE
+from . import mfa as MFA
+from . import ratelimit as RL
 
 # KYB registry-number FORMAT rules per country (Phase 3). Format
 # validation only — the local build has NO live government registry
@@ -143,16 +146,25 @@ class Ctx:
     def __init__(self, db): self.db = db
 
 def make_handler(db: DB, data_dir: str):
+    limiter = RL.RateLimiter()
+    rl_limits = RL.limits_from_env(os.environ)
+    def max_body_bytes():
+        try:
+            return int(os.environ.get("KYC_MAX_BODY_BYTES") or 25 * 1024 * 1024)
+        except ValueError:
+            return 25 * 1024 * 1024
     class H(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
         # ---- plumbing ----
         def log_message(self, *a): pass
-        def _send(self, code, body, ctype="application/json"):
+        def _send(self, code, body, ctype="application/json", headers=None):
             if isinstance(body, (dict, list)): body = json.dumps(body).encode()
             if isinstance(body, str): body = body.encode()
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
+            for k, v in (headers or {}).items():
+                self.send_header(k, str(v))
             self.end_headers()
             self.wfile.write(body)
         def _err(self, code, msg, code_str=None):
@@ -181,9 +193,38 @@ def make_handler(db: DB, data_dir: str):
             if token:
                 row = db.one("SELECT * FROM tenant_users WHERE token_hash=? AND tenant_id=? AND env=?", (sha256(token), tid, env))
                 if row and not row["revoked_at"]:
-                    return {"identity": f"user:{row['id']}", "name": row["name"], "role": row["role"], "user_id": row["id"]}
+                    keys = row.keys()
+                    return {"identity": f"user:{row['id']}", "name": row["name"], "role": row["role"], "user_id": row["id"],
+                            "mfa_enabled": bool(row["mfa_enabled"]) if "mfa_enabled" in keys else False,
+                            "totp_secret": row["totp_secret"] if "totp_secret" in keys else None,
+                            "mfa_last_counter": (row["mfa_last_counter"] if "mfa_last_counter" in keys else -1)}
                 return None  # a presented-but-invalid reviewer token is an auth failure, not a fallback
-            return {"identity": "api-key", "name": "tenant-api-key", "role": "admin", "user_id": None}
+            return {"identity": "api-key", "name": "tenant-api-key", "role": "admin", "user_id": None,
+                    "mfa_enabled": False, "totp_secret": None, "mfa_last_counter": -1}
+
+        def _mfa_gate(self, reviewer):
+            """WS3 reviewer MFA gate for PRIVILEGED actions (case
+            decide/confirm, hit disposition, KYB registry decision).
+            Returns None when the action may proceed, else an error
+            response. Policy (docs/SECURITY.md): MFA-enabled reviewers
+            must present a valid, non-replayed X-Reviewer-TOTP code;
+            when the operator sets KYC_REQUIRE_REVIEWER_MFA=1, reviewers
+            who have not enrolled are refused until they enrol. The
+            tenant API-key fallback identity is the tenant admin
+            credential itself and is not TOTP-gated."""
+            if not reviewer or reviewer.get("user_id") is None:
+                return None
+            if reviewer.get("mfa_enabled"):
+                code = self.headers.get("X-Reviewer-TOTP", "")
+                matched = MFA.verify(reviewer.get("totp_secret"), code,
+                                     last_counter=reviewer.get("mfa_last_counter", -1))
+                if matched is None:
+                    return self._err(401, "a valid MFA code (X-Reviewer-TOTP) is required for this action", "mfa_required_or_invalid")
+                db.execute("UPDATE tenant_users SET mfa_last_counter=? WHERE id=?", (matched, reviewer["user_id"]))
+                return None
+            if os.environ.get("KYC_REQUIRE_REVIEWER_MFA") in ("1", "true", "yes"):
+                return self._err(403, "MFA enrolment is required before privileged reviewer actions on this deployment", "mfa_enrollment_required")
+            return None
         def _flow_session(self):
             auth = self.headers.get("Authorization", "")
             token = auth[7:].strip() if auth.startswith("Bearer ") else self.headers.get("X-Flow-Token", "")
@@ -211,10 +252,53 @@ def make_handler(db: DB, data_dir: str):
             country = ((h.get("X-IP-Country") or h.get("CF-IPCountry") or "").strip().upper() or None)
             return {"ip": ip, "country": country, "user_agent": h.get("User-Agent", "")}
 
+        # ---- WS3 gates: body size + rate limits ----
+        def _preflight(self, p):
+            """Returns an error response to send, or None to proceed.
+            Body size is refused BEFORE the body is read into memory;
+            rate limits are per-IP plus per-API-key / per-flow-token
+            (identity = hash of the presented credential, so unknown
+            keys are throttled too). 429s carry Retry-After."""
+            if self.command in ("POST", "PUT"):
+                try: n = int(self.headers.get("Content-Length") or 0)
+                except ValueError: n = 0
+                if n > max_body_bytes():
+                    self.close_connection = True
+                    return self._err(413, "request body too large", "body_too_large")
+            if p.startswith("/v1/"):
+                ip = self._client_geo()["ip"] or "unknown"
+                ok, retry = limiter.check("ip:" + ip, rl_limits["ip_per_min"], rl_limits["window"])
+                if not ok:
+                    return self._send(429, {"error": {"code": "rate_limited", "message": "rate limit exceeded (per-IP)"}},
+                                      headers={"Retry-After": retry})
+                auth = self.headers.get("Authorization", "")
+                cred = auth[7:].strip() if auth.startswith("Bearer ") else (self.headers.get("X-Flow-Token", "") or "anon")
+                if p.startswith("/v1/flow/"):
+                    ok, retry = limiter.check("flow:" + sha256(cred), rl_limits["flow_per_min"], rl_limits["window"])
+                else:
+                    ok, retry = limiter.check("key:" + sha256(cred), rl_limits["api_per_min"], rl_limits["window"])
+                if not ok:
+                    return self._send(429, {"error": {"code": "rate_limited", "message": "rate limit exceeded"}},
+                                      headers={"Retry-After": retry})
+            return None
+
+        def _fs(self, rel):
+            """Filesystem path holding PLAINTEXT for the check pipeline
+            (WS3 encryption at rest): the real path for a plaintext
+            file, a per-request decrypted temp copy for an encrypted
+            one. Temp copies are deleted by do_POST's finally block."""
+            path, is_temp = STORAGE.materialize(data_dir, rel)
+            if is_temp:
+                self._tmp_paths.append(path)
+            return path
+
         # ================= GET =================
         def do_GET(self):
             p = urlparse(self.path).path
-            try: return self._get(p)
+            try:
+                gate = self._preflight(p)
+                if gate is not None: return gate
+                return self._get(p)
             except Exception as e: return self._err(500, f"internal: {e}", "internal")
         def _get(self, p):
             if p == "/" or p == "/index.html": return self._static("index.html")
@@ -263,6 +347,18 @@ def make_handler(db: DB, data_dir: str):
                 if p == "/v1/webhooks":
                     rows = db.all("SELECT id,url,events,created_at FROM webhook_endpoints WHERE tenant_id=? AND env=?", (tid, env))
                     return self._send(200, {"endpoints": [row_to_dict(r, ("events",)) for r in rows]})
+                if p == "/v1/webhooks/deliveries":
+                    from urllib.parse import parse_qs
+                    q = parse_qs(urlparse(self.path).query)
+                    status_filter = (q.get("status") or [None])[0]
+                    if status_filter:
+                        rows = db.all("SELECT d.* FROM webhook_deliveries d JOIN webhook_endpoints e ON e.id=d.endpoint_id "
+                                      "WHERE d.tenant_id=? AND e.env=? AND d.status=? ORDER BY d.created_at DESC LIMIT 200",
+                                      (tid, env, status_filter))
+                    else:
+                        rows = db.all("SELECT d.* FROM webhook_deliveries d JOIN webhook_endpoints e ON e.id=d.endpoint_id "
+                                      "WHERE d.tenant_id=? AND e.env=? ORDER BY d.created_at DESC LIMIT 200", (tid, env))
+                    return self._send(200, {"deliveries": [row_to_dict(r) for r in rows]})
                 m = re.match(r"^/v1/applicants/([\w-]+)$", p)
                 if m:
                     r = db.one("SELECT * FROM applicants WHERE id=? AND tenant_id=? AND env=?", (m.group(1), tid, env))
@@ -429,21 +525,41 @@ def make_handler(db: DB, data_dir: str):
             fp = os.path.join(data_dir, rel)
             if not os.path.isfile(fp): return self._err(404, "file gone")
             db.audit("tenant", tid, tid, "image.view", table, rid)  # audited view; served directly, no persistent URL
-            with open(fp, "rb") as f: data = f.read()
+            try:
+                data = STORAGE.read_file(data_dir, rel)  # decrypts transparently when WS3 encryption is on
+            except STORAGE.StorageKeyMissing:
+                return self._err(503, "stored file is encrypted and no master key is configured on this server", "storage_unavailable")
+            except STORAGE.StorageError as e:
+                return self._err(500, f"stored file cannot be decrypted: {e}", "storage_error")
             self._send(200, data, "image/jpeg")
 
         # ================= POST / DELETE =================
         def do_POST(self):
             p = urlparse(self.path).path
-            try: return self._post(p)
+            self._tmp_paths = []
+            try:
+                gate = self._preflight(p)
+                if gate is not None: return gate
+                return self._post(p)
             except Exception as e: return self._err(500, f"internal: {e}", "internal")
+            finally:
+                for t in getattr(self, "_tmp_paths", []):
+                    try: os.remove(t)
+                    except OSError: pass
+                self._tmp_paths = []
         def do_DELETE(self):
             p = urlparse(self.path).path
-            try: return self._delete(p)
+            try:
+                gate = self._preflight(p)
+                if gate is not None: return gate
+                return self._delete(p)
             except Exception as e: return self._err(500, f"internal: {e}", "internal")
         def do_PUT(self):
             p = urlparse(self.path).path
-            try: return self._put(p)
+            try:
+                gate = self._preflight(p)
+                if gate is not None: return gate
+                return self._put(p)
             except Exception as e: return self._err(500, f"internal: {e}", "internal")
 
         def _put(self, p):
@@ -623,6 +739,54 @@ def make_handler(db: DB, data_dir: str):
                 db.execute("UPDATE tenant_users SET revoked_at=? WHERE id=?", (now_iso(), r["id"]))
                 db.audit("tenant", tid, tid, "user.revoke", "tenant_user", r["id"])
                 return self._send(200, {"revoked": True})
+            # --- reviewer MFA enrolment / confirm / reset (WS3) ---
+            # Tenant-admin (API key) managed. The secret is returned
+            # ONCE at enrolment; MFA activates only after the user
+            # proves possession with a valid code (confirm). Reset is
+            # the recovery path and FAILS CLOSED: it clears the secret
+            # and disables MFA — the user must re-enrol; there is no
+            # bypass code and a reviewer token cannot reset its own MFA
+            # (these endpoints require the tenant API key).
+            m = re.match(r"^/v1/users/([\w-]+)/mfa/(enroll|confirm|reset)$", p)
+            if m:
+                r = db.one("SELECT * FROM tenant_users WHERE id=? AND tenant_id=? AND env=?", (m.group(1), tid, env))
+                if not r: return self._err(404, "not found")
+                action = m.group(2)
+                if action == "enroll":
+                    if r["revoked_at"]: return self._err(409, "user is revoked")
+                    secret = MFA.new_secret()
+                    db.execute("UPDATE tenant_users SET totp_secret=?, mfa_enabled=0, mfa_last_counter=-1 WHERE id=?",
+                               (secret, r["id"]))
+                    db.audit("tenant", tid, tid, "user.mfa_enroll", "tenant_user", r["id"])
+                    return self._send(200, {"user_id": r["id"], "mfa": "pending_confirmation",
+                                            "secret": secret,
+                                            "otpauth_uri": MFA.provisioning_uri(secret, r["name"]),
+                                            "note": "secret shown once — confirm with a current TOTP code to activate MFA"})
+                if action == "confirm":
+                    if not r["totp_secret"]: return self._err(409, "no pending MFA enrolment — enrol first")
+                    b = self._json()
+                    matched = MFA.verify(r["totp_secret"], b.get("code") or "", last_counter=-1)
+                    if matched is None: return self._err(401, "invalid MFA code", "mfa_invalid")
+                    db.execute("UPDATE tenant_users SET mfa_enabled=1, mfa_last_counter=? WHERE id=?", (matched, r["id"]))
+                    db.audit("tenant", tid, tid, "user.mfa_confirm", "tenant_user", r["id"])
+                    return self._send(200, {"user_id": r["id"], "mfa": "enabled"})
+                # reset (recovery)
+                db.execute("UPDATE tenant_users SET totp_secret=NULL, mfa_enabled=0, mfa_last_counter=-1 WHERE id=?", (r["id"],))
+                db.audit("tenant", tid, tid, "user.mfa_reset", "tenant_user", r["id"],
+                         metadata={"note": "admin recovery — user must re-enrol; no bypass issued"})
+                return self._send(200, {"user_id": r["id"], "mfa": "reset", "note": "MFA cleared by tenant admin; the user must re-enrol before MFA protects the account again"})
+            # --- webhook deliveries: DLQ visibility + replay (WS3) ---
+            m = re.match(r"^/v1/webhooks/deliveries/([\w-]+)/replay$", p)
+            if m:
+                row = db.one("SELECT * FROM webhook_deliveries WHERE id=? AND tenant_id=?", (m.group(1), tid))
+                if not row: return self._err(404, "not found")
+                ep = db.one("SELECT env FROM webhook_endpoints WHERE id=?", (row["endpoint_id"],))
+                if ep is not None and ep["env"] != env: return self._err(404, "not found")
+                updated = WH.replay(db, row["id"])
+                if updated is None: return self._err(409, "endpoint is gone or revoked — cannot replay")
+                db.audit("tenant", tid, tid, "webhook.replay", "webhook_delivery", row["id"],
+                         metadata={"status": updated["status"]})
+                return self._send(200, {"delivery": row_to_dict(updated)})
             # --- credentials (Phase 3) ---
             if p == "/v1/credentials/verify":
                 b = self._json()
@@ -679,7 +843,7 @@ def make_handler(db: DB, data_dir: str):
                 if not f or not f["data"]: return self._err(422, "document file required")
                 did = new_id(); rel_dir = os.path.join("files", tid, "businesses", biz["id"]); os.makedirs(os.path.join(data_dir, rel_dir), exist_ok=True)
                 rel = os.path.join(rel_dir, f"{did}_registration.bin")
-                with open(os.path.join(data_dir, rel), "wb") as fh: fh.write(f["data"])
+                STORAGE.write_file(data_dir, rel, f["data"])
                 db.execute("INSERT INTO business_documents(id,business_id,storage_path,kind,created_at) VALUES(?,?,?,?,?)",
                            (did, biz["id"], rel, field_text(parts, "kind") or "registration", now_iso()))
                 db.execute("UPDATE businesses SET registry_status='document_uploaded', updated_at=? WHERE id=?", (now_iso(), biz["id"]))
@@ -691,6 +855,8 @@ def make_handler(db: DB, data_dir: str):
                 if not biz: return self._err(404, "not found")
                 reviewer = self._reviewer(tid, env)
                 if reviewer is None: return self._err(401, "invalid reviewer token")
+                gate = self._mfa_gate(reviewer)
+                if gate is not None: return gate
                 b = self._json()
                 if b.get("status") not in ("confirmed", "rejected"): return self._err(422, "status must be confirmed|rejected")
                 if not (b.get("reason") or "").strip(): return self._err(422, "reason is required for a registry decision")
@@ -785,6 +951,8 @@ def make_handler(db: DB, data_dir: str):
             if not c: return self._err(404, "not found")
             reviewer = self._reviewer(tid, env)
             if reviewer is None: return self._err(401, "invalid reviewer token")
+            gate = self._mfa_gate(reviewer)
+            if gate is not None: return gate
             if c["status"] == "awaiting_second": return self._err(409, "case is awaiting a second reviewer — use /confirm")
             if c["status"] != "open": return self._err(409, "case already decided")
             action, reason = b.get("action"), (b.get("reason") or "").strip()
@@ -815,6 +983,8 @@ def make_handler(db: DB, data_dir: str):
             if not c: return self._err(404, "not found")
             reviewer = self._reviewer(tid, env)
             if reviewer is None: return self._err(401, "invalid reviewer token")
+            gate = self._mfa_gate(reviewer)
+            if gate is not None: return gate
             if c["status"] != "awaiting_second": return self._err(409, "case is not awaiting a second reviewer")
             reason = (b.get("reason") or "").strip()
             if not reason: return self._err(422, "reason is required for the confirming decision")
@@ -830,6 +1000,8 @@ def make_handler(db: DB, data_dir: str):
             if not c: return self._err(404, "not found")
             reviewer = self._reviewer(tid, env)
             if reviewer is None: return self._err(401, "invalid reviewer token")
+            gate = self._mfa_gate(reviewer)
+            if gate is not None: return gate
             hit = db.one("SELECT * FROM screening_hits WHERE id=? AND session_id=? AND tenant_id=?", (hit_id, c["session_id"], tid))
             if not hit: return self._err(404, "hit not found on this case")
             if hit["status"] != "pending": return self._err(409, "hit already disposed")
@@ -915,8 +1087,7 @@ def make_handler(db: DB, data_dir: str):
                 def save(part, tag):
                     ext = ".jpg" if "jpeg" in (part["content_type"] or "") or (part["filename"] or "").lower().endswith((".jpg", ".jpeg")) else ".png"
                     rel = os.path.join(rel_dir, f"{did}_{tag}{ext}")
-                    with open(os.path.join(data_dir, rel), "wb") as f: f.write(part["data"])
-                    return rel
+                    return STORAGE.write_file(data_dir, rel, part["data"])
                 front_rel = save(front, "front")
                 back_rel = save(back, "back") if back and back["data"] else None
                 meta_in = parse_capture_meta(field_text(parts, "capture_meta"))
@@ -951,7 +1122,7 @@ def make_handler(db: DB, data_dir: str):
                 rel_dir = os.path.join("files", tid, s["id"]); os.makedirs(os.path.join(data_dir, rel_dir), exist_ok=True)
                 ext = ".jpg" if "jpeg" in (back["content_type"] or "") or (back["filename"] or "").lower().endswith((".jpg", ".jpeg")) else ".png"
                 rel = os.path.join(rel_dir, f"{doc['id']}_back{ext}")
-                with open(os.path.join(data_dir, rel), "wb") as f: f.write(back["data"])
+                STORAGE.write_file(data_dir, rel, back["data"])
                 meta_in = parse_capture_meta(field_text(parts, "capture_meta"))
                 try: capture_meta = json.loads(doc["capture_meta"] or "{}")
                 except Exception: capture_meta = {}
@@ -968,7 +1139,7 @@ def make_handler(db: DB, data_dir: str):
                 if not f or not f["data"]: return self._err(422, "selfie image required")
                 bid = new_id(); rel_dir = os.path.join("files", tid, s["id"]); os.makedirs(os.path.join(data_dir, rel_dir), exist_ok=True)
                 rel = os.path.join(rel_dir, f"{bid}_selfie.jpg")
-                with open(os.path.join(data_dir, rel), "wb") as fh: fh.write(f["data"])
+                STORAGE.write_file(data_dir, rel, f["data"])
                 meta_in = parse_capture_meta(field_text(parts, "capture_meta"))
                 capture_meta = {"method": meta_in.get("method") or "not_declared"}
                 _keep_client_signals(meta_in, capture_meta)
@@ -981,7 +1152,7 @@ def make_handler(db: DB, data_dir: str):
                     bf = parts.get(f"burst_{i}")
                     if bf and bf["data"]:
                         brid = new_id(); brel = os.path.join(rel_dir, f"{brid}_burst{i}.jpg")
-                        with open(os.path.join(data_dir, brel), "wb") as fh: fh.write(bf["data"])
+                        STORAGE.write_file(data_dir, brel, bf["data"])
                         db.execute("INSERT INTO biometric_captures(id,tenant_id,env,session_id,storage_path,liveness_method,media_kind,capture_meta,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
                                    (brid, tid, env, s["id"], brel, "none", "selfie_burst", json.dumps({"method": "live_camera_burst"}), now_iso()))
                 db.audit("applicant", s["applicant_id"], tid, "selfie.upload", "biometric_capture", bid,
@@ -1008,7 +1179,7 @@ def make_handler(db: DB, data_dir: str):
                 fname = (f["filename"] or "").lower()
                 ext = ".webm" if fname.endswith(".webm") else (".mp4" if fname.endswith(".mp4") else ".bin")
                 rel = os.path.join(rel_dir, f"{bid}_liveness{ext}")
-                with open(os.path.join(data_dir, rel), "wb") as fh: fh.write(f["data"])
+                STORAGE.write_file(data_dir, rel, f["data"])
                 meta_in = parse_capture_meta(field_text(parts, "capture_meta"))
                 capture_meta = {"method": meta_in.get("method") or "not_declared"}
                 _keep_client_signals(meta_in, capture_meta)
@@ -1024,7 +1195,7 @@ def make_handler(db: DB, data_dir: str):
                 app = db.one("SELECT country FROM applicants WHERE id=?", (s["applicant_id"],))
                 did = new_id(); rel_dir = os.path.join("files", tid, s["id"]); os.makedirs(os.path.join(data_dir, rel_dir), exist_ok=True)
                 rel = os.path.join(rel_dir, f"{did}_poa.jpg")
-                with open(os.path.join(data_dir, rel), "wb") as fh: fh.write(f["data"])
+                STORAGE.write_file(data_dir, rel, f["data"])
                 db.execute("INSERT INTO documents(id,tenant_id,env,session_id,kind,issuing_country,storage_path,created_at) VALUES(?,?,?,?,?,?,?,?)",
                            (did, tid, env, s["id"], "proof_of_address", (app["country"] if app else None) or "NG", rel, now_iso()))
                 db.audit("applicant", s["applicant_id"], tid, "poa.upload", "document", did)
@@ -1079,8 +1250,8 @@ def make_handler(db: DB, data_dir: str):
                 inherited[row["type"]] = {"status": row["status"], "reason_codes": json.loads(row["reason_codes"] or "[]")}
             results.update(inherited)
             selfie = db.one("SELECT * FROM biometric_captures WHERE session_id=? AND media_kind='selfie' ORDER BY created_at DESC LIMIT 1", (s["id"],))
-            selfie_path = os.path.join(data_dir, selfie["storage_path"]) if selfie and selfie["storage_path"] else None
-            front_path = os.path.join(data_dir, doc["storage_path"]) if doc and doc["storage_path"] else None
+            selfie_path = self._fs(selfie["storage_path"]) if selfie and selfie["storage_path"] else None
+            front_path = self._fs(doc["storage_path"]) if doc and doc["storage_path"] else None
             ocr_text = ""
             parsed = None
             doc_entry = {}
@@ -1097,7 +1268,7 @@ def make_handler(db: DB, data_dir: str):
                 front_framing = FRAMING.check_document_framing(path=front_path)
                 back_framing = None
                 if doc["back_storage_path"]:
-                    back_framing = FRAMING.check_document_framing(path=os.path.join(data_dir, doc["back_storage_path"]))
+                    back_framing = FRAMING.check_document_framing(path=self._fs(doc["back_storage_path"]))
                 record("document_framing", FRAMING.combine_framing(front_framing, back_framing), provider="opencv-framing")
                 framing_failed = results.get("document_framing", {}).get("status") == "fail"
                 if framing_failed:
@@ -1145,7 +1316,7 @@ def make_handler(db: DB, data_dir: str):
                     if parsed and parsed.get("valid"):
                         record("mrz_viz_consistency", VISION.cross_check_mrz_viz(ocr_text, parsed), provider="local-vision")
                     _code = VISION.decode_codes(front_path,
-                                                os.path.join(data_dir, doc["back_storage_path"]) if doc["back_storage_path"] else None,
+                                                self._fs(doc["back_storage_path"]) if doc["back_storage_path"] else None,
                                                 doc_fields=dict(doc),
                                                 country=doc["issuing_country"], kind=doc["kind"])
                     code_found = bool(_code["findings"].get("found_any"))
@@ -1191,8 +1362,8 @@ def make_handler(db: DB, data_dir: str):
                             vid_row = db.one("SELECT * FROM biometric_captures WHERE session_id=? AND media_kind='liveness_video' ORDER BY created_at DESC LIMIT 1", (s["id"],))
                             burst_rows = db.all("SELECT * FROM biometric_captures WHERE session_id=? AND media_kind='selfie_burst' ORDER BY created_at ASC", (s["id"],))
                             track = FACETRACK.check_face_track(
-                                os.path.join(data_dir, vid_row["storage_path"]) if vid_row else None,
-                                extra_image_paths=[selfie_path] + [os.path.join(data_dir, b["storage_path"]) for b in burst_rows],
+                                self._fs(vid_row["storage_path"]) if vid_row else None,
+                                extra_image_paths=[selfie_path] + [self._fs(b["storage_path"]) for b in burst_rows],
                                 pass_threshold=cfg["face_pass_threshold"], margin=cfg["face_margin"])
                             record("face_track", track, provider="yunet-sface-track")
                             agg = track.get("aggregate_embedding")
@@ -1225,7 +1396,7 @@ def make_handler(db: DB, data_dir: str):
                     challenge = None
                     try: challenge = json.loads(s["liveness_challenge"] or "null")
                     except Exception: challenge = None
-                    record("liveness", LV.check_liveness(os.path.join(data_dir, video["storage_path"]), challenge), provider="active-challenge")
+                    record("liveness", LV.check_liveness(self._fs(video["storage_path"]), challenge), provider="active-challenge")
                 # Deepfake / fake-camera defence (2026-10-26): rPPG pulse,
                 # generation-artifact FFT, motion trajectory, and the
                 # client capture signals sent with the uploads. A known
@@ -1239,7 +1410,7 @@ def make_handler(db: DB, data_dir: str):
                         df_client = (json.loads(_cap["capture_meta"] or "{}") or {}).get("client_signals")
                     except Exception:
                         df_client = None
-                record("deepfake", DEEPFAKE.check_deepfake(os.path.join(data_dir, video["storage_path"]) if video else None,
+                record("deepfake", DEEPFAKE.check_deepfake(self._fs(video["storage_path"]) if video else None,
                                                            selfie_path, client_signals=df_client), provider="local-deepfake")
             # Proof of address (Phase 3, Level 3).
             if "poa" in required:
@@ -1247,7 +1418,7 @@ def make_handler(db: DB, data_dir: str):
                 if not poa_doc:
                     record("poa", {"status": "not_run", "findings": {"reason": "poa_document_missing"}, "reason_codes": ["poa_not_run"]}, provider="local-poa")
                 else:
-                    poa_ocr = C.check_ocr(os.path.join(data_dir, poa_doc["storage_path"]))
+                    poa_ocr = C.check_ocr(self._fs(poa_doc["storage_path"]))
                     db.execute("UPDATE documents SET ocr_text=? WHERE id=?", ((poa_ocr.get("text") or "")[:8000], poa_doc["id"]))
                     if poa_ocr["status"] == "error":
                         record("poa", {"status": "error", "findings": poa_ocr["findings"], "reason_codes": ["poa_ocr_unavailable"]}, provider="local-poa")
@@ -1414,5 +1585,22 @@ def serve(port=8765, data_dir="data"):
     db = DB(data_dir)
     handler = make_handler(db, data_dir)
     srv = ThreadingHTTPServer(("127.0.0.1", port), handler)
-    print(f"KYC local build (Phases 1-3) on http://127.0.0.1:{port}  (data: {data_dir})")
+    # Webhook retry sweeper (WS3): drives webhook_deliveries retries /
+    # dead-letter transitions in the background. The DB object is
+    # lock-guarded and shared safely with the handler threads.
+    import threading, time as _time
+    try:
+        sweep_sec = float(os.environ.get("KYC_WEBHOOK_SWEEP_SEC") or 15)
+    except ValueError:
+        sweep_sec = 15.0
+    def _sweeper():
+        while True:
+            _time.sleep(max(1.0, sweep_sec))
+            try:
+                WH.process_due(db)
+            except Exception:
+                pass  # a failed sweep must never kill the server; next sweep retries
+    threading.Thread(target=_sweeper, daemon=True, name="webhook-sweeper").start()
+    enc = "enabled" if STORAGE.encryption_enabled() else "DISABLED (no KYC_MASTER_KEY — legacy plaintext storage)"
+    print(f"KYC service on http://127.0.0.1:{port}  (data: {data_dir})  media encryption at rest: {enc}")
     srv.serve_forever()
