@@ -369,8 +369,9 @@ function clientSignals(){
 // state machine. Voice lines are natural and descriptive — the voice
 // NAMES what it senses ("The place where you are is dark…"), it does
 // not bark. Voice uses the device's own built-in speech voice via the
-// Web Speech API (speechSynthesis): on-device, no server cost, and it
-// works without our backend. If it is unavailable, guidance is text-only.
+// Guidance voice: pre-rendered natural-voice clips (public/voice/),
+// one consistent human-sounding voice for every line below. Device
+// speechSynthesis is only a fallback when a clip cannot play.
 const GUIDANCE = {
   welcome:      {voice: 'Welcome. We will start with your document. Place your ID inside the frame when the camera opens.'},
   starting:     {text: 'Starting camera…'},
@@ -415,9 +416,19 @@ class Guide {
 }
 const VOICE = {
   enabled: true,
-  unlocked: false,          // speech starts only after the consent tap (autoplay policy)
-  voice: null,              // cached synthesis voice (loaded async on iOS)
+  unlocked: false,          // playback starts only after the consent tap (autoplay policy)
+  voice: null,              // cached synthesis voice (fallback path only)
+  player: null,             // single shared <audio> element for the clips
   lastKey: null, lastAt: 0,
+  // The guidance voice is a set of pre-rendered natural-voice clips
+  // (public/voice/<key>.mp3 — one consistent human-sounding voice for
+  // every line, rendered once with a production neural voice). Device
+  // speechSynthesis sounded robotic and was unreliable on iOS; it is
+  // kept only as a fallback when a clip cannot play.
+  _clipUrl(key){ return '/voice/' + key + '.mp3'; },
+  // Every GUIDANCE key has a rendered clip (verified set-equal); a file
+  // that somehow fails still falls back to synthesis via onerror/catch.
+  _hasClip(key){ return !!GUIDANCE[key]; },
   _loadVoice(){
     if (!('speechSynthesis' in window)) return;
     try{
@@ -429,43 +440,21 @@ const VOICE = {
       }
     }catch(e){}
   },
-  // iOS Safari silently drops speak() calls that were never primed inside
-  // a user-gesture handler — a boolean flag set in the handler is NOT
-  // enough; an actual utterance must be spoken from within the tap. This
-  // is called synchronously at the top of the consent handler, before any
-  // await, and speaks the welcome line for real (it is also the first
-  // guidance the user hears).
-  prime(){
-    this.unlocked = true;
-    this._loadVoice();
-    if (!this.enabled || !('speechSynthesis' in window)) return;
+  _playClip(key){
     try{
-      speechSynthesis.resume();               // iOS sometimes starts paused
-      const u = new SpeechSynthesisUtterance(GUIDANCE.welcome.voice);
-      u.lang = 'en-US'; if (this.voice) u.voice = this.voice;
-      u.rate = 1.0; u.pitch = 1.0;
-      speechSynthesis.speak(u);
-      this.lastKey = 'welcome'; this.lastAt = performance.now();
-    }catch(e){}
+      if (!this.player){ this.player = new Audio(); this.player.preload = 'auto'; }
+      const p = this.player;
+      p.onerror = () => { const g = GUIDANCE[key]; const line = g && (g.voice || g.text); if (line) this._speakSynth(line, false); };
+      p.src = this._clipUrl(key);
+      const pr = p.play();
+      if (pr && pr.catch) pr.catch(() => { const g = GUIDANCE[key] || GUIDANCE.welcome; const line = g && (g.voice || g.text); if (line) this._speakSynth(line, false); });
+      return true;
+    }catch(e){ return false; }
   },
-  say(key, force){
-    const g = GUIDANCE[key];
-    const line = g && (g.voice || g.text);
-    if (!line) return;
-    const now = performance.now();
-    if (!force){
-      if (key === this.lastKey && now - this.lastAt < 6000) return;  // persistent line: repeat at most every ~6s
-      if (key !== this.lastKey && now - this.lastAt < 350) return;   // don't machine-gun on state flicker
-    }
-    if (!this.enabled || !this.unlocked || !('speechSynthesis' in window)) return;
+  _speakSynth(line, force){
+    if (!('speechSynthesis' in window)) return;
     const synth = speechSynthesis;
-    // Never interrupt a line mid-speech for a routine state update, and
-    // never cancel()+speak() in the same instant: on iOS the cancel is
-    // asynchronous and eats the utterance queued behind it — one of the
-    // reasons the voice was silent in live tests. Forced lines cancel,
-    // then speak after a short beat.
     if (synth.speaking && !force) return;
-    this.lastKey = key; this.lastAt = now;
     const speakNow = () => {
       try{
         synth.resume();
@@ -480,7 +469,41 @@ const VOICE = {
       else speakNow();
     }catch(e){}
   },
-  stop(){ if ('speechSynthesis' in window){ try{ speechSynthesis.cancel(); }catch(e){} } }
+  // iOS Safari only unlocks audio inside a user-gesture handler — a
+  // boolean flag set in the handler is NOT enough; real playback must
+  // start from within the tap. This is called synchronously at the top
+  // of the consent handler, before any await, and plays the welcome
+  // clip for real (it is also the first guidance the user hears).
+  // Playing one clip here unlocks the shared audio element for every
+  // later line.
+  prime(){
+    this.unlocked = true;
+    this._loadVoice();
+    if (!this.enabled) return;
+    this.lastKey = 'welcome'; this.lastAt = performance.now();
+    if (!this._playClip('welcome')) this._speakSynth(GUIDANCE.welcome.voice, true);
+  },
+  say(key, force){
+    const g = GUIDANCE[key];
+    const line = g && (g.voice || g.text);
+    if (!line) return;
+    const now = performance.now();
+    if (!force){
+      if (key === this.lastKey && now - this.lastAt < 6000) return;  // persistent line: repeat at most every ~6s
+      if (key !== this.lastKey && now - this.lastAt < 350) return;   // don't machine-gun on state flicker
+    }
+    if (!this.enabled || !this.unlocked) return;
+    const clipBusy = this.player && !this.player.paused && !this.player.ended;
+    if (clipBusy && !force) return;               // never talk over a line
+    this.lastKey = key; this.lastAt = now;
+    if (clipBusy && force){ try{ this.player.pause(); this.player.currentTime = 0; }catch(e){} }
+    if (this._hasClip(key) && this._playClip(key)) return;
+    this._speakSynth(line, force);
+  },
+  stop(){
+    if (this.player){ try{ this.player.pause(); }catch(e){} }
+    if ('speechSynthesis' in window){ try{ speechSynthesis.cancel(); }catch(e){} }
+  }
 };
 if ('speechSynthesis' in window && 'onvoiceschanged' in speechSynthesis){
   speechSynthesis.onvoiceschanged = () => VOICE._loadVoice();
