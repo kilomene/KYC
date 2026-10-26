@@ -5,10 +5,11 @@ per environment. All timestamps UTC ISO-8601. All ids are opaque UUIDs.
 The Phase 1 endpoints below are implemented as drafted; the Phase 2/3
 section after the decision object documents what was added in the
 2026-10-26 local build (implemented and covered by the test suite).
-Unimplemented items are marked as such where they appear: webhook
-replay, API-only document/selfie upload endpoints (the hosted flow is
-the only capture path), the `GET /v1/documents/{id}` metadata endpoint,
-idempotency keys, and rate limiting (WS0 audit, 2026-10-26).*
+Unimplemented items are marked as such where they appear: API-only
+document/selfie upload endpoints (the hosted flow is the only capture
+path), the `GET /v1/documents/{id}` metadata endpoint, and idempotency
+keys. Rate limiting, webhook retries/dead-letter/replay and reviewer
+MFA were implemented in Phase 4 WS3 (2026-10-26) — see below.*
 
 Platform bootstrap: `POST /v1/tenants` creates a tenant and its test/live
 keys, and is **platform-operator only** — it requires the server-side
@@ -63,6 +64,9 @@ it never silently falls back.
 | `POST /v1/users` | Create a named tenant user `{name, role: admin\|reviewer}` → returns a per-user token ONCE (only its hash is stored) |
 | `GET /v1/users` | List users (no tokens) |
 | `POST /v1/users/{id}/revoke` | Revoke a user token |
+| `POST /v1/users/{id}/mfa/enroll` / `/confirm` / `/reset` | Reviewer TOTP MFA — see "Reviewer MFA" below |
+| `GET /v1/webhooks/deliveries` | Webhook delivery attempts incl. dead-letter state (`?status=` filter) |
+| `POST /v1/webhooks/deliveries/{id}/replay` | Re-queue a failed/dead-lettered delivery (re-signed on send) |
 | `POST /v1/cases/{id}/confirm` | Four-eyes confirmation of a parked decision `{reason}` — the confirmer must be a DIFFERENT reviewer identity than the first decider (`403` otherwise); required when a decision overrides an engine rejection or follows a false-positive hit disposition |
 | `POST /v1/cases/{id}/hits/{hit_id}/dispose` | Screening-hit disposition `{disposition: confirmed\|false_positive, reason}` — `confirmed` rejects the session (`sanctions_hit_confirmed`); `false_positive` lets the case proceed but flags it four-eyes. Approving a case with a still-pending hit → `409` |
 | `GET /v1/cases` | Review queue — now sorted by `sla_due_at` (cases carry an SLA, default +24h, from config) |
@@ -127,9 +131,17 @@ Events: `session.created`, `session.completed`, `session.expired`,
 
 - Signed: `KYC-Signature: t=<ts>,v1=<hmac-sha256>` over the raw body with
   the endpoint secret; tenants must verify and reject stale timestamps.
-- Retries: **not yet built** — the local build makes one signed
-  delivery attempt per event and logs it. (Backoff/dead-letter/replay
-  remain the design target.)
+- Retries (WS3): failed deliveries retry with exponential backoff
+  (30 s base, doubling) up to 5 attempts, then land in a **dead-letter**
+  state. Every attempt is re-signed with a fresh timestamp. Deliveries
+  are listed at `GET /v1/webhooks/deliveries` (`?status=` filter:
+  pending/delivered/failed/dead_letter) and a dead-lettered or failed
+  delivery can be re-queued with `POST /v1/webhooks/deliveries/{id}/replay`
+  (tenant-scoped; `409` if the endpoint was deleted).
+- SSRF guard (WS3): delivery is refused before any network call when
+  the endpoint URL is not http(s) or its host resolves to a
+  loopback/private/link-local/reserved address; the refusal is recorded
+  on the delivery row.
 - Payloads carry decision data only — **never document images or raw
   biometric data**.
 
@@ -139,8 +151,9 @@ Events: `session.created`, `session.completed`, `session.expired`,
   field is emitted today).
 - `401` bad/revoked key, `403` wrong environment or scope, `404` unknown
   or other-tenant id (no existence oracle), `409` state conflict,
-  `422` validation. `429` rate limiting is **not implemented yet**
-  (Phase 4 WS3).
+  `413` request body over the size cap, `422` validation.
+  `429` rate limiting **is implemented** (WS3): body
+  `{error:{code:"rate_limited"}}` plus a `Retry-After` header.
 - Idempotency: `Idempotency-Key` is **not honoured yet** (Phase 4 WS6);
   creation endpoints do not deduplicate on it today.
 - Sandbox: test keys run the **identical real checks** as live keys —
@@ -149,7 +162,38 @@ Events: `session.created`, `session.completed`, `session.expired`,
   record is stamped `env: test`. Screening in the test environment
   reads the same list files (results stay inside the test env).
 
-## Rate limits (starting proposal — NOT implemented yet)
+## Rate limits (implemented — Phase 4 WS3)
 
-- 600 req/min per live key (burst 100), 60/min per test key; upload
-  endpoints sized for phone photos (≤ 15 MB per image, server-reduced).
+In-memory sliding-window limiter (per process), all values env-tunable:
+
+- Per API credential (key or reviewer token): **1,200 requests / minute**
+  (`KYC_RL_API_PER_MIN`).
+- Per hosted-flow token (consent, document front/back, selfie, liveness,
+  proof-of-address submissions): **240 / minute** (`KYC_RL_FLOW_PER_MIN`).
+- Per client IP backstop across `/v1/*`: **6,000 / minute**
+  (`KYC_RL_IP_PER_MIN`). Window: `KYC_RL_WINDOW_SEC` (60).
+- On limit: `429` + `Retry-After` (seconds until the window frees a
+  slot). Uploads are also body-capped: any request body over
+  `KYC_MAX_BODY_BYTES` (default 25 MB) is refused with `413` before it
+  is read.
+
+## Reviewer MFA (implemented — Phase 4 WS3)
+
+Reviewer accounts can enrol a TOTP second factor (RFC 6238, any
+authenticator app):
+
+- `POST /v1/users/{id}/mfa/enroll` — reviewer authenticates with their
+  own token; returns the base32 secret + `otpauth://` URI **once**.
+- `POST /v1/users/{id}/mfa/confirm` — `{code}` activates MFA.
+- Once active, privileged reviewer actions (case decide/confirm,
+  screening-hit disposition, KYB registry decision) require the header
+  `X-Reviewer-TOTP: <current 6-digit code>`; a missing, wrong, expired
+  or **replayed** code → `401 mfa_required_or_invalid`.
+- `POST /v1/users/{id}/mfa/reset` — tenant API key only (audited); the
+  only recovery path. It fails closed: until reset + re-enrolment, the
+  reviewer's privileged actions stay blocked.
+- Policy: reviewers without MFA enrolled keep working **unless** the
+  operator sets `KYC_REQUIRE_REVIEWER_MFA=1`, in which case unenrolled
+  reviewers get `403 mfa_enrollment_required` on privileged actions.
+  The tenant API-key identity itself is not TOTP-gated (documented
+  operator policy; protect the key accordingly).
