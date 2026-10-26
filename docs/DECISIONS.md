@@ -43,10 +43,21 @@ owner is ready to deploy; it is not hosted on this computer as a final
 state. The data layer is kept portable so that move is a deployment
 step, not a rewrite.
 
+*Implementation status (WS0 audit, 2026-10-26): the service IS deployed
+— live at kyc.novamail.store, running on the Nova origin service and
+reached through a Cloudflare tunnel on the owner's account (D6). The
+final Cloudflare-native hosting move remains Phase 4 WS5.*
+
 ### D5. Face match / liveness (Phase 2) — SETTLED
 Plug an evaluated provider first behind our check interface; evaluate own
 models in parallel against the same acceptance tests; swap only on
 evidence. No provider named until the evaluation runs.
+
+*Implementation status (WS0 audit, 2026-10-26): Phase 2 shipped the
+own-model track first (YuNet + SFace, local) behind the check interface;
+no external provider has been evaluated yet. The provider-adapter
+benchmark this decision calls for is Phase 4 WS2 — the divergence is
+recorded here rather than silently rewritten.*
 
 ### D6. Domain & Cloudflare account — SETTLED, clarified 2026-10-26
 **`kyc.novamail.store`** (subdomain only, per the owner's root-domain
