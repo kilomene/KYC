@@ -21,8 +21,14 @@ from server.db import DB
 from server.app import make_handler
 from http.server import ThreadingHTTPServer
 
+PLATFORM_ADMIN = "test-platform-admin-token"
+
 class Server:
     def __enter__(self):
+        # Tenant bootstrap is platform-operator gated (WS0 fix); the test
+        # server configures a throwaway operator token for make_tenant.
+        self._prev_admin = os.environ.get("KYC_PLATFORM_ADMIN_TOKEN")
+        os.environ["KYC_PLATFORM_ADMIN_TOKEN"] = PLATFORM_ADMIN
         self.tmp = tempfile.mkdtemp(prefix="kyc-test-")
         self.data_dir = os.path.join(self.tmp, "data")
         db = DB(self.data_dir)
@@ -34,6 +40,8 @@ class Server:
         return self
     def __exit__(self, *a):
         self.httpd.shutdown(); self.httpd.server_close()
+        if self._prev_admin is None: os.environ.pop("KYC_PLATFORM_ADMIN_TOKEN", None)
+        else: os.environ["KYC_PLATFORM_ADMIN_TOKEN"] = self._prev_admin
 
 def call(srv, method, path, body=None, key=None, token=None, raw_headers=None, timeout=60):
     # 60s default (raised from 15s, 2026-10-26): the synchronous submit
@@ -76,7 +84,8 @@ def multipart(srv, path, fields, files, token):
         except Exception: return e.code, {}
 
 def make_tenant(srv, name="Test Tenant"):
-    st, r = call(srv, "POST", "/v1/tenants", {"name": name, "country": "NG"})
+    st, r = call(srv, "POST", "/v1/tenants", {"name": name, "country": "NG"},
+                 raw_headers={"X-Platform-Admin": PLATFORM_ADMIN})
     assert st == 201, r
     return r["tenant"]["id"], r["keys"]["test"]["key"], r["keys"]["live"]["key"]
 
