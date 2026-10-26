@@ -1,6 +1,12 @@
 # KYC — Data Model (Draft)
 
-*Postgres (Supabase). All tables carry `created_at` / `updated_at` unless
+*STATUS (WS0 audit, 2026-10-26): design draft. The implementation uses
+SQLite (server/db.py mirrors these tables and invariants in application
+code); there is no Postgres/RLS layer in the built system, and PII is
+not column-encrypted at rest yet — both are Phase 4 WS3/WS5 items.
+Tenant isolation is enforced and tested at the application layer.*
+
+*Design target: Postgres. All tables carry `created_at` / `updated_at` unless
 append-only. All tenant-owned rows carry `tenant_id` and sit behind RLS.
 PII fields are marked 🔒 — encrypted at rest, access-logged, never in logs.*
 
