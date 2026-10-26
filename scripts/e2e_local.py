@@ -24,7 +24,9 @@ Exits non-zero on any failed assertion.
 import argparse, os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests"))
-from helpers import Server, call, multipart, id_image_bytes, selfie_bytes, poa_image_bytes
+from helpers import Server, call, multipart, id_image_bytes, selfie_bytes, poa_image_bytes, PLATFORM_ADMIN
+
+ADMIN_HDR = {"X-Platform-Admin": PLATFORM_ADMIN}
 
 def print_checks(summary):
     print("[e2e] checks:")
@@ -35,7 +37,7 @@ def main():
     ap = argparse.ArgumentParser(); ap.add_argument("--port", type=int, default=0); a = ap.parse_args()
     with Server() as srv:
         print(f"[e2e] server at {srv.base}")
-        st, t = call(srv, "POST", "/v1/tenants", {"name": "Nova Payments (internal)", "country": "NG"})
+        st, t = call(srv, "POST", "/v1/tenants", {"name": "Nova Payments (internal)", "country": "NG"}, raw_headers=ADMIN_HDR)
         assert st == 201, t
         key = t["keys"]["test"]["key"]
         print(f"[e2e] tenant created, test key prefix {key[:14]}…")
@@ -106,7 +108,7 @@ def main():
         assert st == 200 and cred_view.get("credential"), cred_view
         cred = cred_view["credential"]
         print(f"[e2e] credential issued: {cred['claims']['credential_id']} level {cred['claims']['level']} over_18={cred['claims']['over_18']}")
-        st, t2 = call(srv, "POST", "/v1/tenants", {"name": "Agent Exchange (internal)", "country": "NG"})
+        st, t2 = call(srv, "POST", "/v1/tenants", {"name": "Agent Exchange (internal)", "country": "NG"}, raw_headers=ADMIN_HDR)
         key2 = t2["keys"]["test"]["key"]
         st, v = call(srv, "POST", "/v1/credentials/verify", {"credential": cred}, key=key2)
         assert v["valid"], v
