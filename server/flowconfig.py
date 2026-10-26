@@ -14,7 +14,8 @@ DEFAULT_REQUIRED = {
     3: ["capture_quality", "ocr", "mrz", "expiry_age", "consistency", "authenticity", "face_match", "liveness", "poa", "screening_sanctions"],
 }
 KNOWN_CHECKS = ["capture_quality", "ocr", "mrz", "expiry_age", "consistency",
-                "authenticity", "face_match", "liveness", "poa", "screening_sanctions"]
+                "authenticity", "face_match", "liveness", "poa", "screening_sanctions",
+                "document_framing"]
 
 def default_config(level):
     return {
