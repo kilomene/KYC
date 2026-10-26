@@ -70,8 +70,17 @@ FULL_TEMPLATES = {
         "aspect": 1.586, "portrait_zone": (0.02, 0.15, 0.36, 0.88), "portrait_expected": True, "pattern_expected": True,
         "labels": ["NATIONAL", "IDENTITY", "NIGERIA"], "number_zone": (0.36, 0.05, 0.98, 0.42), "mrz_zone": None},
     ("NG", "nin_slip"): {
-        "aspect": 1.41, "portrait_zone": (0.60, 0.04, 0.97, 0.48), "portrait_expected": False, "pattern_expected": False,
-        "labels": ["NATIONAL IDENTITY NUMBER", "NIN"], "number_zone": (0.03, 0.04, 0.60, 0.40), "mrz_zone": None},
+        # The REAL wide paper slip (rectification 2026-10-26, layout
+        # from research/docs-africa.md + the owner's specimen
+        # geometry): NIMC header across the top, Tracking ID top-left,
+        # NIN number left-centre, name fields centre, portrait right
+        # (~x 0.78-0.95). Aspect is the registry RANGE for this paper
+        # type (merged in get_template), not a point value. Current
+        # standard/premium slips print a portrait (the earliest
+        # enrolment printouts may not — a missing face scores the
+        # neutral 0.48, never a hard fail).
+        "aspect": 2.0, "portrait_zone": (0.76, 0.15, 0.97, 0.60), "portrait_expected": True, "pattern_expected": False,
+        "labels": ["NATIONAL IDENTITY", "NIN"], "number_zone": (0.02, 0.16, 0.46, 0.40), "mrz_zone": None},
     ("US", "passport_card"): {
         "aspect": 1.586, "portrait_zone": (0.02, 0.15, 0.36, 0.88), "portrait_expected": True, "pattern_expected": True,
         "labels": ["PASSPORT CARD", "UNITED STATES"], "number_zone": (0.36, 0.05, 0.98, 0.42),
@@ -202,15 +211,22 @@ GENERIC_TD3 = {
 _LABEL_ALIASES = {"LICENCE": ("LICENCE", "LICENSE"), "LICENSE": ("LICENSE", "LICENCE")}
 
 def get_template(country, kind):
-    """-> (template_dict, level) — level 'full' | 'coarse' | 'generic'."""
+    """-> (template_dict, level) — level 'full' | 'coarse' | 'generic'.
+    Registry geometry is merged over every template: paper/booklet
+    types carry aspect_min/aspect_max there (the registry is the
+    source of truth for physical geometry), and the aspect element
+    scores against the RANGE for those types."""
+    entry = DOCREG.get_document(country, kind)
+    geo = {}
+    if entry and entry.get("aspect_min"):
+        geo = {"aspect_min": entry["aspect_min"], "aspect_max": entry["aspect_max"]}
     t = FULL_TEMPLATES.get((country, kind))
     if t:
-        return {**t, "level": "full"}, "full"
+        return {**t, **geo, "level": "full"}, "full"
     if kind == "passport":
         return {**GENERIC_TD3, "level": "generic"}, "generic"
-    entry = DOCREG.get_document(country, kind)
     if entry:
-        return {"aspect": entry.get("aspect", 1.586),
+        return {"aspect": entry.get("aspect", 1.586), **geo,
                 "portrait_zone": (0.02, 0.15, 0.36, 0.88),
                 "portrait_expected": kind != "nin_slip",
                 "pattern_expected": kind != "nin_slip",
@@ -234,9 +250,27 @@ def check_classification(image_path, country, kind, ocr_text="", mrz_parsed=None
         return {"status": "unclear", "findings": {"template": "none", "claimed": f"{country}/{kind}"},
                 "reason_codes": ["classification_template_missing"]}
     findings = {"template_level": level, "claimed": f"{country}/{kind}", "elements": {}}
+    # Measure in DOCUMENT space: when framing found a quad, the
+    # warped rendition's dimensions ARE the document's (the camera
+    # frame's own aspect is the phone's, not the document's — scoring
+    # a wide paper slip against the portrait frame it was shot in was
+    # part of the 2026-10-26 rectification diagnosis).
+    measure_path = image_path
+    quad_area = None
+    try:
+        from . import framing as FRAMING
+        warped = FRAMING.warped_rendition(image_path)
+        if warped:
+            measure_path = warped
+            findings["measured_on"] = "warped"
+            analysis = FRAMING.analyse_path(image_path)
+            if analysis:
+                quad_area = analysis.get("area_ratio")
+    except Exception:
+        pass
     img = None
     if cv2 is not None:
-        try: img = cv2.imread(image_path)
+        try: img = cv2.imread(measure_path)
         except Exception: img = None
     if img is None:
         return {"status": "unclear", "findings": {**findings, "error": "image_unreadable"},
@@ -245,9 +279,46 @@ def check_classification(image_path, country, kind, ocr_text="", mrz_parsed=None
     scored = []  # (weight, fraction)
     # --- aspect ---
     aspect = w / h if h else 0
-    rel = abs(aspect - tpl["aspect"]) / tpl["aspect"] if tpl["aspect"] else 1
-    a_frac = 1.0 if rel <= 0.10 else (0.5 if rel <= 0.20 else 0.0)
-    findings["elements"]["aspect"] = {"image": round(aspect, 3), "template": tpl["aspect"], "match": a_frac}
+
+    def _aspect_match(a):
+        if tpl.get("aspect_min"):
+            lo, hi = tpl["aspect_min"], tpl["aspect_max"]
+            if lo <= a <= hi:
+                return 1.0
+            if lo * 0.90 <= a <= hi * 1.10:
+                return 0.5
+            return 0.0
+        rel = abs(a - tpl["aspect"]) / tpl["aspect"] if tpl["aspect"] else 1
+        return 1.0 if rel <= 0.10 else (0.5 if rel <= 0.20 else 0.0)
+
+    a_frac = _aspect_match(aspect)
+    aspect_rec = {"image": round(aspect, 3), "match": a_frac}
+    if tpl.get("aspect_min"):
+        aspect_rec["range"] = [tpl["aspect_min"], tpl["aspect_max"]]
+    else:
+        aspect_rec["template"] = tpl["aspect"]
+    # Flat-capture regime: the document fills >= 85% of the frame, so
+    # the frame's own aspect is ALSO the document's (a scan-like
+    # image), and the quad fit's pixel noise (rounded corners bias
+    # the warped measure — measured: a drawn passport read 1.576 on
+    # the warp against 1.55 on the frame, straddling the tolerance)
+    # must not decide the element alone: score both, take the better.
+    # In the photographed regime (small quad) only the document-space
+    # measure counts — the frame's aspect there is the phone's.
+    if quad_area is not None and quad_area >= 0.85 and measure_path != image_path:
+        try:
+            orig = cv2.imread(image_path) if cv2 is not None else None
+        except Exception:
+            orig = None
+        if orig is not None:
+            oh, ow = orig.shape[:2]
+            frame_aspect = ow / oh if oh else 0
+            frame_frac = _aspect_match(frame_aspect)
+            aspect_rec["frame_image"] = round(frame_aspect, 3)
+            aspect_rec["frame_match"] = frame_frac
+            a_frac = max(a_frac, frame_frac)
+            aspect_rec["match"] = a_frac
+    findings["elements"]["aspect"] = aspect_rec
     scored.append((25, a_frac))
     # --- portrait position (YuNet on the document image) ---
     if tpl.get("portrait_expected"):
