@@ -126,6 +126,12 @@ _MIGRATIONS = [
     ("sessions", "vpn_status", "TEXT"),  # VPN/proxy verdict at flow start + submit: detected | clean | unknown
     ("sessions", "device_tz", "TEXT"),  # device timezone reported by the flow page (corroboration, record-only)
     ("sessions", "webrtc_ips", "TEXT"),  # JSON: WebRTC local candidates reported by the flow page (record-only)
+    # ---- Phase 4 WS3 (security hardening, verified) ----
+    ("tenant_users", "totp_secret", "TEXT"),  # base32 TOTP secret, set at MFA enrolment; NULL = not enrolled
+    ("tenant_users", "mfa_enabled", "INTEGER NOT NULL DEFAULT 0"),  # 1 only after enrolment is confirmed with a valid code
+    ("tenant_users", "mfa_last_counter", "INTEGER NOT NULL DEFAULT -1"),  # last consumed TOTP counter (replay protection)
+    ("webhook_deliveries", "next_attempt_at", "TEXT"),  # scheduled retry time (backoff); NULL = no retry pending
+    ("webhook_deliveries", "dead_lettered_at", "TEXT"),  # set when the attempt budget is exhausted (status='dead_letter')
 ]
 
 def now_iso():
