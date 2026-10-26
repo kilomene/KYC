@@ -89,21 +89,268 @@ verification" state; it never falls back to file upload.
   the selfie captures by itself; the server-issued movement challenge
   is then recorded from the same live stream automatically (no
   start/stop buttons, no video-file upload).
+- **The scanner must SEE the document before it may capture**
+  (2026-10-26). A lightweight detector on the analysis frames
+  (grayscale → Sobel edges → a document quadrilateral locked onto the
+  guide frame: all four border edges present along most of their
+  length, aspect matching the selected document type from the registry
+  within 10%, real interior texture) gates auto-capture: detection
+  true + quality judges (light/glare/sharpness/stillness) sustained
+  for the stability window, nothing else. A still, textured room sits
+  in the "No ID detected — place your ID inside the frame" state
+  forever; capture with no document is *impossible*, not discouraged.
+  The detected quad is drawn live on the overlay. The same gate covers
+  the back side and proof of address. Camera is requested at up to
+  1920×1080 (graceful fallback). A refresh-banding watch runs during
+  the document step: sustained periodic luminance banding (a display's
+  refresh beating against the rolling shutter) puts the scanner in
+  "This looks like a screen — scan the physical document" and refuses
+  the lock the same way.
 - **Server-side `document_framing` check** (OpenCV contour detection)
   verifies each captured side actually contains a card-like
-  quadrilateral roughly filling the frame; a blank image or a random
-  photo fails it. It is recorded on every document, a
-  `document_not_detected` failure adds +25 risk points (which routes
-  the session to human review), and a tenant can make it a required
-  check via the flow config.
+  quadrilateral roughly filling the frame. It is a **required,
+  decision-bearing** check for document sessions: framing *fail*
+  (`document_not_detected`) auto-rejects; framing *unclear* (document
+  too small in frame) auto-rejects with `document_quality_rescan`.
 - **Honest limits:** the client-side guidance (brightness / glare /
   blur / stillness / a skin-tone centre heuristic for the selfie) is
   *guidance heuristics*, not verification — the real checks run
-  server-side (framing, OCR/MRZ, face match, liveness analysis,
-  authenticity). OS-level camera-feed injection (virtual cameras,
-  rooted devices, emulators) is mitigated **only partially** — by the
-  server framing check, the movement-challenge liveness and the
-  authenticity signals — and is **not** claimed to be eliminated.
+  server-side (framing, vision OCR/MRZ, face track + match, liveness,
+  deepfake, authenticity). OS-level camera-feed injection (virtual
+  cameras, rooted devices, emulators) is mitigated in layers (see the
+  deepfake section) but is **not** claimed to be eliminated.
+
+### Automatic decisions — no manual review in the standard path (2026-10-26)
+
+Verification is **automatic**. A genuine session approves by itself;
+an invalid one rejects by itself; nothing in the standard
+document + selfie path waits for a human. The decision engine
+(`server/engine.py`) is decisive, in this order: hard-fail reasons
+(expired document, underage, VPN/proxy detected) → any *required*
+check failed → framing unclear (auto-reject, `document_quality_rescan`)
+→ a required check *errored* (the platform failed, not the applicant —
+the one route to a human besides the three below) → any other required
+check not passed (unclear / not run / missing: the verification is
+incomplete, the applicant re-does it) → tenant-config risk routing.
+`needs_review` survives **only** for: a tenant flow-config that
+explicitly requires review (risk ceiling / elevated signals), L3
+screening possible-hits awaiting disposition, KYB, and platform
+errors. The review console remains for audit, overrides (four-eyes),
+and those dispositions.
+
+### Verification layers — surface, text, internal (2026-10-26)
+
+Every document decision records `verification_layers` — the decision
+must show *how deep* the verification went:
+
+- **SURFACE** — framing + capture quality + template classification.
+- **TEXT** — vision OCR of the printed fields.
+- **INTERNAL** — the document's encoded/hidden evidence: MRZ check
+  digits, MRZ↔VIZ agreement, decoded QR/PDF417 payload agreement,
+  authenticity signals.
+
+Where a document type **carries** internal data (registry `mrz: true`,
+or a machine-readable code was actually decoded from the image), the
+internal layer is **required** for an automatic approval: unreadable
+internal data auto-rejects (`internal_data_unreadable`), disagreeing
+internal data auto-rejects (`internal_mismatch`). A document type with
+no internal data records `internal: not_available` — honestly — rather
+than pretending the layer ran. The layers are shown in the console
+case view. **NFC chip reading is the remaining internal layer and is
+Phase 4**: Web NFC is Android-Chrome only, and iOS Safari cannot read
+passport chips from a web flow at all.
+
+### Document classification (2026-10-26)
+
+A captured image must classify **as the document type the session
+claims**, by layout — not merely be a rectangle (`server/templates.py`,
+check `document_classification`). Per-type layout templates carry the
+expected aspect, portrait zone, printed labels, document-number zone
+and MRZ zone. Full templates: NG passport, NG drivers licence, NG
+voter card, NG NIN card, NG NIN slip, US passport, US passport card,
+US drivers license, US state ID — plus a generic TD3 template for
+other countries' passports and coarse templates (aspect +
+portrait-left + MRZ-absent) for the remaining registry types. The
+measurement locates the portrait with the YuNet face detector on the
+document image, maps OCR word boxes (tesseract TSV) against the
+number zone and expected labels, and checks MRZ position/validity.
+Score threshold 70/100: full/generic types must **pass** for
+auto-approval — a mismatch fails with
+`document_classification_mismatch` and auto-rejects. Coarse types:
+failure is strong risk + no auto-approval, and a type with no template
+records `classification_template_missing` honestly. Calibration on
+the suite fixtures: the drawn passport scores ~88 claimed as a
+passport and ~58 claimed as a US driver's licence; a room photo
+scores ~35 as a passport.
+
+### Data-consistency matrix + document evidence (2026-10-26)
+
+Verification is four-way agreement, recorded explicitly. The
+`data_consistency` check builds a **pairwise agreement matrix**
+across every data source present — printed fields as extracted by
+OCR, the MRZ, the decoded QR/PDF417 payload, and the applicant
+profile — over name, date of birth, document number and expiry. Each
+pair verdict is `agree | disagree | not_available`, stored on the
+case. **Any disagree is a named finding** (e.g.
+`mrz_vs_barcode_number_disagree`, +25 risk via `data_inconsistency`)
+and fails the check: no disagreement may exist among available pairs
+for an automatic approval. Alongside it, every document decision
+records a `document_evidence` block — layout classification, text
+extraction, machine-readable data, portrait analysis, image quality,
+security features, each with its status — the document-side mirror of
+the biometric evidence block, so a decision shows the combined
+independent evidence it rests on.
+
+### Vision OCR (2026-10-26)
+
+`server/vision.py`: **multi-pass reading + MRZ/VIZ cross-validation +
+code decoding**.
+
+- *Multi-pass reading*: tesseract runs a plain pass (greyscale + 2×
+  upscale, `--psm 3`) and an adaptive-threshold pass, each with word
+  confidences; a dedicated **MRZ-band pass** (focused strips, psm 6)
+  recovers the MRZ lines that full-page segmentation skips (measured).
+  The best read wins — a check-digit-valid MRZ outranks raw confidence.
+- *MRZ↔VIZ cross-validation*: where an MRZ parses valid, label-anchored
+  visual-zone DOB/expiry dates, the surname and the document number
+  are compared against it. A material disagreement fails with
+  `mrz_viz_mismatch` (+35 risk) — a forged document must fool **both**
+  zones consistently. Fields the visual zone doesn't label are
+  recorded as not compared, never guessed.
+- *Code decoding*: QR codes via OpenCV (`QRCodeDetector`); PDF417 and
+  other barcodes via **zxing-cpp** when installed (optional dependency —
+  its absence degrades to "unavailable", recorded). US/CA licence-back
+  PDF417 payloads are parsed for AAMVA elements (number, names, DOB,
+  expiry) and cross-checked against the printed fields: disagreement
+  fails with `code_decode_mismatch`. Decoded content is evidence,
+  never truth — it must agree, or it counts against the document.
+- *Measured limits*: this is pass 1. There are **no per-document
+  field-extraction templates yet**, no full AAMVA/QR semantic
+  validation, and **no labelled accuracy benchmark** — field-level
+  accuracy is unmeasured and is not claimed. Those are Phase 4.
+
+### Screen-replay + portrait-substitution defence (2026-10-26)
+
+A document shown on another phone/monitor screen and held to the
+camera must be caught. Authenticity (`server/authenticity.py`) now
+carries four screen-evidence signals alongside ELA/metadata/format:
+**moiré** (FFT periodic peak), **pixel grid** (the display lattice —
+strong high-frequency FFT peaks on *both* axes), **gloss** (specular
+highlight blobs among non-background pixels) and **gamut** (lifted
+black floor + pushed saturation). **Moire + any other screen signal →
+authenticity FAIL, `document_on_screen`** — that combined case may fail
+on screen evidence alone; single weak signals still never fail a
+document. Measured on the synthetic fixtures: clean card — no screen
+evidence; screen recapture — moiré 0.49 (strong), pixel grid 0.45–0.52
+(strong). The client scanner adds a live refresh-banding watch (see
+above). Separately, **portrait-region analysis** runs the manipulation
+evidence on the portrait zone of card layouts specifically (grain
+ratio vs the rest of the card; region ELA vs whole-image ELA): a
+manipulated portrait region is the named finding
+`portrait_region_tamper` (a smoothed synthetic splice measured grain
+ratio 0.02 vs ~1.0 clean).
+
+A **security-feature pack** adds four more calibrated signals, none
+failing alone except as combined evidence: **font consistency**
+(glyph-height variance + outlier glyphs in the name and
+document-number zones from OCR word boxes → `altered_text_suspect`),
+**compositing edges** (gradient halo on the portrait region's
+rectangular border vs its interior → `compositing_suspect`; measured:
+clean card 0.30, pasted-portrait splice 3.23), **border edges**
+(document-border double-edge/ghosting via edge-profile runs →
+`suspicious_edges`; clean card none, double-drawn border strong on
+2 sides) and **pattern presence** (background texture energy in
+non-text regions vs the template's `pattern_expected` →
+`missing_pattern`; drawn card 6992, flat synthetic fill 0.96).
+
+### Deepfake / fake-camera defence + continuous face tracking (2026-10-26)
+
+The selfie + liveness path is analysed as a **combination**, and the
+case records a `biometric_evidence` block listing every component:
+
+- **Continuous face tracking** (`server/facetrack.py`): YuNet + SFace
+  over the liveness frames, the selfie and a ~1 s burst of extra
+  selfie frames. Presence ratio (≥ 80% of sampled frames), centre/size
+  trajectory, and **identity continuity** — every frame's embedding
+  vs the track median and its neighbours. A mid-stream face swap /
+  embedding jump fails with `face_track_identity_break`. Face match
+  compares the document portrait against the track's **aggregate
+  (median) embedding**, never a single frame.
+- **Liveness**: the server-issued movement challenge (unchanged).
+- **Deepfake / injection** (`server/deepfake.py`): rPPG pulse scoring
+  (green-channel cheek series, 0.7–3 Hz band periodicity/SNR),
+  generation-artifact FFT scoring on face crops, motion-trajectory
+  statistics, and the client capture signals the flow sends (camera
+  track label — a known virtual camera such as OBS/ManyCam/Snap
+  Camera is a **hard fail**, `virtual_camera_detected` — plus
+  device-motion telemetry). No pulse **plus** high generation
+  artifacts fails with `deepfake_suspected`; partial evidence is named
+  findings + risk; unanalysable media is unclear/error, never a pass.
+- **Combination gate**: an automatic approval requires **all** of
+  face track, liveness, face match, capture quality, device signals
+  and deepfake present *and* passing together. A failed component
+  auto-rejects through the required checks; a merely *absent* one
+  (e.g. no device signals recorded) blocks auto-approval.
+
+**Honest limits of the deepfake layer:** rPPG from a ~4.5 s
+VP8-compressed webm is a *weak* signal (frequency resolution ≈0.22 Hz;
+the codec crushes subtle chroma oscillation). It is weighted
+accordingly — evidence-combining only, never sole pass/fail. Positive
+control, run 2026-10-26 on the owner's real phone captures: the face
+track passed his clean take (presence 0.96, identity min-cosine
+0.91); his hard head-turn take collapsed on both identity metrics
+(0.13 / 0.10) — at ≤24 sampled frames an extreme pose change between
+samples is indistinguishable from a discontinuity, and the tracker
+fails closed (a re-scan, not a review). The rPPG leg produced **no
+measurement on either real take** (series too weak at webm quality),
+while the artifact leg read clean (0.11) — so in the combination gate
+the deepfake leg is required to be *not failing*, per its design,
+rather than a positive pass. No deepfake detector is claimed to be
+conclusive; this is layered evidence, not a proof.
+
+### Voice guidance, phone-only, IP harvest + VPN gate (2026-10-26)
+
+- **Voice guidance**: the scanner *talks* the applicant through
+  positioning with the **device's built-in speech voice** (Web Speech
+  API `speechSynthesis` — on-device, no server cost). Voice + text +
+  frame state are one guidance state machine. Lines are natural and
+  descriptive — "The place where you are is dark. Move to a brighter
+  place.", "There's a glare on your ID. Tilt it slightly.", "This
+  looks like a screen. Scan the physical document." — spoken on state
+  change, repeated at most every ~6 s, never overlapping; starts only
+  after the consent tap (autoplay policy); a mute toggle is provided;
+  without `speechSynthesis` the flow is text-only.
+- **Phone-only**: the scanner does not run on desktop browsers at all.
+  A non-mobile browser gets a "Continue on your phone" handoff screen
+  — a QR code of the exact flow URL generated client-side by a small
+  inline QR implementation (no external CDN), with the full link and
+  a Copy button as fallback.
+- **IP harvest + location check**: the tunnel Worker stamps
+  `X-Client-IP` (from `CF-Connecting-IP`) and `X-IP-Country` (from
+  `request.cf.country`) onto forwarded requests — the tunnel protocol
+  carries headers, so this *is* wired end-to-end. The server records
+  the client IP + IP country on the session at flow start and at
+  submission, and runs `location_consistency`: IP country vs declared
+  country — match passes; unknown (local/dev) is recorded honestly;
+  mismatch is a **risk contribution (+15, `ip_country_mismatch`)**,
+  shown masked in the console (e.g. `41.203.x.x`), and never rejects
+  on its own (travel and VPNs exist). Consent (text version **v2**)
+  discloses device + IP collection.
+- **VPN/proxy hard gate**: at flow start and again at submit, the
+  client IP is checked against IP intelligence (keyless ip-api.com:
+  proxy/hosting/mobile flags + ISP/ASN; 3 s timeout; per-IP cached in
+  the DB for 24 h), corroborated — record-only — by device-timezone vs
+  IP-country and a WebRTC local-IP probe. **Detected** (proxy flag, or
+  hosting on a non-mobile connection) **blocks the flow** with "VPN or
+  proxy detected. Turn off your VPN or proxy and try again." — the
+  scanner never starts — and any submission under a detected
+  VPN/proxy auto-rejects (`vpn_proxy_detected`, a hard fail, not risk
+  points). If the lookup itself is unreachable the verdict is recorded
+  as `unknown` — never a fake pass. **Limits, honestly:** residential
+  proxies and fresh VPN ranges can evade IP intelligence; the free
+  ip-api tier is rate-limited and HTTP-only; timezone and WebRTC are
+  corroboration, not proof. Detection is strong evidence, not a
+  guarantee.
 
 ### Per-country document registry
 
@@ -142,8 +389,10 @@ detail "document type has no expiry date" (age is still checked).
   threshold is OpenCV's published 0.363 default (tenant-configurable);
   demographic performance testing per COMPLIANCE §3 has **not** been
   done — no accuracy claim is made. Synthetic test images cannot pass
-  the real face checks, so sandbox Level 2/3 sessions land in human
-  review by design (fail-closed), exactly as the E2E shows.
+  the real face checks, so sandbox Level 2/3 sessions with synthetic
+  media are **auto-rejected by the engine** (fail-closed) under the
+  automatic-decision rules; the E2E completes them through the
+  console's four-eyes override path, which is what the console is for.
 - **Authenticity signals are heuristics**, calibrated on synthetic
   images (ELA block spread, moiré FFT energy share). Combined evidence
   decides; one weak signal alone never fails a document. They are a
@@ -170,7 +419,9 @@ specific capability that is built, tested, and measured.
 ## What it does (the product in one page)
 
 A business (the **tenant**) sends a person (the **applicant**) to KYC.
-The applicant completes a short flow on their phone or computer:
+The applicant completes a short flow on their phone (the scanner is
+phone-only — a desktop browser gets a "continue on your phone"
+handoff screen; the tenant console remains a desktop web app):
 
 1. Enter basic details (legal name, date of birth, country).
 2. Live-scan a government ID with the camera (front, and back when the
