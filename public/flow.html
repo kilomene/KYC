@@ -512,9 +512,10 @@ function analyseFrame(video){
     diff = ds / (n / 3);
   }
   analyseFrame.prev = grey;
-  return {mean, glareRatio, lapVar, edgeRatio, diff, grey, mag, w: W, h: H, rgba: d};
+  return {mean, glareRatio, lapVar, edgeRatio, diff, grey, mag, w: W, h: H, rgba: d, vw, vh};
 }
 
+// == KYC-DETECTOR-BEGIN == (extracted verbatim by tests/detector_harness.js — keep this block self-contained: no DOM, no fetch, only Math and the bandHist state declared inside it)
 // ------------- DOCUMENT DETECTION (the capture gate) -------------
 // The scanner must SEE a document before it may capture. On the Sobel
 // edge map we look for a document quadrilateral AT the guide frame
@@ -526,6 +527,18 @@ function analyseFrame(video){
 // A still, evenly-lit, textured ROOM produces no such quad: it sits
 // in doc_none forever and can NEVER capture. No document detected =
 // capture is impossible, not merely discouraged.
+//
+// PAPER PATH (rectification 2026-10-26): the card search above is
+// tuned for rigid plastic — straight edges, one exact aspect. Paper
+// documents (the Nigerian NIN slip is a trimmed/folded/laminated
+// printout with NO fixed aspect) bow in the hand and failed it
+// outright: the owner's real slip at ~2.18:1 could never pass a
+// 1.41 ±10% gate. Paper types therefore take detectPaperDocument:
+// segment the bright sheet by luminance, fit BOWED (quadratic)
+// borders to its outline, judge border support against the fitted
+// outline at paper thresholds (side >= 0.30, mean >= 0.45), and test
+// the measured aspect against the registry RANGE for the type. The
+// card path and its strict numbers are unchanged for plastic.
 function detectDocument(fr, targetAspect){
   const w = fr.w, h = fr.h, mag = fr.mag, grey = fr.grey;
   const THR = 110;                       // strong Sobel magnitude
@@ -620,9 +633,172 @@ function screenSuspect(fr){
   if(bandHist.length > 6) bandHist.shift();
   return bandHist.length >= 4 && bandHist.slice(-4).every(v => v > 6.5);
 }
-function evaluateDocument(fr, targetAspect, noneState){
+// ------------- PAPER DETECTION (curved sheet, aspect range) -------------
+// Least-squares quadratic f(x) = a + b x + c x^2 through [{x, y}].
+function _quadFit(pts){
+  if(pts.length < 3) return null;
+  let s1 = 0, s2 = 0, s3 = 0, s4 = 0, t0 = 0, t1 = 0, t2 = 0;
+  const s0 = pts.length;
+  for(const p of pts){ const x = p.x, x2 = x * x; s1 += x; s2 += x2; s3 += x2 * x; s4 += x2 * x2; t0 += p.y; t1 += x * p.y; t2 += x2 * p.y; }
+  const A = [[s0, s1, s2], [s1, s2, s3], [s2, s3, s4]], b = [t0, t1, t2];
+  const det3 = M => M[0][0] * (M[1][1] * M[2][2] - M[1][2] * M[2][1]) - M[0][1] * (M[1][0] * M[2][2] - M[1][2] * M[2][0]) + M[0][2] * (M[1][0] * M[2][1] - M[1][1] * M[2][0]);
+  const det = det3(A);
+  if(Math.abs(det) < 1e-6){
+    const d = s0 * s2 - s1 * s1;
+    if(Math.abs(d) < 1e-6) return {a: t0 / s0, b: 0, c: 0};
+    return {a: (t0 * s2 - t1 * s1) / d, b: (s0 * t1 - s1 * t0) / d, c: 0};
+  }
+  const col = k => det3(A.map((r, i) => r.map((v, j) => j === k ? b[i] : v))) / det;
+  return {a: col(0), b: col(1), c: col(2)};
+}
+const _fitAt = (f, x) => f.a + f.b * x + f.c * x * x;
+// Geometry for a registry entry: plastic keeps a point aspect; paper
+// and booklet types carry the registry's aspect RANGE (min..max).
+function entryGeometry(entry){
+  if(!entry) return {physical:'card', aspect:1.586};
+  if(entry.aspect_min && entry.aspect_max)
+    return {physical: entry.physical || 'paper', aspectMin: entry.aspect_min, aspectMax: entry.aspect_max};
+  return {physical:'card', aspect: entry.aspect || 1.586};
+}
+function detectPaperDocument(fr, geo){
+  const w = fr.w, h = fr.h, grey = fr.grey, mag = fr.mag;
+  const none = {detected:false, support:0};
+  // Luminance segmentation: the sheet is the bright thing in frame.
+  // Threshold from the frame's own distribution (adapts to the room).
+  let sum = 0, sq = 0;
+  for(let i = 0; i < grey.length; i++){ sum += grey[i]; sq += grey[i] * grey[i]; }
+  const mean = sum / grey.length, std = Math.sqrt(Math.max(0, sq / grey.length - mean * mean));
+  const T = Math.max(80, Math.min(215, mean + 0.55 * std));
+  const bright = (x, y) => grey[y * w + x] >= T;
+  // Per-row bright extent: a row belongs to the sheet when its TOTAL
+  // bright width is large — a printed rule line or text row chops the
+  // sheet into segments on its own row (measured: the slip's bowed
+  // header rule splits 3 consecutive rows), so the longest single run
+  // is the wrong measure. The extent is MASS-TRIMMED (2%..98% of the
+  // row's bright pixels): on the owner's real frame, stray bright
+  // scene pixels at the frame edges otherwise stretch the extent to
+  // the full width and the side fits land on the frame border, where
+  // no document edge exists.
+  const rows = new Array(h).fill(null);
+  for(let y = 0; y < h; y++){
+    let total = 0;
+    for(let x = 0; x < w; x++) if(bright(x, y)) total++;
+    if(total < 0.42 * w) continue;
+    const lo = total * 0.01, hi = total * 0.99;
+    let acc = 0, first = -1, last = -1;
+    for(let x = 0; x < w; x++){
+      if(!bright(x, y)) continue;
+      acc++;
+      if(first < 0 && acc >= lo) first = x;
+      if(acc <= hi) last = x;
+    }
+    if(first >= 0 && last > first) rows[y] = [first, last];
+  }
+  // The document band: contiguous qualifying rows (<= 3 missing rows
+  // tolerated — a fold shadow or rule line can blank a few), scored
+  // by covered width.
+  let band = null, cur = null;
+  for(let y = 0; y <= h; y++){
+    if(y < h && rows[y]){
+      if(!cur) cur = {top:y, bot:y, miss:0, cov:0, wsum:0};
+      cur.bot = y; cur.miss = 0; cur.cov++; cur.wsum += rows[y][1] - rows[y][0];
+    }else if(cur){
+      cur.miss++;
+      if(cur.miss > 3 || y === h){ if(!band || cur.wsum > band.wsum) band = cur; cur = null; }
+    }
+  }
+  if(!band || band.cov < 0.10 * h) return none;
+  if(band.cov / (band.bot - band.top + 1) < 0.72) return none;
+  // Outline points: left/right ends per band row; top/bottom ends per
+  // column inside the band's row range.
+  const lPts = [], rPts = [];
+  let minL = w, maxR = 0;
+  for(let y = band.top; y <= band.bot; y += 2){
+    if(!rows[y]) continue;
+    lPts.push({x:y, y:rows[y][0]}); rPts.push({x:y, y:rows[y][1]});
+    if(rows[y][0] < minL) minL = rows[y][0];
+    if(rows[y][1] > maxR) maxR = rows[y][1];
+  }
+  const tPts = [], bPts = [];
+  for(let x = minL; x <= maxR; x += 3){
+    let t = -1, b = -1;
+    for(let y = Math.max(0, band.top - 8); y <= Math.min(h - 1, band.bot + 8); y++){
+      if(bright(x, y)){ if(t < 0) t = y; b = y; }
+    }
+    if(t >= 0){ tPts.push({x:x, y:t}); bPts.push({x:x, y:b}); }
+  }
+  const leftFit = _quadFit(lPts), rightFit = _quadFit(rPts), topFit = _quadFit(tPts), botFit = _quadFit(bPts);
+  if(!leftFit || !rightFit || !topFit || !botFit) return none;
+  const xL = y => _fitAt(leftFit, y), xR = y => _fitAt(rightFit, y);
+  const yT = x => _fitAt(topFit, x), yB = x => _fitAt(botFit, x);
+  let xlS = 0, xrS = 0, n = 0;
+  for(let y = band.top; y <= band.bot; y += 4){ xlS += xL(y); xrS += xR(y); n++; }
+  const xlM = xlS / n, xrM = xrS / n;
+  let ytS = 0, ybS = 0; n = 0;
+  for(let x = Math.max(0, xlM); x <= Math.min(w - 1, xrM); x += 4){ ytS += yT(x); ybS += yB(x); n++; }
+  if(!n) return none;
+  const ytM = ytS / n, ybM = ybS / n;
+  const widthMid = xrM - xlM, heightMid = ybM - ytM;
+  if(widthMid < 0.55 * w || heightMid < 0.08 * h) return none;
+  let aspect = widthMid / heightMid;
+  // The analysis canvas is capped at 420 px tall, so a tall video
+  // buffer (1080x1920) is squashed vertically into it and every
+  // measured aspect inflates. Correct back to true source geometry
+  // when the stream dimensions are known (they are, from
+  // analyseFrame); without them the raw canvas aspect stands.
+  if(fr.vw && fr.vh) aspect *= (h * fr.vw) / (w * fr.vh);
+  if(aspect < geo.aspectMin || aspect > geo.aspectMax) return {detected:false, support:0, aspect};
+  // Border support against the FITTED (bowed) outline — paper numbers,
+  // not the card line-search numbers: every side >= 0.30, mean >= 0.45.
+  function sup(fitFn, horizontal){
+    let hit = 0; const N = 24;
+    for(let i = 0; i < N; i++){
+      const t = i / (N - 1);
+      let x, y;
+      if(horizontal){ x = xlM + t * widthMid; y = fitFn(x); } else { y = ytM + t * heightMid; x = fitFn(y); }
+      const xi = Math.round(x), yi = Math.round(y);
+      let m2 = 0;
+      // +-5 px window: the mass-trimmed outline sits a few px inside
+      // the true edge (measured: fit at 258, Sobel peak at 262 on a
+      // clean page) and a hand-held sheet's fit is approximate — the
+      // edge step must still be findable right at the outline. The
+      // card path's own shift tolerance is looser (+-5% of frame).
+      for(let dy = -5; dy <= 5; dy++) for(let dx = -5; dx <= 5; dx++){
+        const xx = xi + dx, yy = yi + dy;
+        if(xx >= 0 && yy >= 0 && xx < w && yy < h) m2 = Math.max(m2, mag[yy * w + xx]);
+      }
+      if(m2 > 110) hit++;
+    }
+    return hit / N;
+  }
+  const supports = [sup(yT, true), sup(yB, true), sup(xL, false), sup(xR, false)];
+  const avgSup = supports.reduce((a, b) => a + b, 0) / 4;
+  if(Math.min.apply(null, supports) < 0.30 || avgSup < 0.45)
+    return {detected:false, support:avgSup, aspect};
+  // Interior print texture inside the fitted outline — the card
+  // rule (sample the inset interior on a 3 px grid): blank paper has
+  // neither contrast nor edge texture and must not lock.
+  let cnt = 0, eCnt = 0, vS = 0, vSq = 0;
+  const ix0 = Math.round(xlM + widthMid * 0.10), ix1 = Math.round(xrM - widthMid * 0.10);
+  const iy0 = Math.round(ytM + heightMid * 0.10), iy1 = Math.round(ybM - heightMid * 0.10);
+  for(let y = iy0; y <= iy1; y += 3) for(let x = ix0; x <= ix1; x += 3){
+    if(x < 0 || y < 0 || x >= w || y >= h) continue;
+    const v = grey[y * w + x]; vS += v; vSq += v * v; cnt++;
+    if(mag[y * w + x] > 90) eCnt++;
+  }
+  const iStd = cnt ? Math.sqrt(Math.max(0, vSq / cnt - (vS / cnt) * (vS / cnt))) : 0;
+  const eDen = cnt ? eCnt / cnt : 0;
+  if(iStd < 7 && eDen < 0.02) return {detected:false, support:avgSup, aspect};
+  const cl = (v, hi) => Math.max(0, Math.min(hi, v));
+  return {detected:true, support:avgSup, aspect,
+          corners:[{x:cl(xL(ytM), w) / w, y:cl(ytM, h) / h}, {x:cl(xR(ytM), w) / w, y:cl(ytM, h) / h},
+                   {x:cl(xR(ybM), w) / w, y:cl(ybM, h) / h}, {x:cl(xL(ybM), w) / w, y:cl(ybM, h) / h}]};
+}
+function evaluateDocument(fr, geo, noneState){
+  if(typeof geo === 'number' || !geo) geo = {physical:'card', aspect: geo || 1.586};
   if(fr.mean < 45) return {state:'doc_dark'};
-  const det = detectDocument(fr, targetAspect);
+  const det = geo.physical === 'card' ? detectDocument(fr, geo.aspect) : detectPaperDocument(fr, geo);
+  // The screen refusal keeps precedence over BOTH detection paths.
   if(screenSuspect(fr) && (det.detected || (det.support || 0) > 0.30))
     return {state:'doc_screen', quad: det.corners};
   if(!det.detected) return {state: noneState};
@@ -632,6 +808,7 @@ function evaluateDocument(fr, targetAspect, noneState){
   if(fr.diff > 6) return {state:'doc_unstable', quad:det.corners};
   return {state:'doc_hold', ok:true, quad:det.corners};
 }
+// == KYC-DETECTOR-END ==
 
 // ------------- face metrics (selfie / liveness gates) -------------
 function faceMetrics(fr){
@@ -738,7 +915,7 @@ let docState = {docId:null, entry:null, side:'front', frontBlob:null, backBlob:n
 const docScanner = makeAutoScanner({
   video: $('doc-video'), frameEl: $('doc-frame'), poly: $('doc-poly'), progressEl: $('doc-progress'),
   guide: docGuide, capturedKey: 'doc_captured',
-  evaluate: fr => evaluateDocument(fr, (docState.entry && docState.entry.aspect) || 1.586, 'doc_none'),
+  evaluate: fr => evaluateDocument(fr, entryGeometry(docState.entry), 'doc_none'),
   onCapture: async blob => {
     if(docState.side === 'front'){
       docState.frontBlob = blob;
@@ -942,7 +1119,9 @@ const poaGuide = new Guide($('poa-hint'));
 const poaScanner = makeAutoScanner({
   video: $('poa-video'), frameEl: $('poa-frame'), poly: $('poa-poly'), progressEl: $('poa-progress'),
   guide: poaGuide, capturedKey: 'doc_captured',
-  evaluate: fr => evaluateDocument(fr, 1.41, 'poa_none'),
+  // A proof-of-address page is PAPER in portrait (A4/Letter ≈ 0.71):
+  // it takes the paper path with a portrait-page aspect range.
+  evaluate: fr => evaluateDocument(fr, {physical:'paper', aspectMin:0.60, aspectMax:0.90}, 'poa_none'),
   onCapture: async blob => {
     const fd = new FormData();
     fd.append('capture_meta', JSON.stringify({method:'live_camera'}));
