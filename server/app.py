@@ -37,6 +37,7 @@ from . import fieldtemplates as FIELDTEMPLATES
 from . import storage as STORAGE
 from . import mfa as MFA
 from . import ratelimit as RL
+from . import identity as IDENTITY
 
 # KYB registry-number FORMAT rules per country (Phase 3). Format
 # validation only — the local build has NO live government registry
@@ -310,7 +311,7 @@ def make_handler(db: DB, data_dir: str):
             if p == "/v1/flow/session":
                 s = self._flow_session()
                 if not s: return self._err(401, "invalid or expired flow token")
-                app = db.one("SELECT id,first_name,last_name,dob,country FROM applicants WHERE id=?", (s["applicant_id"],))
+                app = db.one("SELECT id,first_name,last_name,dob,country,identity_source FROM applicants WHERE id=?", (s["applicant_id"],))
                 docs = db.all("SELECT id,kind,issuing_country, storage_path IS NOT NULL AS has_front, back_storage_path IS NOT NULL AS has_back, capture_meta FROM documents WHERE session_id=?", (s["id"],))
                 bio = db.all("SELECT id, media_kind FROM biometric_captures WHERE session_id=?", (s["id"],))
                 challenge = None
@@ -434,7 +435,12 @@ def make_handler(db: DB, data_dir: str):
             if name.endswith(".js"): ctype = "application/javascript"
             if name.endswith(".css"): ctype = "text/css"
             with open(fp, "rb") as f: data = f.read()
-            self._send(200, data, ctype)
+            # HTML pages are never cached: the hosted flow must always run
+            # the exact page version that matches the server's endpoints
+            # (a stale cached flow page once called an endpoint the running
+            # server did not have yet, mid-ship — owner's live test hit it).
+            hdrs = {"Cache-Control": "no-store"} if ctype == "text/html" else None
+            self._send(200, data, ctype, headers=hdrs)
 
         def _session_view(self, s):
             d = db.one("SELECT * FROM decisions WHERE session_id=? ORDER BY created_at DESC LIMIT 1", (s["id"],))
@@ -445,7 +451,9 @@ def make_handler(db: DB, data_dir: str):
             client_ip = s["client_ip"] if "client_ip" in s.keys() else None
             ip_country = s["ip_country"] if "ip_country" in s.keys() else None
             vpn_status = s["vpn_status"] if "vpn_status" in s.keys() else None
+            app_src = db.one("SELECT identity_source FROM applicants WHERE id=?", (s["applicant_id"],))
             out = {"id": s["id"], "tenant_id": s["tenant_id"], "env": s["env"], "applicant_id": s["applicant_id"],
+                   "identity_source": (app_src["identity_source"] if app_src and app_src["identity_source"] else "declared"),
                    "level": s["level"], "status": s["status"], "expires_at": s["expires_at"], "created_at": s["created_at"],
                    "client_ip_masked": mask_ip(client_ip), "ip_country": ip_country, "vpn_status": vpn_status,
                    "checks_summary": summary, "decision": dec}
@@ -645,12 +653,27 @@ def make_handler(db: DB, data_dir: str):
             tid, env = t["tenant_id"], t["env"]
             if p == "/v1/applicants":
                 b = self._json()
-                if not b.get("first_name") or not b.get("last_name") or not b.get("dob") or not b.get("country"):
-                    return self._err(422, "first_name, last_name, dob, country required")
+                # Identity source (owner's order, 2026-10-26): with
+                # identity_source="document" the tenant declares NO
+                # name/DOB — the applicant only picks a document and
+                # OCR reads the identity from it; the extracted fields
+                # are adopted onto this record at decision time. The
+                # declared path (default) is unchanged: name, DOB and
+                # country are all required and the document is
+                # cross-checked against them.
+                identity_source = b.get("identity_source") or "declared"
+                if identity_source not in IDENTITY.IDENTITY_SOURCES:
+                    return self._err(422, "identity_source must be 'declared' or 'document'")
+                if identity_source == "declared":
+                    if not b.get("first_name") or not b.get("last_name") or not b.get("dob") or not b.get("country"):
+                        return self._err(422, "first_name, last_name, dob, country required")
+                elif not b.get("country"):
+                    return self._err(422, "country required (name and date of birth are read from the document on the document path)")
                 aid = new_id()
-                db.execute("INSERT INTO applicants(id,tenant_id,env,external_ref,first_name,last_name,dob,country,email,phone,address_line,city,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                           (aid, tid, env, b.get("external_ref"), b["first_name"], b["last_name"], b["dob"], b["country"], b.get("email"), b.get("phone"), b.get("address_line"), b.get("city"), now_iso(), now_iso()))
-                db.audit("tenant", tid, tid, "applicant.create", "applicant", aid)
+                db.execute("INSERT INTO applicants(id,tenant_id,env,external_ref,first_name,last_name,dob,country,email,phone,address_line,city,identity_source,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                           (aid, tid, env, b.get("external_ref"), b.get("first_name"), b.get("last_name"), b.get("dob"), b["country"], b.get("email"), b.get("phone"), b.get("address_line"), b.get("city"), identity_source, now_iso(), now_iso()))
+                db.audit("tenant", tid, tid, "applicant.create", "applicant", aid,
+                         metadata={"identity_source": identity_source})
                 return self._send(201, row_to_dict(db.one("SELECT * FROM applicants WHERE id=?", (aid,))))
             if p == "/v1/sessions":
                 b = self._json()
@@ -678,6 +701,21 @@ def make_handler(db: DB, data_dir: str):
                     db.execute("INSERT INTO applicants(id,tenant_id,env,external_ref,country,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
                                (aid, tid, env, cred_claims["applicant_ref"], cred_claims["country"], now_iso(), now_iso()))
                     app = db.one("SELECT * FROM applicants WHERE id=?", (aid,))
+                elif b.get("identity_source") == "document":
+                    # Document-sourced session in one call (owner's
+                    # order): NO pre-declared name/DOB exists to send —
+                    # a document-sourced applicant shell is created
+                    # (country = the jurisdiction whose document the
+                    # applicant will pick) and the identity is read
+                    # from the document during the flow.
+                    if not b.get("country"):
+                        return self._err(422, "country required for a document-sourced session (name and date of birth are read from the document)")
+                    aid = new_id()
+                    db.execute("INSERT INTO applicants(id,tenant_id,env,external_ref,country,identity_source,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                               (aid, tid, env, b.get("external_ref"), b["country"], "document", now_iso(), now_iso()))
+                    app = db.one("SELECT * FROM applicants WHERE id=?", (aid,))
+                    db.audit("tenant", tid, tid, "applicant.create", "applicant", aid,
+                             metadata={"identity_source": "document", "via": "session.create"})
                 else:
                     return self._err(422, "applicant_id or credential required")
                 if app["data_deleted_at"]: return self._err(422, "applicant erased")
@@ -697,6 +735,8 @@ def make_handler(db: DB, data_dir: str):
                 db.audit("tenant", tid, tid, "session.create", "session", sid,
                          metadata={"credential_id": cred_id, "inherited_checks": inherited} if cred_id else None)
                 return self._send(201, {"id": sid, "level": level, "env": env, "status": "created",
+                                        "applicant_id": app["id"],
+                                        "identity_source": (app["identity_source"] if "identity_source" in app.keys() else "declared"),
                                         "flow_url": f"/flow/{token}", "flow_token": token, "expires_at": iso_in(hours),
                                         "credential_id": cred_id, "inherited_checks": inherited})
             m = re.match(r"^/v1/sessions/([\w-]+)/cancel$", p)
@@ -1032,6 +1072,65 @@ def make_handler(db: DB, data_dir: str):
                                     "note": "hit cleared as false positive; approving this case now requires a second reviewer (four-eyes)"})
 
         # ---- hosted flow ----
+        def _read_document(self, doc, always_read=False):
+            """The document READING pipeline, shared by the flow
+            read-back endpoint and submit: framing + multi-pass OCR +
+            MRZ + template field extraction, merged into ONE identity
+            by server/identity.py (check-digit-valid MRZ > template
+            extraction > uploaded doc_* fields).
+
+            The merged read is persisted onto the documents row —
+            doc_* becomes the SERVER's read of the document, not the
+            client's typing (the hosted flow collects no typed fields
+            at all since the identity-from-document build). When
+            framing FAILS the read is NOT persisted: a non-document
+            must not write garbage identity fields onto the record.
+            With always_read=False (the submit path) a framing failure
+            also skips the deep read entirely — the submit fail-fast
+            is preserved; the read-back endpoint passes True because
+            showing what could be read is its whole job. Authenticity
+            / classification / face checks are NOT part of reading —
+            they stay at submit, where they are recorded as checks."""
+            front_path = self._fs(doc["storage_path"]) if doc["storage_path"] else None
+            entry = DOCREG.get_document(doc["issuing_country"], doc["kind"]) or {}
+            framing_front = FRAMING.check_document_framing(path=front_path)
+            framing_back = None
+            if doc["back_storage_path"]:
+                framing_back = FRAMING.check_document_framing(path=self._fs(doc["back_storage_path"]))
+            framing = FRAMING.combine_framing(framing_front, framing_back)
+            uploaded = {"doc_first_name": doc["doc_first_name"], "doc_last_name": doc["doc_last_name"],
+                        "doc_dob": doc["doc_dob"], "doc_number": doc["doc_number"],
+                        "doc_expiry": doc["doc_expiry"]}
+            if framing["status"] == "fail" and not always_read:
+                ident = IDENTITY.derive_document_identity(None, None, uploaded)
+                return {"framing": framing, "ocr": None, "ocr_text": "",
+                        "mrz_check": None, "mrz_parsed": None,
+                        "extraction": None, "extracted_fields": {},
+                        "identity": ident,
+                        "merged_doc_fields": dict(uploaded), "entry": entry}
+            ocr = C.check_ocr(front_path, expect_mrz=bool(entry.get("mrz")))
+            ocr_text = ocr.get("text", "")
+            mrz_check = C.check_mrz(ocr_text)
+            parsed = mrz_check.get("parsed")
+            extraction = FIELDTEMPLATES.extract_fields(front_path, doc["issuing_country"], doc["kind"],
+                                                       ocr_text=ocr_text)
+            fields = (extraction.get("findings") or {}).get("fields") or {}
+            ident = IDENTITY.derive_document_identity(fields, parsed, uploaded, ocr_text=ocr_text)
+            merged = {"doc_first_name": ident["first_name"] or doc["doc_first_name"],
+                      "doc_last_name": ident["last_name"] or doc["doc_last_name"],
+                      "doc_dob": ident["dob"] or doc["doc_dob"],
+                      "doc_number": ident["number"] or doc["doc_number"],
+                      "doc_expiry": ident["expiry"] or doc["doc_expiry"]}
+            if framing["status"] != "fail":
+                db.execute("UPDATE documents SET ocr_text=?, mrz_raw=?, doc_first_name=?, doc_last_name=?, doc_dob=?, doc_number=?, doc_expiry=? WHERE id=?",
+                           (ocr_text[:8000], (parsed or {}).get("line2"),
+                            merged["doc_first_name"], merged["doc_last_name"], merged["doc_dob"],
+                            merged["doc_number"], merged["doc_expiry"], doc["id"]))
+            return {"framing": framing, "ocr": ocr, "ocr_text": ocr_text,
+                    "mrz_check": mrz_check, "mrz_parsed": parsed,
+                    "extraction": extraction, "extracted_fields": fields,
+                    "identity": ident, "merged_doc_fields": merged, "entry": entry}
+
         def _flow_post(self, p, s):
             tid, env = s["tenant_id"], s["env"]
             if p == "/v1/flow/consent":
@@ -1208,6 +1307,42 @@ def make_handler(db: DB, data_dir: str):
                 db.execute("UPDATE credentials SET status='revoked', revoked_at=? WHERE id=?", (now_iso(), cred["id"]))
                 db.audit("applicant", s["applicant_id"], tid, "credential.revoke_by_applicant", "credential", cred["id"])
                 return self._send(200, {"revoked": True, "credential_id": cred["id"]})
+            if p == "/v1/flow/document/process":
+                # Read-back step (identity-from-document build): the
+                # server READS the uploaded document and returns what
+                # it read, so the flow can show the applicant their
+                # identity as read ("We read: …") and let them confirm
+                # or rescan. There is NO form and no typing anywhere
+                # in the flow — rescan is the only correction path, so
+                # an unreadable required field is reported by name
+                # here and the flow asks for a closer, sharper rescan.
+                if not s["consent_at"]: return self._err(422, "consent required before upload")
+                b = self._json()
+                doc = None
+                if b.get("document_id"):
+                    doc = db.one("SELECT * FROM documents WHERE id=? AND session_id=?", (b["document_id"], s["id"]))
+                if not doc:
+                    doc = db.one("SELECT * FROM documents WHERE session_id=? AND kind!='proof_of_address' ORDER BY created_at DESC LIMIT 1", (s["id"],))
+                if not doc: return self._err(404, "document not found for this session")
+                read = self._read_document(doc, always_read=True)
+                ident = read["identity"]
+                entry = read["entry"]
+                missing = IDENTITY.missing_read_fields(ident, entry)
+                framing_status = read["framing"]["status"]
+                complete = framing_status == "pass" and not missing
+                db.audit("applicant", s["applicant_id"], tid, "document.process", "document", doc["id"],
+                         metadata={"framing": framing_status, "missing": missing,
+                                   "identity_sources": ident["sources"]})
+                return self._send(200, {"document_id": doc["id"], "kind": doc["kind"],
+                                        "issuing_country": doc["issuing_country"],
+                                        "document_label": entry.get("label") or doc["kind"],
+                                        "framing": framing_status,
+                                        "read": {"first_name": ident["first_name"],
+                                                 "last_name": ident["last_name"],
+                                                 "dob": ident["dob"],
+                                                 "number": ident["number"],
+                                                 "expiry": ident["expiry"]},
+                                        "missing": missing, "complete": complete})
             if p == "/v1/flow/submit":
                 return self._submit(s, self._client_geo())
             return self._err(404, "not found")
@@ -1258,6 +1393,13 @@ def make_handler(db: DB, data_dir: str):
             code_found = False
             auth_findings = {}
             df_client = None
+            # Effective applicant for the checks that consume identity
+            # (expiry/age, PoA name match, screening): the declared
+            # fields where the tenant declared them; on the document
+            # path the fields READ from the document fill the gaps
+            # once the document is read below (server/identity.py).
+            app_eff = dict(app)
+            doc_read = None
             if doc:
                 # Fresh evidence beats credential inheritance: if a
                 # document was uploaded in this session, its checks run
@@ -1265,11 +1407,13 @@ def make_handler(db: DB, data_dir: str):
                 record("capture_quality", C.check_capture_quality(path=front_path))
                 # Document framing (live-scanner build): a card-like
                 # quadrilateral must roughly fill each captured side.
-                front_framing = FRAMING.check_document_framing(path=front_path)
-                back_framing = None
-                if doc["back_storage_path"]:
-                    back_framing = FRAMING.check_document_framing(path=self._fs(doc["back_storage_path"]))
-                record("document_framing", FRAMING.combine_framing(front_framing, back_framing), provider="opencv-framing")
+                # Framing + the whole reading pipeline (multi-pass OCR,
+                # MRZ, template field extraction, identity derivation)
+                # run through _read_document — the same reader the
+                # flow's read-back endpoint uses, so what the applicant
+                # was shown is exactly what the decision reads.
+                doc_read = self._read_document(doc)
+                record("document_framing", doc_read["framing"], provider="opencv-framing")
                 framing_failed = results.get("document_framing", {}).get("status") == "fail"
                 if framing_failed:
                     # Fail-fast (2026-10-26): no document was detected in the
@@ -1286,25 +1430,60 @@ def make_handler(db: DB, data_dir: str):
                         record("face_track", {"status": "not_run", "findings": {"reason": "framing_failed"}, "reason_codes": ["framing_failed"]}, provider="yunet-sface-track")
                         record("face_match", {"status": "not_run", "findings": {"reason": "framing_failed"}, "reason_codes": ["framing_failed"]}, provider="yunet-sface")
                 if not framing_failed:
-                    doc_entry = DOCREG.get_document(doc["issuing_country"], doc["kind"]) or {}
-                    ocr = C.check_ocr(front_path, expect_mrz=bool(doc_entry.get("mrz")))
+                    doc_entry = doc_read["entry"]
+                    ocr = doc_read["ocr"]
                     record("ocr", ocr, provider="tesseract")
-                    ocr_text = ocr.get("text", "")
-                    mrz = C.check_mrz(ocr_text)
-                    record("mrz", mrz, provider="local-mrz")
-                    parsed = mrz.get("parsed")
-                    db.execute("UPDATE documents SET ocr_text=?, mrz_raw=? WHERE id=?", (ocr_text[:8000], (parsed or {}).get("line2"), doc["id"]))
+                    ocr_text = doc_read["ocr_text"]
+                    record("mrz", doc_read["mrz_check"], provider="local-mrz")
+                    parsed = doc_read["mrz_parsed"]
+                    # The document row AS READ (doc_* merged from the
+                    # server's own reads — see _read_document): every
+                    # downstream check consumes the read, not the
+                    # client's typing.
+                    docm = dict(doc)
+                    docm.update(doc_read["merged_doc_fields"])
+                    # Session identity: declared fields win where the
+                    # tenant declared them; the document read fills
+                    # the rest (the whole identity, on the document
+                    # path).
+                    _ident = doc_read["identity"]
+                    for _col, _val in (("first_name", _ident["first_name"]),
+                                       ("last_name", _ident["last_name"]),
+                                       ("dob", _ident["dob"])):
+                        if _val and not app_eff.get(_col):
+                            app_eff[_col] = _val
+                    # Field extraction (Phase 4 WS1): template-guided,
+                    # zone-first extraction for the claimed document
+                    # type, with the per-field source (zone / label /
+                    # text fallback) and format validation recorded as
+                    # evidence on the case. Recorded here, with the
+                    # reading it belongs to (it used to be recorded
+                    # after data_consistency; it IS a read, and the
+                    # consistency semantics below consume it).
+                    record("field_extraction", doc_read["extraction"], provider="local-fieldtemplates")
                     record("expiry_age", C.check_expiry_age(parsed if parsed and parsed.get("valid") else None,
-                                                            doc_expiry=doc["doc_expiry"], doc_dob=doc["doc_dob"], applicant_dob=app["dob"],
+                                                            doc_expiry=docm["doc_expiry"], doc_dob=docm["doc_dob"], applicant_dob=app_eff["dob"],
                                                             has_expiry=doc_entry.get("has_expiry", True),
                                                             validity_end=doc_entry.get("validity_end")))
-                    record("consistency", C.check_consistency(app["first_name"], app["last_name"], app["dob"],
-                                                              mrz_parsed=parsed, doc_first=doc["doc_first_name"], doc_last=doc["doc_last_name"],
-                                                              doc_dob=doc["doc_dob"], ocr_text=ocr_text))
+                    if app["first_name"] or app["last_name"]:
+                        # Declared path: tenant-declared identity is
+                        # present -> cross-check exactly as before.
+                        record("consistency", C.check_consistency(app["first_name"], app["last_name"], app["dob"],
+                                                                  mrz_parsed=parsed, doc_first=docm["doc_first_name"], doc_last=docm["doc_last_name"],
+                                                                  doc_dob=docm["doc_dob"], ocr_text=ocr_text))
+                    else:
+                        # Document path: NOTHING was declared, so
+                        # consistency is evaluated across the
+                        # document's own reads (extraction vs MRZ vs
+                        # OCR text). An applicant mismatch is
+                        # impossible here by construction.
+                        record("consistency", C.check_document_self_consistency(
+                            doc_read["extracted_fields"], mrz_parsed=parsed, ocr_text=ocr_text,
+                            ocr_passes=(ocr.get("findings") or {}).get("passes")))
                     # Document authenticity signals (Phase 2 + screen/portrait
                     # evidence, 2026-10-26).
                     _auth = AUTH.check_authenticity(front_path, kind=doc["kind"], country=doc["issuing_country"],
-                                                    doc_number=doc["doc_number"], ocr_text=ocr_text,
+                                                    doc_number=docm["doc_number"], ocr_text=ocr_text,
                                                     mrz_found=bool(parsed))
                     auth_findings = _auth.get("findings") or {}
                     record("authenticity", _auth, provider="local-authenticity")
@@ -1317,7 +1496,7 @@ def make_handler(db: DB, data_dir: str):
                         record("mrz_viz_consistency", VISION.cross_check_mrz_viz(ocr_text, parsed), provider="local-vision")
                     _code = VISION.decode_codes(front_path,
                                                 self._fs(doc["back_storage_path"]) if doc["back_storage_path"] else None,
-                                                doc_fields=dict(doc),
+                                                doc_fields=docm,
                                                 country=doc["issuing_country"], kind=doc["kind"])
                     code_found = bool(_code["findings"].get("found_any"))
                     record("code_decode", _code, provider="local-vision")
@@ -1334,21 +1513,23 @@ def make_handler(db: DB, data_dir: str):
                     # source present, pairwise, per field. Any DISAGREE is
                     # a named finding and fails the check — no disagreement
                     # may exist among available pairs for auto-approval.
+                    # The applicant source of the matrix is the
+                    # DECLARED profile and the printed source is built
+                    # from the UPLOADED doc fields, exactly as before.
+                    # On the document path both are empty — the matrix
+                    # instead receives the field EXTRACTION as its own
+                    # source, so the verdict rests on the document's
+                    # own reads (extraction vs printed-zone dates vs
+                    # MRZ vs payload) and no applicant pair exists that
+                    # could ever disagree.
+                    _declared = bool(app["first_name"] or app["last_name"])
                     record("data_consistency",
                            VISION.build_data_consistency(doc_fields=dict(doc), applicant=dict(app),
                                                          mrz_parsed=parsed if parsed and parsed.get("valid") else None,
                                                          ocr_text=ocr_text,
-                                                         aamva=_code["findings"].get("aamva")),
+                                                         aamva=_code["findings"].get("aamva"),
+                                                         extracted=None if _declared else doc_read["extracted_fields"]),
                            provider="local-vision")
-                    # Field extraction (Phase 4 WS1): template-guided,
-                    # zone-first extraction for the claimed document
-                    # type, with the per-field source (zone / label /
-                    # text fallback) and format validation recorded as
-                    # evidence on the case.
-                    record("field_extraction",
-                           FIELDTEMPLATES.extract_fields(front_path, doc["issuing_country"], doc["kind"],
-                                                         ocr_text=ocr_text),
-                           provider="local-fieldtemplates")
                     # Face match (Phase 2 + continuous tracking, 2026-10-26):
                     # the liveness frames + selfie + burst frames form a
                     # TRACK (presence, trajectory, identity continuity);
@@ -1423,12 +1604,16 @@ def make_handler(db: DB, data_dir: str):
                     if poa_ocr["status"] == "error":
                         record("poa", {"status": "error", "findings": poa_ocr["findings"], "reason_codes": ["poa_ocr_unavailable"]}, provider="local-poa")
                     else:
-                        record("poa", C.check_poa(poa_ocr.get("text", ""), applicant_first=app["first_name"],
-                                                  applicant_last=app["last_name"], address=app["address_line"],
+                        record("poa", C.check_poa(poa_ocr.get("text", ""), applicant_first=app_eff["first_name"],
+                                                  applicant_last=app_eff["last_name"], address=app["address_line"],
                                                   window_days=cfg["poa_window_days"]), provider="local-poa")
             # Screening (Phase 3, Level 3): pending hits block approval.
             if "screening_sanctions" in required:
-                scr = SCR.run_screening(db, data_dir, tid, env, app, origin="submit", session_id=s["id"], threshold=cfg["screening_threshold"])
+                # Screen the SESSION identity: on the document path
+                # the declared record has no name yet (adoption writes
+                # it at decision time, below) — the name read from the
+                # document is what must be screened.
+                scr = SCR.run_screening(db, data_dir, tid, env, app_eff, origin="submit", session_id=s["id"], threshold=cfg["screening_threshold"])
                 record("screening_sanctions", {"status": scr["status"], "findings": scr["findings"], "reason_codes": scr["reason_codes"]}, provider="local-lists")
             # VPN / proxy HARD GATE — re-check at submit (owner's
             # order, 2026-10-26). Detection ran at flow start; the
@@ -1561,6 +1746,31 @@ def make_handler(db: DB, data_dir: str):
             db.execute("UPDATE sessions SET status=?, decision_id=?, updated_at=? WHERE id=?", (outcome, did, now_iso(), s["id"]))
             db.audit("system", None, tid, "decision.engine", "session", s["id"],
                      metadata={"outcome": outcome, "reasons": reasons, "risk_score": risk["score"], "risk_band": risk["band"], "config_version": cfg_version})
+            # Identity adoption (document path, owner's order): the
+            # identity READ from the document is written to the
+            # applicant record as the verified identity. Only EMPTY
+            # fields are filled from the read — a field the tenant
+            # declared is never overwritten by a read, and when the
+            # declared identity CONTRADICTED the document
+            # (name_mismatch / dob_mismatch decided this session) the
+            # declared record stands untouched: the contradiction is
+            # the finding, not something to silently paper over.
+            if doc_read and (app["identity_source"] if "identity_source" in app.keys() else "declared") == "document":
+                _ident = doc_read["identity"]
+                if _ident.get("any") and not ({"name_mismatch", "dob_mismatch"} & set(reasons)):
+                    _updates = {}
+                    for _col, _val in (("first_name", _ident["first_name"]),
+                                       ("last_name", _ident["last_name"]),
+                                       ("dob", _ident["dob"])):
+                        if _val and not app[_col]:
+                            _updates[_col] = _val
+                    if _updates:
+                        _sets = ", ".join(f"{k}=?" for k in _updates)
+                        db.execute(f"UPDATE applicants SET {_sets}, identity_document_id=?, updated_at=? WHERE id=?",
+                                   (*_updates.values(), doc["id"], now_iso(), app["id"]))
+                        db.audit("system", None, tid, "identity.adopt", "applicant", app["id"],
+                                 metadata={"document_id": doc["id"], "session_id": s["id"],
+                                           "fields": sorted(_updates), "sources": _ident["sources"]})
             cred = None
             if outcome == "approved":
                 srow = db.one("SELECT * FROM sessions WHERE id=?", (s["id"],))
