@@ -81,11 +81,7 @@ pre{background:#f6f6f6;padding:.6rem;overflow:auto;font-size:.8rem;white-space:p
 <label>Document type</label>
 <select id="kind"></select>
 <p id="doc-note" style="font-size:.9em;color:#555"></p>
-<label>First name (as printed on the document)</label><input id="dfirst">
-<label>Last name (as printed)</label><input id="dlast">
-<label>Date of birth on document (YYYY-MM-DD)</label><input id="ddob" placeholder="1990-01-31">
-<span id="expiry-row"><label>Document expiry (YYYY-MM-DD)</label><input id="dexpiry" placeholder="2030-01-31"></span>
-<label>Document number</label><input id="dnum">
+<p style="font-size:.95em">That is all you choose. <b>You never type your name, date of birth or document number</b> — the scanner reads them from the document itself, and shows you what it read before you continue.</p>
 <h3 id="scan-title">Scan the FRONT of your document</h3>
 <p style="font-size:.95em">Hold your document inside the frame. The scanner has to <b>see</b> your ID — its edges and shape — before it can take the picture, and it takes it <b>automatically</b> the moment everything is right. There is no button to press.</p>
 <div class="camwrap">
@@ -97,9 +93,14 @@ pre{background:#f6f6f6;padding:.6rem;overflow:auto;font-size:.8rem;white-space:p
 <div class="progress"><div id="doc-progress"></div></div>
 <div id="doc-done" style="display:none">
   <div class="thumbs" id="doc-thumbs"></div>
-  <button id="btn-doc-continue">Continue</button>
-  <button id="btn-doc-retake-front" class="ghost">Retake front</button>
-  <button id="btn-doc-retake-back" class="ghost" style="display:none">Retake back</button>
+  <div id="doc-read" style="display:none">
+    <p id="doc-read-status" style="font-weight:600">Reading your document…</p>
+    <p id="doc-read-text" style="font-size:1.05em"></p>
+    <p id="doc-read-note" style="font-size:.9em;color:#555"></p>
+  </div>
+  <button id="btn-doc-continue" style="display:none">That's right — continue</button>
+  <button id="btn-doc-retake-front" class="ghost">Rescan front</button>
+  <button id="btn-doc-retake-back" class="ghost" style="display:none">Rescan back</button>
 </div>
 </section>
 
@@ -382,6 +383,8 @@ const GUIDANCE = {
   doc_hold:     {text: 'ID detected — hold it right there, scanning…', voice: 'Hold it right there.'},
   doc_captured: {voice: 'Captured.'},
   doc_flip:     {voice: 'Now turn your ID over and place the back inside the frame.'},
+  doc_read_ok:  {voice: 'I have read your document. Check the details on the screen.'},
+  doc_read_bad: {voice: 'I could not read that scan. Hold the document closer and rescan.'},
   poa_none:     {text: 'No page detected — place the letter inside the frame.', voice: 'Place the letter inside the frame.'},
   face_dark:    {text: 'Too dark — face a light.', voice: 'The place where you are is dark. Move to a brighter place.'},
   face_bright:  {text: 'Too bright — move out of direct light.', voice: "There's too much light on your face. Move out of direct light."},
@@ -813,27 +816,68 @@ function evaluateDocument(fr, geo, noneState){
 // ------------- face metrics (selfie / liveness gates) -------------
 function faceMetrics(fr){
   const d = fr.rgba, W = fr.w, H = fr.h;
-  let cnt = 0, tot = 0, minx = 1e9, maxx = -1, miny = 1e9, maxy = -1;
-  for(let y = 0; y < H; y += 2) for(let x = 0; x < W; x += 2){
-    tot++;
+  // Judge the face INSIDE the band the on-screen oval occupies — the guide
+  // and the judge must measure the same thing. The oval (.faceoval CSS) is
+  // 56% of frame width, aspect 3/3.8, centred at x 50% / y ~48%; the band
+  // below mirrors it, widened slightly so an overflowing face still
+  // measures. The previous whole-frame skin bounding box measured the
+  // user's TORSO as well as the face (owner's live test 2026-10-26: a
+  // correctly-framed face scored widthFrac 0.995 from bare shoulders and
+  // was ordered to "move back" forever). Shoulders/chest sit below the
+  // band, and width is taken from columns with a TALL skin run (a face),
+  // not from any column with a few skin pixels at the band's bottom edge.
+  const ovalW = 0.56;
+  const ovalH = Math.min(0.92, ovalW * (W / H) * (3.8 / 3));
+  const cy = 0.50 - 0.02 * ovalH;
+  const y0 = Math.max(0, (cy - ovalH / 2 - 0.04)) * H, y1 = Math.min(1, (cy + ovalH / 2 + 0.04)) * H;
+  const isSkin = (x, y) => {
     const i = (y * W + x) * 4, r = d[i], g = d[i+1], b = d[i+2];
-    if(r > 60 && g > 30 && b > 15 && r > g && r >= b && (Math.max(r, g, b) - Math.min(r, g, b)) > 12){
-      cnt++; if(x < minx) minx = x; if(x > maxx) maxx = x; if(y < miny) miny = y; if(y > maxy) maxy = y;
+    return r > 60 && g > 30 && b > 15 && r > g && r >= b && (Math.max(r, g, b) - Math.min(r, g, b)) > 12;
+  };
+  let cnt = 0, tot = 0, bandRows = 0;
+  for(let y = Math.floor(y0); y < y1; y += 2) bandRows++;
+  // Per column, find the longest contiguous skin run inside the band
+  // (small gaps allowed for eyes/brows). A FACE column has a long run
+  // whose centre sits in the upper two-thirds of the band; shoulders or
+  // chest crossing the band's bottom edge produce only a short run
+  // centred low, and are excluded.
+  let minx = 1e9, maxx = -1, sumx = 0, ncols = 0;
+  for(let x = 0; x < W; x += 2){
+    // The FIRST substantial run in the column decides it: the face is the
+    // first tall skin run in the band; a longer torso run lower down must
+    // not take the column over (it did in an early version of this fix
+    // whenever the chest crossed more of the band than the face did).
+    let run = 0, runSumY = 0, gap = 0, decided = false;
+    for(let y = Math.floor(y0); y < y1 && !decided; y += 2){
+      tot++;
+      if(isSkin(x, y)){ cnt++; run++; runSumY += y; gap = 0; }
+      else if(run && ++gap > 2){
+        if(run >= 0.30 * bandRows){
+          decided = true;
+          const runCy = (runSumY / run - y0) / Math.max(1, (y1 - y0));
+          if(runCy <= 0.68){ if(x < minx) minx = x; if(x > maxx) maxx = x; sumx += x; ncols++; }
+        }
+        run = 0; runSumY = 0; gap = 0;
+      }
+    }
+    if(!decided && run >= 0.30 * bandRows && bandRows){
+      const runCy = (runSumY / run - y0) / Math.max(1, (y1 - y0));
+      if(runCy <= 0.68){ if(x < minx) minx = x; if(x > maxx) maxx = x; sumx += x; ncols++; }
     }
   }
-  if(!cnt) return {present:false, ratio:0, widthFrac:0, centreOff:1};
+  if(!cnt || !bandRows || ncols < 3) return {present:false, ratio:0, widthFrac:0, centreOff:1};
   const ratio = cnt / tot;
-  return {present: ratio >= 0.045, ratio,
+  return {present: ratio >= 0.04, ratio,
           widthFrac: (maxx - minx) / W,
-          centreOff: Math.abs(((minx + maxx) / 2) / W - 0.5)};
+          centreOff: Math.abs((sumx / ncols) / W - 0.5)};
 }
 function evaluateFace(fr){
   if(fr.mean < 45) return {state:'face_dark'};
   if(fr.glareRatio > 0.30) return {state:'face_bright'};
   const fm = faceMetrics(fr);
   if(!fm.present) return {state:'face_none'};
-  if(fm.widthFrac > 0.66 || fm.ratio > 0.55) return {state:'face_close'};
-  if(fm.widthFrac < 0.20) return {state:'face_far'};
+  if(fm.widthFrac > 0.74) return {state:'face_close'};
+  if(fm.widthFrac < 0.18) return {state:'face_far'};
   if(fm.centreOff > 0.13) return {state:'face_centre'};
   if(fr.diff > 7) return {state:'face_unstable'};
   return {state:'face_hold', ok:true};
@@ -921,9 +965,9 @@ const docScanner = makeAutoScanner({
       docState.frontBlob = blob;
       const fd = new FormData();
       fd.append('kind', $('kind').value); fd.append('issuing_country', $('country').value);
-      fd.append('doc_first_name', $('dfirst').value); fd.append('doc_last_name', $('dlast').value);
-      fd.append('doc_dob', $('ddob').value); fd.append('doc_number', $('dnum').value);
-      if(docState.entry && docState.entry.has_expiry) fd.append('doc_expiry', $('dexpiry').value);
+      // NO typed document fields are sent — there is no form. The
+      // server reads the document itself (OCR) and the read-back step
+      // shows the applicant what was read.
       fd.append('capture_meta', JSON.stringify({front:{method:'live_camera', side:'front'}}));
       fd.append('front', blob, 'front.jpg');
       const r = await api('POST', '/v1/flow/document', fd, true);
@@ -956,7 +1000,17 @@ function startBackScan(){
   VOICE.say('doc_flip', true);
   docScanner.start('environment').catch(()=>{ camRetry = startBackScan; });
 }
-function finishDocStep(){
+// ---------------- read-back (identity is READ, never typed) ----------------
+// After the scan the SERVER reads the document and this panel shows
+// the applicant what was read. Confirm continues; anything wrong is
+// fixed by RESCANNING — there is no form and no typing anywhere in
+// this flow, by the owner's order.
+const READ_MISSING = {
+  name:   ['your name', 'Hold the document closer and flat, in good light, so the printed name is sharp.'],
+  number: ['your document number', 'Hold the document closer and steady so the number is sharp and free of glare.'],
+  dob:    ['your date of birth', 'Hold the document closer and steady so the printed dates are sharp and free of glare.']
+};
+async function finishDocStep(){
   docScanner.stop(); stopCam();
   const t = $('doc-thumbs'); t.innerHTML = '';
   [['Front', docState.frontBlob], ['Back', docState.backBlob]].forEach(([label, blob]) => {
@@ -968,6 +1022,37 @@ function finishDocStep(){
   });
   $('btn-doc-retake-back').style.display = (docState.entry && docState.entry.sides === 2) ? '' : 'none';
   $('doc-done').style.display = '';
+  $('btn-doc-continue').style.display = 'none';
+  const panel = $('doc-read'); panel.style.display = '';
+  $('doc-read-status').textContent = 'Reading your document…';
+  $('doc-read-text').textContent = '';
+  $('doc-read-note').textContent = '';
+  let r;
+  try{ r = await api('POST', '/v1/flow/document/process', {document_id: docState.docId}); }
+  catch(e){
+    $('doc-read-status').textContent = 'We could not read that scan.';
+    $('doc-read-note').textContent = 'Please rescan — hold the document closer, flat and steady, in good light. There is nothing to type: the document itself is the only source.';
+    VOICE.say('doc_read_bad', true);
+    return;
+  }
+  const rd = r.read || {};
+  const nm = [rd.first_name, rd.last_name].filter(Boolean).join(' ');
+  if(r.complete){
+    $('doc-read-status').textContent = 'We read:';
+    $('doc-read-text').textContent = (nm || '—') + ' · ' + (r.document_label || '') + (rd.number ? ' ' + rd.number : '')
+      + (rd.dob ? ' · born ' + rd.dob : '') + (rd.expiry ? ' · expires ' + rd.expiry : '');
+    $('doc-read-note').textContent = 'This is what the document itself says — nothing was typed. If anything looks wrong, rescan: a clearer scan reads better.';
+    $('btn-doc-continue').style.display = '';
+    VOICE.say('doc_read_ok', true);
+  }else{
+    const parts = [];
+    if(r.framing !== 'pass') parts.push(['the document itself', 'We could not see a document clearly in that scan. Fill the frame with the document, flat and steady.']);
+    (r.missing || []).forEach(m => { if(READ_MISSING[m]) parts.push(READ_MISSING[m]); });
+    $('doc-read-status').textContent = 'We could not read ' + (parts.length ? parts.map(p => p[0]).join(' and ') : 'that scan') + '.';
+    $('doc-read-text').textContent = nm ? ('We did read: ' + nm + (rd.number ? ' · ' + rd.number : '')) : '';
+    $('doc-read-note').textContent = (parts.map(p => p[1]).join(' ') || 'Please rescan.') + ' There is nothing to type — the document is the only source, so a closer, sharper rescan is the fix.';
+    VOICE.say('doc_read_bad', true);
+  }
 }
 $('btn-doc-continue').onclick = () => { msg(''); nextStep(); };
 $('btn-doc-retake-front').onclick = () => {
@@ -992,7 +1077,6 @@ function applyEntry(){
   // The guide frame takes the document's real aspect (registry), and
   // the detector is driven by the same number.
   $('doc-frame').style.aspectRatio = (docState.entry.aspect || 1.586) + ' / 1';
-  $('expiry-row').style.display = docState.entry.has_expiry ? '' : 'none';
   $('doc-note').textContent =
     (docState.entry.sides === 2 ? 'This document has two sides — the scanner will ask for the back automatically. ' : 'One side to scan. ') +
     (docState.entry.has_expiry ? '' : 'This document type has no expiry date.');
@@ -1002,7 +1086,9 @@ $('kind').onchange = applyEntry;
 
 function enterDocStep(resumeBack){
   show('s-doc');
-  $('who').textContent = 'Verifying: '+(info.applicant.first_name||'')+' '+(info.applicant.last_name||'')+' · Level '+level;
+  const whoName = [info.applicant.first_name, info.applicant.last_name].filter(Boolean).join(' ');
+  $('who').textContent = whoName ? ('Verifying: '+whoName+' · Level '+level)
+                                 : ('Level '+level+' — your name and details are read from your document.');
   const countries = Object.keys(registry);
   if(!$('country').options.length){
     $('country').innerHTML = countries.map(c => '<option value="'+c+'">'+c+'</option>').join('');
