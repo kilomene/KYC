@@ -1,0 +1,51 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Review console — KYC (Nova Inc)</title>
+<style>body{font-family:system-ui,sans-serif;max-width:900px;margin:1rem auto;padding:0 1rem;line-height:1.5}input,button,select{font-size:1rem;padding:.5rem}button{background:#0b5fff;color:#fff;border:0;border-radius:8px;cursor:pointer}.card{border:1px solid #ddd;border-radius:10px;padding:1rem;margin:.8rem 0}img{max-width:100%;border:1px solid #ccc;border-radius:8px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem}@media(max-width:600px){.grid{grid-template-columns:1fr}}pre{background:#f6f6f6;padding:.6rem;overflow:auto;font-size:.8rem}table{border-collapse:collapse}td,th{border-bottom:1px solid #eee;padding:.35rem .6rem;text-align:left}</style></head>
+<body>
+<h1>Review console</h1>
+<p>Paste a tenant API key (test or live). Cases in that environment only.</p>
+<input id="key" placeholder="kyc_test_… or kyc_live_…" style="width:70%">
+<button id="load">Load cases</button>
+<div id="out"></div>
+<div id="cases"></div>
+<div id="detail"></div>
+<script>
+const $=id=>document.getElementById(id);
+let KEY=''; const blobUrls={};
+function H(){return {'Authorization':'Bearer '+KEY,'Content-Type':'application/json'};}
+async function api(m,p,b){const r=await fetch(p,{method:m,headers:H(),body:b?JSON.stringify(b):undefined});const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error((j.error&&j.error.message)||('HTTP '+r.status));return j;}
+async function imgInto(el,url){const r=await fetch(url,{headers:{'Authorization':'Bearer '+KEY}});if(!r.ok){el.alt='image unavailable';return;}const b=await r.blob();el.src=URL.createObjectURL(b);}
+async function loadCases(){
+  KEY=$('key').value.trim(); $('out').textContent='';
+  try{ const r=await api('GET','/v1/cases');
+    $('cases').innerHTML = r.cases.length? '' : '<p>No cases in this environment.</p>';
+    r.cases.forEach(c=>{ const d=document.createElement('div'); d.className='card';
+      d.innerHTML='<b>Case</b> '+c.id+'<br>Status: '+c.status+' · Session: '+c.session_id+' · Level '+(c.level??'')+' · '+c.created_at+'<br>';
+      const btn=document.createElement('button'); btn.textContent='Open case'; btn.onclick=()=>openCase(c.id); d.appendChild(btn);
+      $('cases').appendChild(d); });
+  }catch(e){ $('out').textContent=e.message; }
+}
+async function openCase(id){
+  try{ const v=await api('GET','/v1/cases/'+id);
+    const a=v.applicant||{}; const d0=(v.documents||[])[0]||{}; const b0=(v.biometrics||[])[0];
+    let checks='<table><tr><th>Check</th><th>Status</th><th>Reasons</th></tr>'+v.checks.map(c=>'<tr><td>'+c.type+'</td><td>'+c.status+'</td><td>'+(c.reason_codes||[]).join(', ')+'</td></tr>').join('')+'</table>';
+    $('detail').innerHTML='<div class="card"><h2>Case '+v.case.id+' ('+v.case.status+')</h2>'+
+      '<p><b>Applicant:</b> '+(a.first_name||'')+' '+(a.last_name||'')+' · DOB '+(a.dob||'')+' · '+(a.country||'')+'<br>'+
+      '<b>Document:</b> '+((d0.kind||'')+' '+(d0.issuing_country||''))+' · exp '+(d0.doc_expiry||'')+'<br>'+
+      '<b>Session status:</b> '+(v.session?v.session.status:'')+'</p>'+checks+
+      '<div class="grid"><div><h3>Document image</h3><img id="im-doc"></div><div><h3>Selfie (compare by eye — Phase 1 has no automated face match)</h3><img id="im-selfie"></div></div>'+
+      '<h3>Decide (reason is required)</h3><input id="reason" placeholder="Reason" style="width:60%"> '+
+      '<button data-a="approve">Approve</button> <button data-a="reject">Reject</button> <button data-a="request_more">Request more</button>'+
+      '<pre>'+JSON.stringify(v.checks.map(c=>({type:c.type,status:c.status,findings:c.findings})),null,1)+'</pre></div>';
+    if(d0.image_url) imgInto($('im-doc'), d0.image_url);
+    if(b0&&b0.image_url) imgInto($('im-selfie'), b0.image_url);
+    document.querySelectorAll('#detail [data-a]').forEach(btn=>btn.onclick=async()=>{
+      const reason=$('reason').value.trim(); if(!reason){alert('Reason is required');return;}
+      try{ const r=await api('POST','/v1/cases/'+id+'/decide',{action:btn.dataset.a,reason}); alert('Outcome: '+r.outcome); loadCases(); }
+      catch(e){ alert(e.message); }});
+  }catch(e){ alert(e.message); }
+}
+$('load').onclick=loadCases;
+</script>
+</body></html>
