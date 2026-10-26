@@ -135,7 +135,8 @@ _LABEL_OVERRIDES = {
     ("IN", "pan_card"): {"number": ["PERMANENT ACCOUNT NUMBER", "PAN"],
                          "surname": ["NAME"], "given_names": []},
     ("NG", "nin_slip"): {"number": ["NATIONAL IDENTIFICATION NUMBER", "NIN"],
-                         "surname": ["SURNAME", "LAST NAME"], "given_names": ["FIRST NAME", "GIVEN NAMES"]},
+                         "surname": ["SURNAME", "LAST NAME"],
+                         "given_names": ["FIRST NAME", "MIDDLE NAME", "GIVEN NAMES"]},
     ("NG", "nin_card"): {"number": ["NIN", "NUMBER"]},
     ("NG", "national_id"): {"number": ["NIN", "NUMBER"]},
     ("SG", "nric"): {"number": ["NRIC NUMBER", "NRIC NO", "IC NUMBER", "NUMBER"]},
@@ -151,9 +152,21 @@ _ZONES = {
     "card": {"surname": (0.33, 0.05, 0.99, 0.27), "given_names": (0.33, 0.19, 0.99, 0.43),
              "dob": (0.33, 0.38, 0.78, 0.62), "expiry": (0.52, 0.55, 0.99, 0.80),
              "number": (0.33, 0.03, 0.99, 0.25)},
-    "slip": {"surname": (0.03, 0.28, 0.68, 0.50), "given_names": (0.03, 0.40, 0.68, 0.62),
-             "dob": (0.03, 0.55, 0.62, 0.78), "expiry": (0.0, 0.0, 0.0, 0.0),
-             "number": (0.03, 0.04, 0.72, 0.30)},
+    # The real NIN slip layout (rectification 2026-10-26; research +
+    # the owner's specimen geometry, measured on the perspective
+    # warp): a NIMC header band occupies the top ~quarter; BELOW it a
+    # ruled table — Tracking ID row top-left, NIN row under it,
+    # surname / first / middle / gender rows in the CENTRE column
+    # (labels ~x 0.36, values ~x 0.50-0.63), address right-centre,
+    # portrait far right. Zones therefore start below the header
+    # band: an earlier zone that overlapped the header read the
+    # header line as the "surname" (measured on the owner's frame).
+    # The standard slip prints NO date of birth (the premium slip
+    # does) — the dob zone covers the lower-left field area and
+    # simply finds nothing on slips that don't carry it.
+    "slip": {"surname": (0.34, 0.27, 0.66, 0.40), "given_names": (0.34, 0.38, 0.66, 0.60),
+             "dob": (0.01, 0.52, 0.37, 0.72), "expiry": (0.0, 0.0, 0.0, 0.0),
+             "number": (0.01, 0.30, 0.37, 0.52)},
     "book": {"surname": (0.35, 0.10, 0.99, 0.32), "given_names": (0.35, 0.26, 0.99, 0.46),
              "dob": (0.35, 0.44, 0.80, 0.64), "expiry": (0.35, 0.60, 0.85, 0.80),
              "number": (0.35, 0.04, 0.99, 0.24)},
@@ -372,15 +385,29 @@ def extract_fields(image_path, country, kind, ocr_text="", words=None):
     for field, spec in tpl["fields"].items():
         labels = spec["labels"]
         value, source = None, None
-        # 1) label-anchored in word boxes
+        # 1) label-anchored in word boxes. For the NUMBER field a
+        # label hit whose value FAILS the type's format validation
+        # does not end the search: document titles contain the label
+        # words too (the NIN slip's header "...Identification Number
+        # Slip" would otherwise harvest the word after the title as
+        # the "number" — measured on a layout-faithful drawing). The
+        # first VALID candidate wins; the first invalid one is kept
+        # only as a fallback so the format failure still surfaces.
+        fallback = None
         for ln in lines:
             hit = _label_span(ln, labels)
             if hit:
                 _, after = hit
-                value = _value_from_tokens(field, [it["text"] for it in ln[after:]])
-                if value:
-                    source = "label"
+                cand = _value_from_tokens(field, [it["text"] for it in ln[after:]])
+                if cand:
+                    if field == "number" and validate_number(country, kind, cand) is False:
+                        if fallback is None:
+                            fallback = cand
+                        continue
+                    value, source = cand, "label"
                     break
+        if value is None and fallback is not None:
+            value, source = fallback, "label"
         # 2) zone read
         if value is None and spec.get("zone") and spec["zone"] != (0.0, 0.0, 0.0, 0.0):
             z = spec["zone"]
@@ -412,17 +439,24 @@ def extract_fields(image_path, country, kind, ocr_text="", words=None):
         # surname anchor "NAME" match inside "VORNAMEN" and harvest
         # the given-names line as the surname (measured, WS1 bench).
         if value is None and text_lines:
+            fallback = None
             for raw in text_lines:
                 up = raw.upper()
                 for lab in labels:
                     m = re.search(r"(?<![A-Z0-9ÄÉÜ])" + re.escape(lab) + r"(?![A-Z0-9ÄÉÜ])", up)
                     if m:
-                        value = _value_from_tokens(field, raw[m.end():].split())
-                        if value:
-                            source = "text"
+                        cand = _value_from_tokens(field, raw[m.end():].split())
+                        if cand:
+                            if field == "number" and validate_number(country, kind, cand) is False:
+                                if fallback is None:
+                                    fallback = cand
+                                continue
+                            value, source = cand, "text"
                             break
                 if value:
                     break
+            if value is None and fallback is not None:
+                value, source = fallback, "text"
         entry = {"value": value, "source": source}
         if field == "number" and value:
             valid = validate_number(country, kind, value)
