@@ -94,6 +94,10 @@ CREATE TABLE IF NOT EXISTS credentials(
   session_id TEXT, claims TEXT NOT NULL, signature TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','revoked')),
   issued_at TEXT NOT NULL, expires_at TEXT NOT NULL, revoked_at TEXT);
+CREATE TABLE IF NOT EXISTS ip_intel_cache(
+  ip TEXT PRIMARY KEY, status TEXT, country TEXT, proxy INTEGER NOT NULL DEFAULT 0,
+  hosting INTEGER NOT NULL DEFAULT 0, mobile INTEGER NOT NULL DEFAULT 0,
+  isp TEXT, org TEXT, asn TEXT, fetched_at TEXT NOT NULL);
 """
 
 # Columns added after Phase 1 (idempotent migrations, applied in __init__).
@@ -117,6 +121,11 @@ _MIGRATIONS = [
     ("cases", "four_eyes_required", "INTEGER NOT NULL DEFAULT 0"),
     ("documents", "capture_meta", "TEXT"),  # JSON: per-side capture metadata {front:{method,side}, back:{...}} from the live scanner
     ("biometric_captures", "capture_meta", "TEXT"),  # JSON: capture metadata {method, ...} from the live scanner
+    ("sessions", "client_ip", "TEXT"),  # client IP harvested at flow start (consent), for the location check
+    ("sessions", "ip_country", "TEXT"),  # IP geolocation country at flow start (X-IP-Country / CF-IPCountry)
+    ("sessions", "vpn_status", "TEXT"),  # VPN/proxy verdict at flow start + submit: detected | clean | unknown
+    ("sessions", "device_tz", "TEXT"),  # device timezone reported by the flow page (corroboration, record-only)
+    ("sessions", "webrtc_ips", "TEXT"),  # JSON: WebRTC local candidates reported by the flow page (record-only)
 ]
 
 def now_iso():
