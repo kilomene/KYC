@@ -28,9 +28,11 @@ Three capabilities, all fail-closed, none trusted blindly:
    code_decode_mismatch. Decoded content is evidence, never truth —
    it must AGREE with the rest of the document or it counts against it.
 
-What this layer is NOT (Phase 4): per-document field-extraction
-templates, full AAMVA/QR semantic validation, and labelled accuracy
-benchmarking. See README "Vision OCR".
+Phase 4 WS1 (2026-10-26) added the surrounding layers: per-document
+field-extraction templates live in server/fieldtemplates.py, payload
+semantics (full AAMVA parse, NIN-slip QR, Aadhaar secure QR, PhilID
+QR) in server/payloads.py, and the labelled accuracy benchmark in
+scripts/benchmark_vision.py (results in benchmarks/RESULTS.md).
 """
 import io, os, re, shutil, subprocess, tempfile
 from datetime import date
@@ -441,14 +443,6 @@ def _decode_qr(path):
     except Exception:
         return None
 
-_AAMVA = {
-    "number": re.compile(r"DAQ([A-Z0-9\-]{4,})"),
-    "surname": re.compile(r"DCS([A-Z][A-Z ]*)"),
-    "first_name": re.compile(r"DAC([A-Z][A-Z ]*)"),
-    "dob": re.compile(r"DBB(\d{8})"),
-    "expiry": re.compile(r"DBA(\d{8})"),
-}
-
 def _aamva_date(mmddyyyy):
     try:
         return date(int(mmddyyyy[4:8]), int(mmddyyyy[0:2]), int(mmddyyyy[2:4]))
@@ -462,7 +456,7 @@ def _decode_barcodes(path):
     try:
         out = []
         for r in zxingcpp.read_barcodes(Image.open(path)):
-            out.append({"format": str(r.format), "text": (r.text or "")[:800]})
+            out.append({"format": str(r.format), "text": (r.text or "")[:2000]})
         return out
     except Exception:
         return []
@@ -470,50 +464,77 @@ def _decode_barcodes(path):
 def _alnum(s):
     return re.sub(r"[^A-Z0-9]", "", (s or "").upper())
 
-def decode_codes(front_path=None, back_path=None, doc_fields=None):
+def decode_codes(front_path=None, back_path=None, doc_fields=None, country=None, kind=None):
     """Decode QR (OpenCV) + barcodes (zxing, if installed) on the
-    document images and cross-check structured content (AAMVA) against
-    the document fields. Presence is recorded; agreement is required
-    for structured fields; absence of any code is 'unclear', honestly
-    (most documents carry no decodable code in this build's reach)."""
+    document images and validate the payloads SEMANTICS via
+    server/payloads.py: AAMVA element parsing + format validation,
+    NG NIN-slip QR structure, Aadhaar secure-QR decompression, PhilID
+    QR structure — each cross-checked against the printed document
+    fields. Decoded content is evidence, never truth: disagreement
+    fails with code_decode_mismatch. Absence of any code is 'unclear',
+    honestly (most documents carry no decodable code in reach)."""
+    from . import payloads as PAYLOADS
     doc_fields = doc_fields or {}
-    findings = {"qr": None, "barcodes": [], "aamva": None,
+    findings = {"qr": None, "barcodes": [], "aamva": None, "payloads": [],
                 "zxing": "available" if zxingcpp is not None else "unavailable",
                 "opencv": "available" if cv2 is not None else "unavailable"}
     mismatches = []
     found_any = False
+
+    def _absorb(parsed, side):
+        """Record a parsed payload + cross-check it; extend mismatches."""
+        if not parsed:
+            return
+        entry = {"standard": parsed["standard"], "side": side,
+                 "validation_depth": parsed.get("validation_depth"),
+                 "fields": parsed.get("fields")}
+        if parsed.get("depth_note"):
+            entry["depth_note"] = parsed["depth_note"]
+        if parsed["standard"] == "AAMVA":
+            entry["elements_present"] = sorted((parsed.get("elements") or {}).keys())
+            entry["format"] = parsed.get("format")
+            f = parsed["fields"]
+            # Backwards-compatible summary shape (build_data_consistency
+            # and the console read this): dates stay MMDDYYYY here.
+            findings["aamva"] = {"number": f.get("number"), "surname": f.get("surname"),
+                                 "first_name": f.get("first_name"),
+                                 "dob": f.get("dob_raw"), "expiry": f.get("expiry_raw")}
+            findings["aamva_format"] = parsed.get("format")
+            findings["aamva_format_valid"] = parsed.get("format_valid")
+        mm, compared = PAYLOADS.cross_check_payload(parsed, doc_fields, country=country, kind=kind)
+        entry["cross_checked_fields"] = compared
+        findings["payloads"].append(entry)
+        mismatches.extend(mm)
+
     for side, p in (("front", front_path), ("back", back_path)):
         if not p:
             continue
         qr = _decode_qr(p)
         if qr:
             found_any = True
-            findings["qr"] = {"side": side, "data": qr[:300]}
+            findings["qr"] = {"side": side, "data": qr[:600]}
+            parsed = None
+            if country == "IN" or (qr.strip().isdigit() and len(qr.strip()) >= 100):
+                parsed = PAYLOADS.parse_aadhaar_qr(qr)
+            if parsed is None and (country == "NG" or "NIN" in qr.upper()):
+                parsed = PAYLOADS.parse_nin_qr(qr)
+            if parsed is None and country == "PH":
+                parsed = PAYLOADS.parse_philid_qr(qr)
+            if parsed is None and "DAQ" in qr.upper():
+                parsed = PAYLOADS.parse_aamva(qr)
+            if parsed is None:
+                # Unrouted QR: try each structural parser in turn.
+                parsed = (PAYLOADS.parse_aadhaar_qr(qr) or PAYLOADS.parse_nin_qr(qr)
+                          or PAYLOADS.parse_philid_qr(qr))
+            _absorb(parsed, side)
         for bc in _decode_barcodes(p):
             found_any = True
             entry = {"side": side, "format": bc["format"], "chars": len(bc["text"])}
             findings["barcodes"].append(entry)
-            if "PDF417" in bc["format"]:
-                aamva = {}
-                for key, rx in _AAMVA.items():
-                    m = rx.search(bc["text"].upper())
-                    if m:
-                        aamva[key] = m.group(1).strip()
-                if aamva:
-                    findings["aamva"] = aamva
-                    checks = []
-                    if aamva.get("number") and doc_fields.get("doc_number"):
-                        checks.append(("number", _alnum(aamva["number"]) == _alnum(doc_fields["doc_number"])))
-                    if aamva.get("dob") and doc_fields.get("doc_dob"):
-                        d = _aamva_date(aamva["dob"])
-                        checks.append(("dob", bool(d) and d.isoformat() == doc_fields["doc_dob"]))
-                    if aamva.get("expiry") and doc_fields.get("doc_expiry"):
-                        d = _aamva_date(aamva["expiry"])
-                        checks.append(("expiry", bool(d) and d.isoformat() == doc_fields["doc_expiry"]))
-                    if aamva.get("surname") and doc_fields.get("doc_last_name"):
-                        checks.append(("surname", aamva["surname"] == _alnum(doc_fields["doc_last_name"])))
-                    findings["aamva_agreement"] = {k: v for k, v in checks}
-                    mismatches += [k for k, ok in checks if not ok]
+            parsed = PAYLOADS.parse_aamva(bc["text"])
+            if parsed is None and "PDF417" not in bc["format"]:
+                parsed = (PAYLOADS.parse_nin_qr(bc["text"]) or PAYLOADS.parse_philid_qr(bc["text"]))
+            _absorb(parsed, side)
     findings["mismatches"] = mismatches
     findings["found_any"] = found_any
     if mismatches:
