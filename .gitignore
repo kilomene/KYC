@@ -1,4 +1,6 @@
 data/
+models/
+.tmp/
 __pycache__/
 *.db
 *.pyc
