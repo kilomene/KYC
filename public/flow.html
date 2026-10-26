@@ -47,6 +47,7 @@ pre{background:#f6f6f6;padding:.6rem;overflow:auto;font-size:.8rem;white-space:p
 <body>
 <h1>Verify your identity</h1>
 <div style="text-align:right"><span id="voice-ind">🔊 speaking…</span><button id="btn-mute" class="ghost" style="width:auto;margin-top:0;padding:.35rem .7rem">🔊 Voice on</button></div>
+<div id="voice-arm" style="display:none;position:fixed;left:50%;transform:translateX(-50%);bottom:14px;z-index:60;background:#12351f;color:#d9ffe4;border:1px solid #2fbf71;border-radius:999px;padding:.55rem 1rem;font-size:.95rem;box-shadow:0 4px 18px rgba(0,0,0,.35)">🔊 Tap anywhere to turn on voice guidance</div>
 <div id="out"></div>
 
 <section class="step" id="s-consent">
@@ -382,6 +383,7 @@ function clientSignals(){
 // speechSynthesis is only a fallback when a clip cannot play.
 const GUIDANCE = {
   welcome:      {voice: 'Welcome. We will start with your document. Place your ID inside the frame when the camera opens.'},
+  voice_on:     {voice: 'Voice guidance is on.'},
   starting:     {text: 'Starting camera…'},
   doc_dark:     {text: 'Too dark — move somewhere brighter.', voice: 'The place where you are is dark. Move to a brighter place.'},
   doc_dim:      {text: 'A bit dim — more light will help the scan.', voice: 'The light here is dim. Move to a brighter place if you can.'},
@@ -520,23 +522,49 @@ const VOICE = {
   // clip for real (it is also the first guidance the user hears).
   // Playing one clip here unlocks the shared audio element for every
   // later line.
-  prime(){
+  prime(key){
+    if (this.unlocked) return;               // one unlock per page load
+    key = key || 'welcome';
     this.unlocked = true;
     this._loadVoice();
     if (!this.enabled) return;
-    this.lastKey = 'welcome'; this.lastAt = performance.now();
-    // The welcome clip was preloaded at page load; this play() call —
-    // still synchronously inside the consent tap — only starts it, and
+    this.lastKey = key; this.lastAt = performance.now();
+    // The clip was preloaded at page load; this play() call — still
+    // synchronously inside the tap handler — only starts it, and
     // unlocks the shared element for every later line. Playback is
     // VERIFIED, not assumed: if no 'playing' event arrives within
-    // 900ms (or play() rejects), the welcome is spoken by the fallback
+    // 900ms (or play() rejects), the line is spoken by the fallback
     // synthesis voice instead, so the first line is never just lost.
     const p = this._ensurePlayer();
     let heard = false;
     const onPlaying = () => { heard = true; p.removeEventListener('playing', onPlaying); };
     p.addEventListener('playing', onPlaying);
-    setTimeout(() => { if (!heard) this._speakSynth(GUIDANCE.welcome.voice, true); }, 900);
-    if (!this._playClip('welcome')) this._speakSynth(GUIDANCE.welcome.voice, true);
+    const line = (GUIDANCE[key] || {}).voice;
+    setTimeout(() => { if (!heard && line) this._speakSynth(line, true); }, 900);
+    if (!this._playClip(key) && line) this._speakSynth(line, true);
+  },
+  // THE RESUME GAP (owner's silent runs, 2026-10-26): a reopened link
+  // whose consent was already granted skips the consent screen and
+  // jumps straight to the next step — no tap ever happens, prime() is
+  // never called, `unlocked` stays false and say() returns silently
+  // for the WHOLE run. arm() fixes the class: on a resumed load, show
+  // the voice banner and prime on the first genuine tap ANYWHERE
+  // (capture phase, so the unlock lands before the tap's own handler
+  // can trigger guidance).
+  armed: false,
+  arm(){
+    if (this.armed || this.unlocked) return;
+    this.armed = true;
+    const banner = document.getElementById('voice-arm');
+    if (banner) banner.style.display = 'block';
+    const h = () => {
+      document.removeEventListener('pointerdown', h, true);
+      document.removeEventListener('click', h, true);
+      if (banner) banner.style.display = 'none';
+      this.prime('voice_on');
+    };
+    document.addEventListener('pointerdown', h, true);
+    document.addEventListener('click', h, true);
   },
   say(key, force){
     const g = GUIDANCE[key];
@@ -1433,7 +1461,7 @@ $('btn-vpn-retry').onclick = doConsent;
   // Resumable: reopening an unexpired link continues where you left off.
   if(!info.session.consent_at) show('s-consent');
   else if(info.session.vpn_status === 'detected') show('s-vpn');
-  else nextStep();
+  else { VOICE.arm(); nextStep(); }
 })();
 $('btn-submit').onclick = async () => {
   try{ const r = await api('POST', '/v1/flow/submit', {});
