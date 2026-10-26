@@ -133,6 +133,17 @@ export class TunnelHub {
     const id = this.nextId++;
     const headers = {};
     for (const [k, v] of request.headers.entries()) headers[k] = v;
+    // Location evidence for the origin's location check: stamp the
+    // real client IP + IP country in the canonical headers the origin
+    // server reads (X-Client-IP / X-IP-Country). CF-Connecting-IP is
+    // set by the Cloudflare edge on every request; request.cf.country
+    // is the edge's geo lookup for that IP. The tunnel protocol
+    // forwards a headers map, so both ride down it unchanged (the
+    // tunnel client passes request headers through verbatim).
+    const clientIp = request.headers.get("CF-Connecting-IP");
+    if (clientIp) headers["x-client-ip"] = clientIp;
+    const ipCountry = (request.cf && request.cf.country) || request.headers.get("CF-IPCountry");
+    if (ipCountry) headers["x-ip-country"] = ipCountry;
     let body = null;
     if (request.method !== "GET" && request.method !== "HEAD") {
       const buf = new Uint8Array(await request.arrayBuffer());
