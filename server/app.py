@@ -305,6 +305,7 @@ def make_handler(db: DB, data_dir: str):
             if p == "/" or p == "/index.html": return self._static("index.html")
             if p == "/console": return self._static("console.html")
             if p.startswith("/flow/"): return self._static("flow.html")
+            if p.startswith("/voice/"): return self._static(p)
             if p.startswith("/public/"): return self._static(p[len("/public/"):])
             if p == "/healthz": return self._send(200, {"ok": True})
             # flow info
@@ -429,17 +430,25 @@ def make_handler(db: DB, data_dir: str):
 
         def _static(self, name):
             name = os.path.basename(name)
-            fp = os.path.join(PUBLIC_DIR, name)
+            # Voice clips live one level down (public/voice/<key>.mp3);
+            # they are the only subdirectory files served.
+            if self.path.split("?")[0].startswith("/voice/") and name.endswith(".mp3"):
+                fp = os.path.join(PUBLIC_DIR, "voice", name)
+            else:
+                fp = os.path.join(PUBLIC_DIR, name)
             if not os.path.isfile(fp): return self._err(404, "not found")
             ctype = "text/html" if name.endswith(".html") else "text/plain"
             if name.endswith(".js"): ctype = "application/javascript"
             if name.endswith(".css"): ctype = "text/css"
+            if name.endswith(".mp3"): ctype = "audio/mpeg"
             with open(fp, "rb") as f: data = f.read()
             # HTML pages are never cached: the hosted flow must always run
             # the exact page version that matches the server's endpoints
             # (a stale cached flow page once called an endpoint the running
             # server did not have yet, mid-ship — owner's live test hit it).
-            hdrs = {"Cache-Control": "no-store"} if ctype == "text/html" else None
+            # Voice clips are immutable per key and cache hard.
+            hdrs = {"Cache-Control": "no-store"} if ctype == "text/html" else \
+                   {"Cache-Control": "public, max-age=86400"} if ctype == "audio/mpeg" else None
             self._send(200, data, ctype, headers=hdrs)
 
         def _session_view(self, s):
@@ -1464,7 +1473,8 @@ def make_handler(db: DB, data_dir: str):
                     record("expiry_age", C.check_expiry_age(parsed if parsed and parsed.get("valid") else None,
                                                             doc_expiry=docm["doc_expiry"], doc_dob=docm["doc_dob"], applicant_dob=app_eff["dob"],
                                                             has_expiry=doc_entry.get("has_expiry", True),
-                                                            validity_end=doc_entry.get("validity_end")))
+                                                            validity_end=doc_entry.get("validity_end"),
+                                                            prints_dob=doc_entry.get("prints_dob", True)))
                     if app["first_name"] or app["last_name"]:
                         # Declared path: tenant-declared identity is
                         # present -> cross-check exactly as before.
