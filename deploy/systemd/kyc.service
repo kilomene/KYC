@@ -6,6 +6,11 @@ Wants=network-online.target
 [Service]
 Type=simple
 Environment=HOME=/home/hatch
+# Optional platform-operator token for POST /v1/tenants (WS0 audit fix).
+# Create data/platform-admin.env (chmod 600) containing
+# KYC_PLATFORM_ADMIN_TOKEN=<token> to enable tenant creation; when the
+# file is absent, tenant creation stays disabled (fail closed).
+EnvironmentFile=-/home/hatch/workspace/KYC/data/platform-admin.env
 WorkingDirectory=/home/hatch/workspace/KYC
 ExecStart=/usr/bin/python3 -m server --port 8790
 Restart=always
