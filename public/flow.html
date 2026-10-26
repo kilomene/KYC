@@ -175,12 +175,27 @@ const H = {'Authorization':'Bearer '+token, 'Content-Type':'application/json'};
 const $ = id => document.getElementById(id);
 function show(id){document.querySelectorAll('.step').forEach(s=>s.classList.remove('on')); if(id) $(id).classList.add('on');}
 function msg(t, err){ $('out').innerHTML = '<div class="msg'+(err?' err':'')+'">'+t+'</div>'; }
-async function api(method, path, body, isForm){
-  const opts = {method, headers: isForm ? {'Authorization':'Bearer '+token} : H};
-  if(body) opts.body = isForm ? body : JSON.stringify(body);
-  const r = await fetch(path, opts); const j = await r.json().catch(()=>({}));
-  if(!r.ok){ const e = new Error((j.error && j.error.message) || ('HTTP '+r.status)); e.code = (j.error && j.error.code) || null; throw e; }
-  return j;
+async function api(method, path, body, isForm, retry){
+  const attempt = async () => {
+    const opts = {method, headers: isForm ? {'Authorization':'Bearer '+token} : H};
+    if(body) opts.body = isForm ? body : JSON.stringify(body);
+    const r = await fetch(path, opts); const j = await r.json().catch(()=>({}));
+    if(!r.ok){ const e = new Error((j.error && j.error.message) || ('HTTP '+r.status)); e.code = (j.error && j.error.code) || null; e.status = r.status; throw e; }
+    return j;
+  };
+  try{ return await attempt(); }
+  catch(e){
+    // Upload calls pass retry=1: the tunnel socket can drop mid-flight
+    // (the path out of the server VM recycles long-lived connections),
+    // surfacing as a network failure or a 502/504. One retry after a
+    // short pause rides out the reconnect; the upload endpoints
+    // replace the step's capture, so a re-send is safe. Everything
+    // else (consent, submit, …) is never silently retried.
+    const transient = !e.status || e.status === 502 || e.status === 503 || e.status === 504;
+    if(!retry || !transient) throw e;
+    await new Promise(res => setTimeout(res, 2500));
+    return attempt();
+  }
 }
 const GOOD_MS = 700;              // ~700ms of good frames -> auto-capture (fast when presented properly)
 let info, level = 1, registry = {};
@@ -1137,7 +1152,7 @@ const docScanner = makeAutoScanner({
       // shows the applicant what was read.
       fd.append('capture_meta', JSON.stringify({front:{method:'live_camera', side:'front'}}));
       fd.append('front', blob, 'front.jpg');
-      const r = await api('POST', '/v1/flow/document', fd, true);
+      const r = await api('POST', '/v1/flow/document', fd, true, true);
       docState.docId = r.document_id;
       upsertDocInfo({id:r.document_id, kind:r.kind, issuing_country:r.issuing_country, has_front:true, has_back:false});
       msg('Front scanned.');
@@ -1149,7 +1164,7 @@ const docScanner = makeAutoScanner({
       fd.append('document_id', docState.docId);
       fd.append('capture_meta', JSON.stringify({back:{method:'live_camera', side:'back'}}));
       fd.append('back', blob, 'back.jpg');
-      await api('POST', '/v1/flow/document/back', fd, true);
+      await api('POST', '/v1/flow/document/back', fd, true, true);
       upsertDocInfo({id:docState.docId, has_back:true});
       msg('Back scanned.');
       finishDocStep();
@@ -1195,7 +1210,7 @@ async function finishDocStep(){
   $('doc-read-text').textContent = '';
   $('doc-read-note').textContent = '';
   let r;
-  try{ r = await api('POST', '/v1/flow/document/process', {document_id: docState.docId}); }
+  try{ r = await api('POST', '/v1/flow/document/process', {document_id: docState.docId}, false, true); }
   catch(e){
     $('doc-read-status').textContent = 'We could not read that scan.';
     $('doc-read-note').textContent = 'Please rescan — hold the document closer, flat and steady, in good light. There is nothing to type: the document itself is the only source.';
@@ -1292,7 +1307,7 @@ const selfieScanner = makeAutoScanner({
     fd.append('capture_meta', JSON.stringify({method:'live_camera', client_signals: clientSignals()}));
     fd.append('selfie', blob, 'selfie.jpg');
     (burst || []).forEach((b, i) => fd.append('burst_' + i, b, 'burst_' + i + '.jpg'));
-    await api('POST', '/v1/flow/selfie', fd, true);
+    await api('POST', '/v1/flow/selfie', fd, true, true);
     info.selfie_uploaded = true; msg('Selfie captured.'); nextStep();
   }
 });
@@ -1357,7 +1372,7 @@ function recordLiveness(stream){
       const fd = new FormData();
       fd.append('capture_meta', JSON.stringify({method:'live_camera', client_signals: clientSignals()}));
       fd.append('video', new Blob(chunks, {type: rec.mimeType || 'video/webm'}), 'liveness.webm');
-      await api('POST', '/v1/flow/liveness', fd, true);
+      await api('POST', '/v1/flow/liveness', fd, true, true);
       info.liveness_uploaded = true; VOICE.say('lv_done', true); msg('Liveness recorded.'); nextStep();
     }catch(e){ msg(e.message, true); lvBusy = false; enterLivenessStep(); }
   };
@@ -1379,7 +1394,7 @@ const poaScanner = makeAutoScanner({
     const fd = new FormData();
     fd.append('capture_meta', JSON.stringify({method:'live_camera'}));
     fd.append('document', blob, 'poa.jpg');
-    await api('POST', '/v1/flow/poa', fd, true);
+    await api('POST', '/v1/flow/poa', fd, true, true);
     info.poa_uploaded = true; msg('Proof of address scanned.'); nextStep();
   }
 });
