@@ -14,6 +14,8 @@ from urllib.parse import urlparse
 from . import CONSENT_TEXT_VERSION, RULES_VERSION
 from .db import DB, new_id, now_iso, row_to_dict
 from . import checks as C
+from . import framing as FRAMING
+from . import docregistry as DOCREG
 from .engine import decide, required_for
 from . import webhooks as WH
 from . import face as FACE
@@ -42,37 +44,30 @@ REGISTRY_FORMATS = {
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PUBLIC_DIR = os.path.join(BASE_DIR, "public")
 
-# Settled, owner-expanded launch coverage (DECISIONS D3, 2026-10-26).
-# Design rule: passport is accepted for EVERY country in the launch list
-# (the MRZ is a worldwide standard); drivers_licence / national_id start
-# with the named set below and expand country-by-country with tests.
-# To add a country: add its ISO alpha-2 code to LAUNCH_COUNTRIES (passport
-# comes with it) and, once its licence/ID is tested, to LICENCE_ID_COUNTRIES.
-LAUNCH_COUNTRIES = (
-    "NG",  # Nigeria
-    "GB",  # United Kingdom (ISO code is GB, not UK)
-    "US",  # United States
-    "CA",  # Canada
-    "AU",  # Australia
-    "DE",  # Germany
-    "GH",  # Ghana
-    "KE",  # Kenya
-    "ZA",  # South Africa
-    "IN",  # India
-    "PH",  # Philippines
-    "SG",  # Singapore
-    "AE",  # United Arab Emirates
-    "FR",  # France
-    "NL",  # Netherlands
-    "IE",  # Ireland
-)
+# Settled, owner-expanded launch coverage (DECISIONS D3, 2026-10-26),
+# refined 2026-10-26 by the owner's per-country document specification:
+# the source of truth is now the per-country, per-document REGISTRY in
+# server/docregistry.py — every document carries facts (sides,
+# has_expiry, mrz) that drive validation, the live-scanner flow (back
+# side prompt) and the expiry check. Passport is accepted for EVERY
+# launch country (the MRZ is a worldwide standard).
+LAUNCH_COUNTRIES = tuple(DOCREG.DOCUMENT_REGISTRY.keys())
 LICENCE_ID_COUNTRIES = {"NG", "US", "GB", "CA", "AU", "DE", "GH"}
-SUPPORTED_DOCUMENTS = {
-    c: ({"passport", "drivers_licence", "national_id"} if c in LICENCE_ID_COUNTRIES else {"passport"})
-    for c in LAUNCH_COUNTRIES
-}
+SUPPORTED_DOCUMENTS = DOCREG.supported_documents()
 # Backwards-readable alias used by the flow endpoints.
 ALLOWED_DOCS = SUPPORTED_DOCUMENTS
+
+def parse_capture_meta(raw):
+    """Parse the capture_meta multipart field (JSON) the live scanner
+    sends. Client-claimed metadata: recorded as evidence, never trusted
+    as proof on its own. Returns a dict (possibly empty)."""
+    if not raw:
+        return {}
+    try:
+        meta = json.loads(raw)
+        return meta if isinstance(meta, dict) else {}
+    except Exception:
+        return {}
 
 def sha256(s): return hashlib.sha256(s.encode()).hexdigest()
 def iso_in(hours): return (datetime.now(timezone.utc) + timedelta(hours=hours)).isoformat()
@@ -180,7 +175,7 @@ def make_handler(db: DB, data_dir: str):
                 s = self._flow_session()
                 if not s: return self._err(401, "invalid or expired flow token")
                 app = db.one("SELECT id,first_name,last_name,dob,country FROM applicants WHERE id=?", (s["applicant_id"],))
-                docs = db.all("SELECT id,kind,issuing_country FROM documents WHERE session_id=?", (s["id"],))
+                docs = db.all("SELECT id,kind,issuing_country, storage_path IS NOT NULL AS has_front, back_storage_path IS NOT NULL AS has_back, capture_meta FROM documents WHERE session_id=?", (s["id"],))
                 bio = db.all("SELECT id, media_kind FROM biometric_captures WHERE session_id=?", (s["id"],))
                 challenge = None
                 try: challenge = json.loads(s["liveness_challenge"] or "null")
@@ -188,7 +183,8 @@ def make_handler(db: DB, data_dir: str):
                 issued = db.one("SELECT id FROM credentials WHERE session_id=? AND status='active'", (s["id"],))
                 return self._send(200, {"session": {"id": s["id"], "level": s["level"], "status": s["status"], "env": s["env"],
                                                      "consent_at": s["consent_at"], "credential_session": bool(s["credential_id"])},
-                                        "applicant": row_to_dict(app), "documents": [row_to_dict(d) for d in docs],
+                                        "applicant": row_to_dict(app), "documents": [row_to_dict(d, ("capture_meta",)) for d in docs],
+                                        "document_registry": DOCREG.registry_view(),
                                         "selfie_uploaded": any(b["media_kind"] == "selfie" for b in bio),
                                         "liveness_uploaded": any(b["media_kind"] == "liveness_video" for b in bio),
                                         "liveness_challenge": challenge,
@@ -336,15 +332,21 @@ def make_handler(db: DB, data_dir: str):
             db.audit("tenant", c["tenant_id"], c["tenant_id"], "case.view", "case", c["id"])
             s = db.one("SELECT * FROM sessions WHERE id=?", (c["session_id"],))
             app = db.one("SELECT * FROM applicants WHERE id=?", (s["applicant_id"],)) if s else None
-            docs = db.all("SELECT id,kind,issuing_country,doc_first_name,doc_last_name,doc_dob,doc_number,doc_expiry,ocr_text,mrz_raw,storage_path IS NOT NULL AS has_front, back_storage_path IS NOT NULL AS has_back FROM documents WHERE session_id=?", (c["session_id"],))
-            bio = db.all("SELECT id, storage_path IS NOT NULL AS has_image FROM biometric_captures WHERE session_id=?", (c["session_id"],))
+            docs = db.all("SELECT id,kind,issuing_country,doc_first_name,doc_last_name,doc_dob,doc_number,doc_expiry,ocr_text,mrz_raw,capture_meta,storage_path IS NOT NULL AS has_front, back_storage_path IS NOT NULL AS has_back FROM documents WHERE session_id=?", (c["session_id"],))
+            bio = db.all("SELECT id, media_kind, capture_meta, storage_path IS NOT NULL AS has_image FROM biometric_captures WHERE session_id=?", (c["session_id"],))
             chks = db.all("SELECT * FROM checks WHERE session_id=? ORDER BY created_at", (c["session_id"],))
             doc_list = []
             for d in docs:
-                dd = row_to_dict(d)
+                dd = row_to_dict(d, ("capture_meta",))
                 dd["image_url"] = f"/v1/documents/{d['id']}/image"
+                if d["has_back"]:
+                    dd["back_image_url"] = f"/v1/documents/{d['id']}/image?side=back"
                 doc_list.append(dd)
-            bio_list = [{"id": b["id"], "has_image": bool(b["has_image"]), "image_url": f"/v1/biometrics/{b['id']}/image"} for b in bio]
+            bio_list = []
+            for b in bio:
+                bd = row_to_dict(b, ("capture_meta",))
+                bio_list.append({"id": b["id"], "media_kind": b["media_kind"], "capture_meta": bd.get("capture_meta"),
+                                 "has_image": bool(b["has_image"]), "image_url": f"/v1/biometrics/{b['id']}/image"})
             check_dicts = [row_to_dict(x, ("findings", "reason_codes")) for x in chks]
             results_map = {}
             for x in check_dicts:
@@ -361,9 +363,13 @@ def make_handler(db: DB, data_dir: str):
                     "credential": ({"id": cred["id"], "status": cred["status"], "claims": json.loads(cred["claims"])} if cred else None)}
 
         def _image(self, table, rid, tid, env):
+            from urllib.parse import parse_qs
+            side = (parse_qs(urlparse(self.path).query).get("side") or ["front"])[0]
             r = db.one(f"SELECT * FROM {table} WHERE id=? AND tenant_id=? AND env=?", (rid, tid, env))
-            if not r or not r["storage_path"]: return self._err(404, "not found")
-            fp = os.path.join(data_dir, r["storage_path"])
+            if not r: return self._err(404, "not found")
+            rel = r["back_storage_path"] if (table == "documents" and side == "back") else r["storage_path"]
+            if not rel: return self._err(404, "not found")
+            fp = os.path.join(data_dir, rel)
             if not os.path.isfile(fp): return self._err(404, "file gone")
             db.audit("tenant", tid, tid, "image.view", table, rid)  # audited view; served directly, no persistent URL
             with open(fp, "rb") as f: data = f.read()
@@ -803,7 +809,7 @@ def make_handler(db: DB, data_dir: str):
                 country = (field_text(parts, "issuing_country") or "").upper()
                 front = parts.get("front"); back = parts.get("back")
                 if country not in ALLOWED_DOCS or kind not in ALLOWED_DOCS[country]:
-                    return self._err(422, f"document type {kind} not supported for {country or '?'} (passport: all launch countries NG/GB/US/CA/AU/DE/GH/KE/ZA/IN/PH/SG/AE/FR/NL/IE; licence/national ID: NG/US/GB/CA/AU/DE/GH)")
+                    return self._err(422, f"document type {kind} not supported for {country or '?'} (see the per-country document registry: GET /v1/flow/session -> document_registry)")
                 if not front or not front["data"]: return self._err(422, "front image required")
                 did = new_id()
                 rel_dir = os.path.join("files", tid, s["id"]); os.makedirs(os.path.join(data_dir, rel_dir), exist_ok=True)
@@ -814,12 +820,48 @@ def make_handler(db: DB, data_dir: str):
                     return rel
                 front_rel = save(front, "front")
                 back_rel = save(back, "back") if back and back["data"] else None
-                db.execute("INSERT INTO documents(id,tenant_id,env,session_id,kind,issuing_country,storage_path,back_storage_path,doc_first_name,doc_last_name,doc_dob,doc_number,doc_expiry,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                meta_in = parse_capture_meta(field_text(parts, "capture_meta"))
+                capture_meta = {"front": {"method": (meta_in.get("front") or {}).get("method") or meta_in.get("method") or "not_declared", "side": "front"}}
+                if back_rel:
+                    capture_meta["back"] = {"method": (meta_in.get("back") or {}).get("method") or meta_in.get("method") or "not_declared", "side": "back"}
+                entry = DOCREG.get_document(country, kind) or {}
+                db.execute("INSERT INTO documents(id,tenant_id,env,session_id,kind,issuing_country,storage_path,back_storage_path,doc_first_name,doc_last_name,doc_dob,doc_number,doc_expiry,capture_meta,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                            (did, tid, env, s["id"], kind, country, front_rel, back_rel,
                             field_text(parts, "doc_first_name"), field_text(parts, "doc_last_name"),
-                            field_text(parts, "doc_dob"), field_text(parts, "doc_number"), field_text(parts, "doc_expiry"), now_iso()))
-                db.audit("applicant", s["applicant_id"], tid, "document.upload", "document", did)
-                return self._send(201, {"document_id": did, "kind": kind, "issuing_country": country})
+                            field_text(parts, "doc_dob"), field_text(parts, "doc_number"), field_text(parts, "doc_expiry"),
+                            json.dumps(capture_meta), now_iso()))
+                db.audit("applicant", s["applicant_id"], tid, "document.upload", "document", did,
+                         metadata={"capture": capture_meta})
+                return self._send(201, {"document_id": did, "kind": kind, "issuing_country": country,
+                                        "sides": entry.get("sides", 1), "has_expiry": entry.get("has_expiry", True),
+                                        "back_uploaded": bool(back_rel)})
+            if p == "/v1/flow/document/back":
+                # Second side of a two-sided document, scanned after the
+                # front was accepted (live-scanner flow). Attaches to the
+                # existing document row — one document, two images.
+                if not s["consent_at"]: return self._err(422, "consent required before upload")
+                body = self._body()
+                parts = parse_multipart(body, self.headers.get("Content-Type", ""))
+                doc_id = field_text(parts, "document_id") or ""
+                back = parts.get("back") or parts.get("front")
+                doc = db.one("SELECT * FROM documents WHERE id=? AND session_id=?", (doc_id, s["id"]))
+                if not doc: return self._err(404, "document not found for this session")
+                entry = DOCREG.get_document(doc["issuing_country"], doc["kind"]) or {}
+                if entry.get("sides", 1) < 2: return self._err(422, f"{doc['kind']} has no back side")
+                if not back or not back["data"]: return self._err(422, "back image required")
+                rel_dir = os.path.join("files", tid, s["id"]); os.makedirs(os.path.join(data_dir, rel_dir), exist_ok=True)
+                ext = ".jpg" if "jpeg" in (back["content_type"] or "") or (back["filename"] or "").lower().endswith((".jpg", ".jpeg")) else ".png"
+                rel = os.path.join(rel_dir, f"{doc['id']}_back{ext}")
+                with open(os.path.join(data_dir, rel), "wb") as f: f.write(back["data"])
+                meta_in = parse_capture_meta(field_text(parts, "capture_meta"))
+                try: capture_meta = json.loads(doc["capture_meta"] or "{}")
+                except Exception: capture_meta = {}
+                capture_meta["back"] = {"method": (meta_in.get("back") or {}).get("method") or meta_in.get("method") or "not_declared", "side": "back"}
+                db.execute("UPDATE documents SET back_storage_path=?, capture_meta=? WHERE id=?",
+                           (rel, json.dumps(capture_meta), doc["id"]))
+                db.audit("applicant", s["applicant_id"], tid, "document.back_upload", "document", doc["id"],
+                         metadata={"capture": capture_meta.get("back")})
+                return self._send(201, {"document_id": doc["id"], "back_uploaded": True})
             if p == "/v1/flow/selfie":
                 if not s["consent_at"]: return self._err(422, "consent required before upload")
                 body = self._body(); parts = parse_multipart(body, self.headers.get("Content-Type", ""))
@@ -828,9 +870,12 @@ def make_handler(db: DB, data_dir: str):
                 bid = new_id(); rel_dir = os.path.join("files", tid, s["id"]); os.makedirs(os.path.join(data_dir, rel_dir), exist_ok=True)
                 rel = os.path.join(rel_dir, f"{bid}_selfie.jpg")
                 with open(os.path.join(data_dir, rel), "wb") as fh: fh.write(f["data"])
-                db.execute("INSERT INTO biometric_captures(id,tenant_id,env,session_id,storage_path,liveness_method,media_kind,created_at) VALUES(?,?,?,?,?,?,?,?)",
-                           (bid, tid, env, s["id"], rel, "none", "selfie", now_iso()))
-                db.audit("applicant", s["applicant_id"], tid, "selfie.upload", "biometric_capture", bid)
+                meta_in = parse_capture_meta(field_text(parts, "capture_meta"))
+                capture_meta = {"method": meta_in.get("method") or "not_declared"}
+                db.execute("INSERT INTO biometric_captures(id,tenant_id,env,session_id,storage_path,liveness_method,media_kind,capture_meta,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                           (bid, tid, env, s["id"], rel, "none", "selfie", json.dumps(capture_meta), now_iso()))
+                db.audit("applicant", s["applicant_id"], tid, "selfie.upload", "biometric_capture", bid,
+                         metadata={"capture": capture_meta})
                 return self._send(201, {"biometric_id": bid})
             if p == "/v1/flow/liveness/challenge":
                 # Server-generated active-liveness challenge (Phase 2):
@@ -854,8 +899,10 @@ def make_handler(db: DB, data_dir: str):
                 ext = ".webm" if fname.endswith(".webm") else (".mp4" if fname.endswith(".mp4") else ".bin")
                 rel = os.path.join(rel_dir, f"{bid}_liveness{ext}")
                 with open(os.path.join(data_dir, rel), "wb") as fh: fh.write(f["data"])
-                db.execute("INSERT INTO biometric_captures(id,tenant_id,env,session_id,storage_path,liveness_method,media_kind,created_at) VALUES(?,?,?,?,?,?,?,?)",
-                           (bid, tid, env, s["id"], rel, "active_challenge", "liveness_video", now_iso()))
+                meta_in = parse_capture_meta(field_text(parts, "capture_meta"))
+                capture_meta = {"method": meta_in.get("method") or "not_declared"}
+                db.execute("INSERT INTO biometric_captures(id,tenant_id,env,session_id,storage_path,liveness_method,media_kind,capture_meta,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                           (bid, tid, env, s["id"], rel, "active_challenge", "liveness_video", json.dumps(capture_meta), now_iso()))
                 db.audit("applicant", s["applicant_id"], tid, "liveness.upload", "biometric_capture", bid)
                 return self._send(201, {"biometric_id": bid, "method": "active_challenge"})
             if p == "/v1/flow/poa":
@@ -916,6 +963,13 @@ def make_handler(db: DB, data_dir: str):
                 # document was uploaded in this session, its checks run
                 # and replace any inherited rows of the same type.
                 record("capture_quality", C.check_capture_quality(path=front_path))
+                # Document framing (live-scanner build): a card-like
+                # quadrilateral must roughly fill each captured side.
+                front_framing = FRAMING.check_document_framing(path=front_path)
+                back_framing = None
+                if doc["back_storage_path"]:
+                    back_framing = FRAMING.check_document_framing(path=os.path.join(data_dir, doc["back_storage_path"]))
+                record("document_framing", FRAMING.combine_framing(front_framing, back_framing), provider="opencv-framing")
                 ocr = C.check_ocr(front_path)
                 record("ocr", ocr, provider="tesseract")
                 ocr_text = ocr.get("text", "")
@@ -923,8 +977,10 @@ def make_handler(db: DB, data_dir: str):
                 record("mrz", mrz, provider="local-mrz")
                 parsed = mrz.get("parsed")
                 db.execute("UPDATE documents SET ocr_text=?, mrz_raw=? WHERE id=?", (ocr_text[:8000], (parsed or {}).get("line2"), doc["id"]))
+                doc_entry = DOCREG.get_document(doc["issuing_country"], doc["kind"]) or {}
                 record("expiry_age", C.check_expiry_age(parsed if parsed and parsed.get("valid") else None,
-                                                        doc_expiry=doc["doc_expiry"], doc_dob=doc["doc_dob"], applicant_dob=app["dob"]))
+                                                        doc_expiry=doc["doc_expiry"], doc_dob=doc["doc_dob"], applicant_dob=app["dob"],
+                                                        has_expiry=doc_entry.get("has_expiry", True)))
                 record("consistency", C.check_consistency(app["first_name"], app["last_name"], app["dob"],
                                                           mrz_parsed=parsed, doc_first=doc["doc_first_name"], doc_last=doc["doc_last_name"],
                                                           doc_dob=doc["doc_dob"], ocr_text=ocr_text))
