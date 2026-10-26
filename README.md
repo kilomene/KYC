@@ -8,24 +8,29 @@ money, or access. Other companies have built this before (Sumsub, Persona,
 Onfido, Veriff, Jumio). This is our own, original build: our code, our
 design, our rules — informed by what the category does, copying none of it.
 
-> **Status: Phases 1–3 built and tested locally (2026-10-26); hosted
-> flow rebuilt as a LIVE CAMERA SCANNER (2026-10-26, owner spec).**
-> A real, runnable local build: tenant API keys, a hosted applicant
+> **Status: LIVE (2026-10-26) at https://kyc.novamail.store — Phases
+> 1–3 plus the scanner rebuild (automatic decisions, detection-gated
+> capture, voice guidance, phone-only flow, IP/VPN gate, fortified
+> vision, face tracking, classification, evidence packs). Phase 4 is
+> approved and in progress (docs/PHASE4-PLAN.md); WS0 claims audit:
+> docs/CLAIMS-AUDIT.md.**
+> A real, runnable build: tenant API keys, a hosted applicant
 > flow, checks that actually run (image quality, OCR, MRZ check digits,
 > expiry/age, name/DOB consistency, **face match** (YuNet + SFace),
 > **active liveness (movement challenge)**, **document authenticity
 > signals** (ELA / metadata / moiré-FFT / format), **proof of address**,
 > **sanctions screening** with human disposition, **ongoing
 > monitoring**), an explainable **risk engine**, a fail-closed decision
-> engine with Level 2 auto-approval for clean low-risk sessions,
+> engine with automatic approval/rejection in the standard path,
 > **versioned per-tenant flow config**, **KYB** (business verification),
 > **four-eyes review with reviewer roles and case SLAs**, a reviewer
 > **assist** pre-read, **reusable signed verified credentials**, human
 > review console, signed webhooks, audit log, erasure and retention.
-> 97 automated tests + a live Level 3 end-to-end run, all green.
-> It runs **locally only** — not deployed, not on Supabase or
-> Cloudflare yet; the production home will be Cloudflare when the owner
-> is ready (DECISIONS D4/D6), behind this same API contract.
+> 169 automated tests + a live Level 3 end-to-end run, all green.
+> The application currently runs on the Nova origin service and is
+> reached publicly through a Cloudflare tunnel; it is not on Supabase.
+> Final Cloudflare-native hosting is Phase 4 WS5 (DECISIONS D4/D6),
+> behind this same API contract.
 > Nothing here claims a certification, partnership, or check we have not
 > actually built and tested.
 
@@ -37,25 +42,28 @@ python3 scripts/fetch_models.py        # one-time: YuNet + SFace ONNX models int
 python3 -m server --port 8765          # data lives in ./data/ (gitignored)
 # Landing:  http://127.0.0.1:8765/
 # Console:  http://127.0.0.1:8765/console   (paste a tenant API key)
-python3 -m unittest discover tests     # 97 tests
+python3 -m unittest discover tests     # 169 tests
 python3 scripts/e2e_local.py           # live Level 3 end-to-end run
 python3 -m server.retention --days 90  # delete images of old decided sessions
 python3 scripts/fetch_ofac.py          # optional: real OFAC SDN list into data/lists/
 python3 -m server.monitoring --tenant <id> --env test   # ongoing-monitoring rescreen CLI
 ```
 
-Create a tenant (local bootstrap — unauthenticated **only** in this local
-build; a deployment gates this behind platform admin):
+Create a tenant (platform-operator only: tenant creation requires the
+`KYC_PLATFORM_ADMIN_TOKEN` environment variable on the server and the
+matching `X-Platform-Admin` header; with no token configured, tenant
+creation is disabled entirely — WS0 audit fix, 2026-10-26):
 
 ```bash
 curl -s -X POST localhost:8765/v1/tenants -H 'Content-Type: application/json' \
+  -H 'X-Platform-Admin: <operator token>' \
   -d '{"name":"Nova Payments","country":"NG"}'   # returns test+live keys ONCE
 ```
 
 Then `POST /v1/applicants` and `POST /v1/sessions` with
 `Authorization: Bearer <key>`; the session response carries the applicant's
 `/flow/<token>` link. Sessions are **resumable**: reopening an unexpired
-link continues where the applicant left off — uploaded steps stay done.
+link continues where the applicant left off — completed steps stay done.
 
 Requires: Python 3.12, Pillow, numpy, OpenCV (`cv2`) and the `tesseract`
 CLI for OCR (`sudo apt-get install -y tesseract-ocr`). If tesseract is
@@ -360,9 +368,11 @@ validation, the scanner's automatic back-side prompt, and the expiry
 check. Owner-specified: **Nigeria** — passport, driver's licence,
 national ID, voter's card (INEC PVC, *no expiry*), NIN card (*no
 expiry*), NIN slip (*no expiry*); **United States** — passport,
-passport card, driver's license, state ID. Other launch countries
-carry passport (+ driver's licence / national ID for GB/CA/AU/DE/GH)
-with best-known facts pending the owner's per-country research merge.
+passport card, driver's license, state ID. Beyond those two: driver's
+licences for GB/CA/AU/DE/GH with generic card facts, national ID only
+for DE/GH, and passport-only for KE/ZA/IN/PH/SG/AE/FR/NL/IE — all
+pending the Phase 4 WS1 researched per-country merge (see the launch
+coverage section and docs/CLAIMS-AUDIT.md).
 A document type with `has_expiry: false` **never** fails or goes
 unclear for a missing expiry date — the expiry check passes with the
 detail "document type has no expiry date" (age is still checked).
@@ -433,19 +443,22 @@ handoff screen; the tenant console remains a desktop web app):
 4. Depending on the level: proof of address, and screening against
    sanctions / PEP / watchlists.
 
-KYC runs its checks, produces a **decision** (approved, rejected, or sent to
-a human reviewer), and sends the result back to the business by dashboard,
-API, and webhook. The business never has to build document capture, OCR,
+KYC runs its checks and produces a **decision**: approved or rejected
+automatically in the standard path. The only routes to a human are the
+named exceptions — a tenant configuration that requires review, a Level 3
+screening hit awaiting disposition, KYB, or a platform error. The result
+goes back to the business by API and signed webhook, and is visible in the
+review console. The business never has to build document capture, OCR,
 face matching, case review, or audit trails itself.
 
 ## Verification levels
 
 | Level | Name | Checks |
 |---|---|---|
-| 1 | Basic | Name + DOB + email/phone, document number format & expiry |
-| 2 | Standard | Government ID capture, OCR/MRZ extraction, document authenticity checks, selfie face-match, liveness |
-| 3 | Enhanced | Everything in Standard + proof of address + sanctions / PEP / adverse-media screening + duplicate & fraud signals |
-| KYB | Business | Company registration check, directors / ultimate beneficial owners identified and each verified at Level 2+ |
+| 1 | Basic | Live document scan with capture quality, framing, layout classification, OCR, expiry/age, profile consistency and cross-source data consistency |
+| 2 | Standard | Everything in Basic + MRZ where the document carries one, authenticity and security-feature evidence, continuous face tracking, face match, active liveness and deepfake evidence |
+| 3 | Enhanced | Everything in Standard + proof of address + sanctions screening against the lists actually loaded + ongoing monitoring. PEP/adverse-media coverage exists only when such a list is loaded — it is never implied |
+| KYB | Business | Registration-number format validation + company document + reviewer confirmation (no live government registry connection yet), with directors / ultimate beneficial owners each verified at Level 2+ |
 
 ## The blueprint
 
@@ -454,30 +467,42 @@ Read in this order:
 1. **[docs/BLUEPRINT.md](docs/BLUEPRINT.md)** — the full product blueprint:
    users, journeys, every check in detail, the decision engine, the review
    console, pricing shape, and what "done" means for each part.
-2. **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — proposed system
-   architecture, stack, data flow, and provider strategy.
-3. **[docs/DATA-MODEL.md](docs/DATA-MODEL.md)** — database schema draft:
+2. **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — original proposed
+   architecture; superseded in part by the built system (see its status
+   banner and docs/CLAIMS-AUDIT.md).
+3. **[docs/DATA-MODEL.md](docs/DATA-MODEL.md)** — database schema draft
+   (the SQLite implementation mirrors it; see its status banner):
    tenants, applicants, sessions, documents, checks, cases, webhooks, audit.
-4. **[docs/API.md](docs/API.md)** — draft REST API and webhook contract.
+4. **[docs/API.md](docs/API.md)** — REST API and webhook contract:
+   implemented endpoints plus explicitly marked unimplemented items.
 5. **[docs/COMPLIANCE-AND-PRIVACY.md](docs/COMPLIANCE-AND-PRIVACY.md)** —
    the legal/privacy ground rules this product must be built inside.
-6. **[docs/SECURITY.md](docs/SECURITY.md)** — threat model and controls.
-7. **[docs/ROADMAP.md](docs/ROADMAP.md)** — phased build plan, MVP first.
+6. **[docs/SECURITY.md](docs/SECURITY.md)** — threat model and control
+   targets; implementation status lives in docs/CLAIMS-AUDIT.md.
+7. **[docs/ROADMAP.md](docs/ROADMAP.md)** — phased build record and plan.
 8. **[docs/DECISIONS.md](docs/DECISIONS.md)** — the owner's decisions
    D1–D8, settled 2026-10-26 (Nova Inc product, internal first, expanded
    worldwide coverage, local-first build, Cloudflare as production home).
 9. **[docs/AMBITION.md](docs/AMBITION.md)** — the standing bar: more
    advanced than Sumsub, Persona, and Onfido — claimed only where built,
    tested, and measured.
+10. **[docs/CLAIMS-AUDIT.md](docs/CLAIMS-AUDIT.md)** — the Phase 4 WS0
+    audit: every public claim checked against the code, with gaps
+    assigned to workstreams.
+11. **[docs/PHASE4-PLAN.md](docs/PHASE4-PLAN.md)** — the approved
+    Phase 4 plan (WS0–WS8).
 
 ## Non-negotiable build rules
 
 - **Real or not shipped.** Every check named in a release actually runs in
   that release. No placeholder checks, no demo decisions, no fake results.
 - **Fail closed.** If a check cannot run, times out, or returns unclear,
-  the outcome is *review* or *rejected* — never an automatic approval.
-- **A human can always review.** Automation proposes; a trained reviewer
-  in the console can overturn, with a reason, and the overturn is audited.
+  the outcome is *rejected* or one of the named review exceptions —
+  never an automatic approval.
+- **Automation decides; humans audit and override.** The standard path
+  is fully automatic. A trained reviewer in the console can overturn a
+  decision only with a reason, the overturn is audited, and four-eyes
+  confirmation applies where the flow configuration requires it.
 - **Collect the minimum.** Only the data a check needs, kept only as long
   as the retention rule says, deletable on a valid request.
 - **Everything is audited.** Every view of an applicant's documents, every
@@ -503,9 +528,13 @@ Ireland**. **Passports are accepted for every country in that list**
 with per-document facts (sides / expiry / MRZ) lives in the registry,
 `server/docregistry.py` — Nigeria and the United States carry the
 owner-specified document sets (incl. NG voter's card, NIN card and
-NIN slip; US passport card and state ID); driver's licence / national
-ID also start with the United Kingdom, Canada, Australia, Germany and
-Ghana, expanding country by country with tests.
+NIN slip; US passport card and state ID). Driver's licences are also
+listed for the United Kingdom, Canada, Australia, Germany and Ghana
+using generic card facts pending the Phase 4 WS1 researched merge.
+A general national identity card is listed only where that document
+class exists (Nigeria, Germany, Ghana) — there is no generic
+"national ID" for the US, UK, Canada or Australia. The other nine
+launch countries are passport-only today.
 
 ## Licence / visibility
 
