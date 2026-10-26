@@ -26,7 +26,7 @@ design, our rules — informed by what the category does, copying none of it.
 > **four-eyes review with reviewer roles and case SLAs**, a reviewer
 > **assist** pre-read, **reusable signed verified credentials**, human
 > review console, signed webhooks, audit log, erasure and retention.
-> 169 automated tests + a live Level 3 end-to-end run, all green.
+> 213 automated tests + a live Level 3 end-to-end run, all green.
 > The application currently runs on the Nova origin service and is
 > reached publicly through a Cloudflare tunnel; it is not on Supabase.
 > Final Cloudflare-native hosting is Phase 4 WS5 (DECISIONS D4/D6),
@@ -42,7 +42,7 @@ python3 scripts/fetch_models.py        # one-time: YuNet + SFace ONNX models int
 python3 -m server --port 8765          # data lives in ./data/ (gitignored)
 # Landing:  http://127.0.0.1:8765/
 # Console:  http://127.0.0.1:8765/console   (paste a tenant API key)
-python3 -m unittest discover tests     # 169 tests
+python3 -m unittest discover tests     # 213 tests
 python3 scripts/e2e_local.py           # live Level 3 end-to-end run
 python3 -m server.retention --days 90  # delete images of old decided sessions
 python3 scripts/fetch_ofac.py          # optional: real OFAC SDN list into data/lists/
@@ -232,10 +232,44 @@ code decoding**.
   expiry) and cross-checked against the printed fields: disagreement
   fails with `code_decode_mismatch`. Decoded content is evidence,
   never truth — it must agree, or it counts against the document.
-- *Measured limits*: this is pass 1. There are **no per-document
-  field-extraction templates yet**, no full AAMVA/QR semantic
-  validation, and **no labelled accuracy benchmark** — field-level
-  accuracy is unmeasured and is not claimed. Those are Phase 4.
+
+### Field templates + payload semantics (Phase 4 WS1, 2026-10-26)
+
+- *Field-extraction templates* (`server/fieldtemplates.py`): every
+  document type in the registry has a template — per-field relative
+  zones (surname, given names, DOB, expiry, document number), label
+  anchors including the local-language labels on DE/FR/NL documents,
+  and a per-type number format validator. Extraction is zone-first
+  with label anchoring, falls back to label-anchored text extraction,
+  and records each field's source and format verdict on the case
+  (`field_extraction` check). A document number that is read but fails
+  its own type's format — including real check digits: **Verhoeff**
+  for Aadhaar, the published checksum letter for Singapore NRIC —
+  fails with `field_number_format_invalid`. Digit-format numbers get
+  OCR-confusable normalisation (O/0, I/1, S/5…) that is only accepted
+  when the normalised value passes its check digit/format.
+- *Payload semantics* (`server/payloads.py`): AAMVA payloads are
+  parsed in full (all elements present, with element format
+  validation — MMDDYYYY dates, sex code set, height format,
+  jurisdiction) and cross-checked. The NG NIN-slip QR and the PhilID
+  QR are **structurally** validated (NIN = 11 digits; PCN = 16,
+  PSN = 12) with cross-checks where the payload carries the fields —
+  their issuers publish no payload grammar in our research corpus, and
+  the findings say so. The Aadhaar secure QR is decompressed
+  (zlib → XML demographic record) and cross-checked by name, DOB and
+  UID last-4 — **UIDAI signature verification is NOT performed** (no
+  UIDAI certificate is held), and the findings state that.
+- *Classification*: every registry type now carries a FULL layout
+  template in `server/templates.py` (non-NG/US passports use the
+  generic TD3 template); the coarse fallback remains for any future
+  type added without one, and findings always state the level.
+- *Labelled accuracy benchmark* (`scripts/benchmark_vision.py`,
+  results in `benchmarks/RESULTS.md`): a synthetic corpus drawn to
+  the templates with known ground truth, degraded at named levels
+  (blur, downscale, brightness, rotation), run through the real
+  pipeline. The corpus is synthetic and template-conformant, so the
+  numbers bound the extraction wiring, not real-world accuracy —
+  that limit is printed in RESULTS.md and travels with the numbers.
 
 ### Screen-replay + portrait-substitution defence (2026-10-26)
 
