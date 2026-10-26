@@ -33,6 +33,20 @@ has actually been built, tested, and measured.
 - Exit measure: field-extraction accuracy numbers exist per priority
   document type; nothing is claimed without them.
 
+**Status (2026-10-26): BUILT.** Registry merge for the researched
+KE/ZA/IN/PH/SG/AE/FR/NL/IE types (incl. the ZA green-book
+validity window, enforced); field templates for every registry type
+(server/fieldtemplates.py, Verhoeff + NRIC check digits); FULL
+classification templates for all registry types; payload semantics
+(server/payloads.py — AAMVA semantic; NIN-slip + PhilID structural,
+labelled; Aadhaar secure-QR structural+consistency, UIDAI signature
+not verified, labelled). Benchmark: synthetic labelled corpus only —
+a licensed specimen corpus was not available, so the exit measure is
+met on synthetic numbers with that limit recorded in
+benchmarks/RESULTS.md; font-consistency calibration against a
+labelled corpus remains open (the signal stays fixture-calibrated).
+Measured numbers: benchmarks/RESULTS.md and docs/CLAIMS-AUDIT.md §4.
+
 ## Workstream 2 — Biometric measurement and attack resistance
 - FAR/FRR benchmark for face match + tracking: across lighting, device
   tiers, skin tones, age bands; thresholds set per use case from data,
