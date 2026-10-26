@@ -3,6 +3,14 @@
 *Each phase ships only when its acceptance criteria pass on real devices
 and real test data. A phase is not "done" because its code exists.*
 
+*CURRENT STATUS (WS0 audit, 2026-10-26): Phases 1–3 and the live-scanner
+rebuild are LIVE at https://kyc.novamail.store (origin service reached
+through a Cloudflare tunnel). The phase sections below are the build
+record written as each phase shipped — phrases like "built locally" and
+"not deployed" describe the moment of shipping, not today. Phase 4 is
+approved and governed by docs/PHASE4-PLAN.md (WS0–WS8), which supersedes
+the short Phase 4 sketch at the bottom of this file.*
+
 ## Phase 0 — Blueprint ✅ DONE
 
 - [x] Repo created (public, owner's instruction): kilomene/KYC
@@ -141,15 +149,13 @@ private storage) behind the docs/API.md contract. Not deployed anywhere.
       biometrics/liveness are never inherited; tampered, revoked,
       expired and under-level credentials are all refused (tested).
 
-## Phase 4 — Scale & polish
+## Phase 4 — Scale & polish → SUPERSEDED by docs/PHASE4-PLAN.md
 
-- More document types/countries driven by tenant demand, each added with
-  per-document tests before it is listed as supported.
-- Embeddable SDK (JS/mobile web component) alongside the hosted flow.
-- Billing automation per the pricing the owner settles in DECISIONS.md.
-- Independent security audit + pen test report; compliance review per
-  launch jurisdiction; certification path (e.g. SOC 2) **only** when the
-  business is ready to actually earn it.
+- The approved Phase 4 plan (WS0 claims audit → WS8 independent
+  assurance) lives in docs/PHASE4-PLAN.md and governs execution. The
+  original sketch — more document types with tests, an embeddable SDK,
+  billing automation (blocked on D7 prices), independent security audit
+  and pen test, certification only when earned — is folded into it.
 
 ## Standing rule for every phase
 
