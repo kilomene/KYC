@@ -165,7 +165,7 @@ def parse_iso_date(s):
     return _safe_date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
 
 # ---------- expiry / age ----------
-def check_expiry_age(mrz_parsed=None, doc_expiry=None, doc_dob=None, applicant_dob=None, today=None, has_expiry=True, validity_end=None):
+def check_expiry_age(mrz_parsed=None, doc_expiry=None, doc_dob=None, applicant_dob=None, today=None, has_expiry=True, validity_end=None, prints_dob=True):
     """Expiry + age. `has_expiry` comes from the document registry
     (server/docregistry.py): document types with NO expiry date (e.g.
     NG NIN slip / NIN card / voter's card) must NEVER fail or go
@@ -196,6 +196,23 @@ def check_expiry_age(mrz_parsed=None, doc_expiry=None, doc_dob=None, applicant_d
         dob = parse_iso_date(doc_dob) or parse_iso_date(applicant_dob); source = source or "document_fields"
     findings = {"source": source, "expiry": expiry.isoformat() if expiry else None, "dob": dob.isoformat() if dob else None,
                 "has_expiry": bool(has_expiry)}
+    if dob is None and not prints_dob:
+        # The document TYPE prints no date of birth (registry prints_dob
+        # False — e.g. the NG NIN slip, owner-confirmed 2026-10-26: no
+        # DOB anywhere on its face). The age leg is NOT APPLICABLE: it
+        # must never hold a verification for a field the document does
+        # not carry — the exact analogue of has_expiry False above. The
+        # expiry leg is still enforced where the type has one. When a
+        # DOB *is* available (declared by the tenant or read elsewhere)
+        # this branch is not taken and age is enforced as usual.
+        findings["dob_applicable"] = False
+        findings["detail"] = "document type prints no date of birth — age leg not applicable"
+        if has_expiry:
+            if expiry is None:
+                return {"status": "unclear", "findings": findings, "reason_codes": ["expiry_or_dob_missing"]}
+            if expiry < today:
+                return {"status": "fail", "findings": findings, "reason_codes": ["document_expired"]}
+        return {"status": "pass", "findings": findings, "reason_codes": []}
     if not has_expiry:
         findings["detail"] = "document type has no expiry date"
         findings["expiry"] = None
