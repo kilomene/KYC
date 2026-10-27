@@ -65,7 +65,12 @@ HARD_FAIL_REASONS = {"document_expired", "underage", "vpn_proxy_detected",
 
 # Fraud/risk signals are NOT required checks and never auto-reject. An
 # *elevated* signal only routes an otherwise-clean case to a human.
-ELEVATED_SIGNAL_REASONS = {"velocity_high", "ip_document_country_mismatch", "injection_signal_present"}
+ELEVATED_SIGNAL_REASONS = {"velocity_high", "ip_document_country_mismatch", "injection_signal_present",
+                           # WS7 fraud intelligence (2026-10-27):
+                           # cross-session duplicates + coordinated
+                           # velocity route to a human, never reject.
+                           "duplicate_document", "duplicate_face_suspected",
+                           "velocity_ip_high", "coordinated_abuse_suspected"}
 
 def face_match_applicable(country=None, kind=None, template=None):
     """Whether face_match applies to a claimed document type at all:
