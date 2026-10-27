@@ -81,3 +81,28 @@ The blueprint is safe public. **With Phase 1 code now landing, the owner
 should say if he wants it flipped private** — until he does, it stays
 public per his original instruction; no secrets, keys, or provider
 credentials ever land in the repo either way.
+
+### D9. NIN slip exception — upload + typed-number tally (owner's order, 2026-10-26)
+The live-camera-only rule stands for every document type **except the
+Nigerian NIN slip**. The slip is laminated paper and defeats live
+scanning (glare, bow, weak borders — measured repeatedly on the
+owner's own slip). For `nin_slip` only:
+
+- the user **uploads** a photo of the slip (no live document scan);
+- the user **types their NIN** (11 digits) — a claim, never an
+  identity source: the slip remains the source of truth for every
+  field, the typed number included;
+- the decision carries a `number_tally` check: the number read off
+  the slip must equal the typed number. Mismatch — or no typed
+  number at all — is a hard fail (`nin_number_mismatch`,
+  `nin_number_not_provided`) and rejects automatically;
+- the **live selfie + liveness are unchanged**, and the portrait
+  printed on the slip is face-matched against the live selfie by the
+  ordinary pipeline;
+- all server checks (framing, classification, forgery/screen,
+  extraction, consistency) run on the upload exactly as on a scan.
+
+Scope enforcement is mechanical, not conventional: the API refuses a
+typed number for any other kind (422), the claim-correction endpoint
+refuses non-slip documents (422), and the hosted flow renders the
+upload panel only when the selected type is `nin_slip`.
