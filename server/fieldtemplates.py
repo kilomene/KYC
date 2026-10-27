@@ -313,7 +313,11 @@ def _group_lines(words):
 def _label_span(line, labels):
     """If a line starts with / contains a label anchor, return
     (label, index_after_label) else None. Multi-word labels match
-    consecutive words."""
+    consecutive words, tolerating ONE stray token interspersed
+    between the label's words — merged word streams (a full-page
+    pass plus tile reads of the same page) interleave fragments
+    into label lines ('First AN Name:'), and a label that is
+    plainly there must still anchor."""
     norms = [_norm_word(it["text"]) for it in line]
     for lab in labels:
         parts = [_norm_word(p) for p in lab.split()]
@@ -323,6 +327,19 @@ def _label_span(line, labels):
         for i in range(0, len(norms) - len(parts) + 1):
             if norms[i:i + len(parts)] == parts:
                 return lab, i + len(parts)
+        if len(parts) >= 2:
+            for i in range(0, len(norms) - len(parts)):
+                j, k, skips = i, 0, 0
+                while j < len(norms) and k < len(parts):
+                    if norms[j] == parts[k]:
+                        k += 1
+                    else:
+                        skips += 1
+                        if skips > 1:
+                            break
+                    j += 1
+                if k == len(parts):
+                    return lab, j
     return None
 
 def _value_from_tokens(field, tokens):
@@ -424,21 +441,50 @@ def _recover_number_zone(image_path, spec, partial, words=None):
         # ---- locate: anchor word boxes inside the zone ----
         pd = re.sub(r"\D", "", _normalize_numeric(str(partial))) if partial else ""
         anchors = []
+        # (a) the field's own LABEL is the strongest landmark: it is
+        # large, bold print that survives at resolutions where the
+        # value's digits do not (measured on the owner's low-res
+        # upload: label 'NIN:' read at conf 96 while the value read
+        # as garbage). The value sits on the label's own row,
+        # immediately to its right.
+        label_words = set()
+        for lab in (spec.get("labels") or []):
+            parts = [t for t in re.split(r"[^A-Za-z0-9]+", lab.upper()) if len(t) >= 3]
+            if len(parts) == 1:
+                label_words.add(parts[0])
+        label_box = None
         for w in (words or []):
-            box = w.get("box") or (0, 0, 0, 0)
-            cx, cy = (box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0
-            if not (zone[0] - 0.05 <= cx <= zone[2] + 0.05 and zone[1] - 0.05 <= cy <= zone[3] + 0.05):
-                continue
-            digs = re.sub(r"\D", "", _normalize_numeric(str(w.get("text") or "")))
-            if len(digs) >= 4 and (not pd or digs in pd or pd.startswith(digs[:6]) or digs[:6] in pd):
-                anchors.append(box)
-        if anchors:
+            tok = re.sub(r"[^A-Za-z0-9]", "", str(w.get("text") or "").upper())
+            if tok in label_words:
+                box = w.get("box") or (0, 0, 0, 0)
+                cx, cy = (box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0
+                if zone[0] - 0.06 <= cx <= zone[2] + 0.06 and zone[1] - 0.06 <= cy <= zone[3] + 0.06:
+                    label_box = box
+                    break
+        if label_box is not None:
+            lh = label_box[3] - label_box[1]
+            lcy = (label_box[1] + label_box[3]) / 2.0
+            frac = (min(1.0, label_box[2] + 0.004), max(0.0, lcy - 1.1 * lh),
+                    min(1.0, label_box[2] + 0.36), min(1.0, lcy + 1.1 * lh))
+            anchors = None  # frac decided by the label
+        else:
+            frac = None
+        if frac is None:
+            for w in (words or []):
+                box = w.get("box") or (0, 0, 0, 0)
+                cx, cy = (box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0
+                if not (zone[0] - 0.05 <= cx <= zone[2] + 0.05 and zone[1] - 0.05 <= cy <= zone[3] + 0.05):
+                    continue
+                digs = re.sub(r"\D", "", _normalize_numeric(str(w.get("text") or "")))
+                if len(digs) >= 4 and (not pd or digs in pd or pd.startswith(digs[:6]) or digs[:6] in pd):
+                    anchors.append(box)
+        if frac is None and anchors:
             ax0 = min(b[0] for b in anchors); ay0 = min(b[1] for b in anchors)
             ax1 = max(b[2] for b in anchors); ay1 = max(b[3] for b in anchors)
             aw, ah = ax1 - ax0, ay1 - ay0
             frac = (max(0.0, ax0 - 0.6 * aw - 0.015), max(0.0, ay0 - 0.9 * ah - 0.01),
                     min(1.0, ax1 + 0.6 * aw + 0.015), min(1.0, ay1 + 0.9 * ah + 0.01))
-        else:
+        if frac is None:
             frac = (max(0.0, zone[0] - 0.02), max(0.0, zone[1] - 0.02),
                     min(1.0, zone[2] + 0.02), min(1.0, zone[3] + 0.02))
         # ---- crop from the ORIGINAL via the framing quad ----
@@ -496,6 +542,17 @@ def _recover_number_zone(image_path, spec, partial, words=None):
                         d = re.sub(r"\D", "", out.stdout or "")
                         if len(d) == want:
                             votes[d] = votes.get(d, 0) + 1
+                        elif want < len(d) <= want + 4:
+                            # The value's digits with junk bled in
+                            # from a neighbouring column (measured:
+                            # the true number as the first 11 of a
+                            # 14-digit read). Every window votes;
+                            # only a candidate repeated across
+                            # independent variants can clear the
+                            # decisive-vote bar below.
+                            for k in range(0, len(d) - want + 1):
+                                w = d[k:k + want]
+                                votes[w] = votes.get(w, 0) + 1
                 finally:
                     try: os.unlink(tmp)
                     except Exception: pass
@@ -586,12 +643,14 @@ def extract_fields(image_path, country, kind, ocr_text="", words=None, ocr_texts
         # is kept as a fallback so a genuine format failure still
         # surfaces — an implausible one (a non-digit title word) is
         # discarded outright, never adopted (see
-        # _plausible_number_fallback).
+        # _plausible_number_fallback). Among valid candidates the
+        # spec's label preference order decides, then line order.
         fallback = None
-        for ln in lines:
+        valid_cands = []  # (label_rank, line_order, cand)
+        for li, ln in enumerate(lines):
             hit = _label_span(ln, labels)
             if hit:
-                _, after = hit
+                lab_hit, after = hit
                 items_after = ln[after:]
                 if field in ("surname", "given_names"):
                     # Column discipline (owner's real slip, 2026-10-26):
@@ -615,8 +674,16 @@ def extract_fields(image_path, country, kind, ocr_text="", words=None, ocr_texts
                         if fallback is None and _plausible_number_fallback(cand):
                             fallback = cand
                         continue
-                    value, source = cand, "label"
-                    break
+                    # Label PRIORITY beats line order: the spec lists
+                    # a field's labels in preference order ('FIRST
+                    # NAME' before 'MIDDLE NAME'), so a valid value
+                    # under the primary label wins even when a
+                    # secondary label's line comes first in the
+                    # stream (merged word sources reorder lines).
+                    valid_cands.append((labels.index(lab_hit), li, cand))
+        if valid_cands:
+            valid_cands.sort(key=lambda t: (t[0], t[1]))
+            value, source = valid_cands[0][2], "label"
         if value is None and fallback is not None:
             value, source = fallback, "label"
         # 2) zone read
