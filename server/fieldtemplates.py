@@ -359,6 +359,12 @@ def _value_from_tokens(field, tokens):
             keep.append(t.upper())
         if len(keep) >= 3:
             break
+    # A leading single letter ahead of a real name token is read
+    # debris (watermark fragments on laminated documents — the
+    # owner's slip read 'E AYANSIPE'), never the start of a printed
+    # surname/given-names value.
+    if len(keep) >= 2 and len(keep[0]) == 1 and len(keep[1]) >= 3:
+        keep = keep[1:]
     return " ".join(keep) if keep else None
 
 _NUMERIC_CONFUSABLES = str.maketrans({"O": "0", "Q": "0", "I": "1", "L": "1",
@@ -374,6 +380,140 @@ def _is_digit_format(spec):
         return True
     pattern = (spec or {}).get("pattern") or ""
     return bool(pattern) and "[A-Z" not in pattern
+
+def _recover_number_zone(image_path, spec, partial, words=None):
+    """Corroborated digit-zone recovery (owner's real NIN slip,
+    2026-10-26): the ordinary passes read his number's first 8 digits
+    and mangled the tail where the digits cross the watermark — the
+    number WAS in the photo, below the general passes' quality bar.
+    When (and only when) the resolved number is missing or
+    format-invalid for a fixed-length digit format, this pass zooms
+    on the number's own location and reads it with a matrix of
+    independent variants (scales x {plain, Otsu, median+Otsu} x two
+    page modes, digits whitelisted).
+
+    Location: the word boxes of the digit-bearing tokens the primary
+    read already produced inside the template's number zone (the
+    anchor), expanded — falling back to the whole zone. The crop is
+    taken from the ORIGINAL image (mapped through the framing quad),
+    never from the warped rendition: the warp resamples an already
+    soft source a second time, and the first implementation measured
+    exactly that — every rendition-crop read carried junk prefixes
+    from the label column and table rules, and no candidate won.
+
+    A candidate is adopted ONLY when it wins the vote decisively —
+    at least 3 exact-length reads and at least twice the runner-up —
+    AND agrees with the digits the ordinary passes did read on at
+    least 75% of the overlapping prefix. The recovery completes a
+    corroborated read; it never invents one: no decisive winner, no
+    number."""
+    try:
+        pat = (spec or {}).get("pattern") or ""
+        m = re.fullmatch(r"\\d\{(\d+)\}", pat)
+        zone = (spec or {}).get("zone")
+        if not m or not zone or tuple(zone) == (0.0, 0.0, 0.0, 0.0) or not image_path:
+            return None
+        want = int(m.group(1))
+        import shutil, subprocess, tempfile, os
+        exe = shutil.which("tesseract")
+        if not exe:
+            return None
+        import cv2
+        import numpy as np
+        from . import framing as FRAMING
+        # ---- locate: anchor word boxes inside the zone ----
+        pd = re.sub(r"\D", "", _normalize_numeric(str(partial))) if partial else ""
+        anchors = []
+        for w in (words or []):
+            box = w.get("box") or (0, 0, 0, 0)
+            cx, cy = (box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0
+            if not (zone[0] - 0.05 <= cx <= zone[2] + 0.05 and zone[1] - 0.05 <= cy <= zone[3] + 0.05):
+                continue
+            digs = re.sub(r"\D", "", _normalize_numeric(str(w.get("text") or "")))
+            if len(digs) >= 4 and (not pd or digs in pd or pd.startswith(digs[:6]) or digs[:6] in pd):
+                anchors.append(box)
+        if anchors:
+            ax0 = min(b[0] for b in anchors); ay0 = min(b[1] for b in anchors)
+            ax1 = max(b[2] for b in anchors); ay1 = max(b[3] for b in anchors)
+            aw, ah = ax1 - ax0, ay1 - ay0
+            frac = (max(0.0, ax0 - 0.6 * aw - 0.015), max(0.0, ay0 - 0.9 * ah - 0.01),
+                    min(1.0, ax1 + 0.6 * aw + 0.015), min(1.0, ay1 + 0.9 * ah + 0.01))
+        else:
+            frac = (max(0.0, zone[0] - 0.02), max(0.0, zone[1] - 0.02),
+                    min(1.0, zone[2] + 0.02), min(1.0, zone[3] + 0.02))
+        # ---- crop from the ORIGINAL via the framing quad ----
+        orig = cv2.imread(image_path)
+        if orig is None:
+            return None
+        H, W = orig.shape[:2]
+        analysis = FRAMING.analyse_path(image_path)
+        quad = analysis.get("quad") if analysis else None
+        if quad is not None:
+            # Only a quad the framing check itself would accept may
+            # steer the crop — the same gates warped_rendition uses.
+            # A small inner feature (a portrait box, a text block)
+            # otherwise hijacks the mapping and the crop lands on a
+            # fragment (measured on the borderless synthetic slip:
+            # framing "found" the portrait box, aspect 0.80, and the
+            # mapped crop read nothing).
+            area = analysis.get("area_ratio") or 0.0
+            width_frac = analysis.get("width_frac") or 0.0
+            if not (area >= FRAMING.PASS_RATIO or
+                    (width_frac >= FRAMING.WIDE_MIN_WIDTH_FRAC and area >= FRAMING.WIDE_PASS_AREA)):
+                quad = None
+        if quad is not None:
+            q = np.array(quad, dtype="float64")  # TL, TR, BR, BL
+            def _map(u, v):
+                top = q[0] + u * (q[1] - q[0])
+                bot = q[3] + u * (q[2] - q[3])
+                return top + v * (bot - top)
+            pts = [_map(frac[0], frac[1]), _map(frac[2], frac[1]),
+                   _map(frac[2], frac[3]), _map(frac[0], frac[3])]
+            xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
+            x0 = max(0, int(min(xs)) - 4); x1 = min(W, int(max(xs)) + 4)
+            y0 = max(0, int(min(ys)) - 4); y1 = min(H, int(max(ys)) + 4)
+        else:
+            x0 = int(W * frac[0]); x1 = int(W * frac[2])
+            y0 = int(H * frac[1]); y1 = int(H * frac[3])
+        crop = orig[y0:y1, x0:x1]
+        if crop.size == 0:
+            return None
+        grey = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+        votes = {}
+        for scale in (3, 4, 5, 6):
+            up = cv2.resize(grey, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+            variants = (up,
+                        cv2.threshold(up, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1],
+                        cv2.threshold(cv2.medianBlur(up, 3), 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1])
+            for arr in variants:
+                fd, tmp = tempfile.mkstemp(suffix=".png"); os.close(fd)
+                try:
+                    cv2.imwrite(tmp, arr)
+                    for psm in ("7", "6"):
+                        out = subprocess.run([exe, tmp, "stdout", "--psm", psm,
+                                              "-c", "tessedit_char_whitelist=0123456789"],
+                                             capture_output=True, text=True, timeout=60)
+                        d = re.sub(r"\D", "", out.stdout or "")
+                        if len(d) == want:
+                            votes[d] = votes.get(d, 0) + 1
+                finally:
+                    try: os.unlink(tmp)
+                    except Exception: pass
+        if not votes:
+            return None
+        ranked = sorted(votes.items(), key=lambda kv: -kv[1])
+        best, best_votes = ranked[0]
+        runner = ranked[1][1] if len(ranked) > 1 else 0
+        if best_votes < 3 or best_votes < 2 * max(runner, 1):
+            return None
+        if len(pd) >= 6:
+            agree = sum(1 for a, b in zip(pd, best) if a == b)
+            if agree < 0.75 * min(len(pd), want):
+                return None
+        return best
+    except Exception:
+        return None
+
 
 def _plausible_number_fallback(cand):
     """Fallback discipline (Session-5 diagnosis, 2026-10-26): may an
@@ -452,7 +592,24 @@ def extract_fields(image_path, country, kind, ocr_text="", words=None, ocr_texts
             hit = _label_span(ln, labels)
             if hit:
                 _, after = hit
-                cand = _value_from_tokens(field, [it["text"] for it in ln[after:]])
+                items_after = ln[after:]
+                if field in ("surname", "given_names"):
+                    # Column discipline (owner's real slip, 2026-10-26):
+                    # NIMC prints Surname and Address in the same row
+                    # band, different columns — the label-line harvest
+                    # walked across the gutter and adopted address
+                    # words into the surname ('E AYANSIPE ADDRESS').
+                    # A name value lives in ONE cell: stop at the
+                    # first column gutter (a horizontal gap wider
+                    # than 5% of the document between tokens).
+                    trimmed = []
+                    prev = None
+                    for it in items_after:
+                        if prev is not None and it["box"][0] - prev["box"][2] > 0.05:
+                            break
+                        trimmed.append(it); prev = it
+                    items_after = trimmed
+                cand = _value_from_tokens(field, [it["text"] for it in items_after])
                 if cand:
                     if field == "number" and validate_number(country, kind, cand) is False:
                         if fallback is None and _plausible_number_fallback(cand):
@@ -511,6 +668,17 @@ def extract_fields(image_path, country, kind, ocr_text="", words=None, ocr_texts
                     break
             if value is None and fallback is not None:
                 value, source = fallback, "text"
+        # 4) corroborated digit-zone recovery (number field only):
+        # the resolved number is missing or format-invalid, but the
+        # digits may still be recoverable from the number zone by a
+        # dedicated variant-vote read. Runs only on this failure —
+        # the ordinary sources always win when they produce a valid
+        # number.
+        if field == "number" and _is_digit_format(spec) and \
+                (value is None or validate_number(country, kind, value) is False):
+            recovered = _recover_number_zone(image_path, spec, value, words=words)
+            if recovered:
+                value, source = recovered, "zone_recovery"
         entry = {"value": value, "source": source}
         if field == "number" and value:
             valid = validate_number(country, kind, value)
