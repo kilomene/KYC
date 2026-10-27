@@ -1484,10 +1484,45 @@ $('btn-resume').onclick = () => { VOICE.prime('welcome_back'); nextStep(); };
   else if(info.session.vpn_status === 'detected') show('s-vpn');
   else show('s-resume');
 })();
+function renderSubmitOutcome(st, credential){
+  show('s-status'); $('status').textContent = 'Status: '+st+(st === 'needs_review' ? ' — a reviewer will check your documents.' : st === 'rejected' ? ' — the checks did not pass. The business can send you a new link to try again.' : '');
+  if(st === 'approved' && credential){ $('cred').style.display = 'block'; $('cred-json').textContent = JSON.stringify(credential.claims, null, 1); }
+}
+async function pollSubmitOutcome(){
+  // The decision pass runs on the server (submit answered 202). Poll
+  // the session every 4s and render the terminal state exactly as the
+  // page-load path renders it, credential block included.
+  const TERMINAL = ['approved','rejected','needs_review','needs_more_information'];
+  for(let i = 0; i < 150; i++){   // ~10 minutes, then advise a reload
+    await new Promise(res => setTimeout(res, 4000));
+    let inf;
+    try{ inf = await api('GET', '/v1/flow/session'); }catch(e){ continue; }
+    const st = inf.session.status;
+    if(st === 'processing') continue;
+    if(TERMINAL.includes(st)){
+      let cred = null;
+      if(st === 'approved' && inf.credential_issued){
+        try{ const c = await api('GET', '/v1/flow/credential'); if(c.credential) cred = c.credential; }catch(e){}
+      }
+      renderSubmitOutcome(st, cred);
+      return;
+    }
+    // Back to a submittable state (the pass failed and was reverted):
+    // stop polling and offer the submit again rather than spinning.
+    msg('The checks could not be completed — please submit again.', true);
+    show('s-submit');
+    return;
+  }
+  $('status').textContent = 'Still processing — reopen this link in a moment to see the result.';
+}
 $('btn-submit').onclick = async () => {
   try{ const r = await api('POST', '/v1/flow/submit', {});
-    show('s-status'); $('status').textContent = 'Status: '+r.status+(r.status === 'needs_review' ? ' — a reviewer will check your documents.' : r.status === 'rejected' ? ' — the checks did not pass. The business can send you a new link to try again.' : '');
-    if(r.status === 'approved' && r.credential){ $('cred').style.display = 'block'; $('cred-json').textContent = JSON.stringify(r.credential.claims, null, 1); }
+    if(r.status === 'processing'){
+      show('s-status'); $('status').textContent = 'Processing… your verification is being checked. This can take a minute — keep this page open.';
+      pollSubmitOutcome();
+      return;
+    }
+    renderSubmitOutcome(r.status, r.credential);
   }catch(e){ msg(e.message, true); } };
 $('btn-revoke').onclick = async () => {
   try{ await api('POST', '/v1/flow/credential/revoke', {}); $('cred').style.display = 'none'; msg('Credential revoked.'); }catch(e){ msg(e.message, true); } };
