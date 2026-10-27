@@ -284,8 +284,12 @@ class TestAssist(unittest.TestCase):
         self.assertEqual(a["suggested_disposition"], "request_more")
 
 class TestCredentials(unittest.TestCase):
-    def _approved_l1(self, srv, key):
-        ctx = drive_flow(srv, key, level=1)
+    def _approved_l1(self, srv, key, docnum="L898902C3"):
+        # Each approved L1 in one tenant must present a DISTINCT
+        # document: WS7's duplicate-document signal (correctly)
+        # routes a second applicant presenting the same document
+        # number to review.
+        ctx = drive_flow(srv, key, level=1, doc_bytes=id_image_bytes(number=docnum))
         st, view = call(srv, "POST", "/v1/flow/submit", {}, token=ctx["token"])
         assert view["status"] == "approved", view
         return ctx, view
@@ -352,7 +356,7 @@ class TestCredentials(unittest.TestCase):
             st, r = call(srv, "POST", "/v1/sessions", {"level": 1, "credential": cred}, key=key_b)
             self.assertEqual(st, 422, r)
             # Nor can a credential be stretched above its level.
-            ctx2, view3 = self._approved_l1(srv, key_a)
+            ctx2, view3 = self._approved_l1(srv, key_a, docnum="X1234567A")
             st, r = call(srv, "POST", "/v1/sessions", {"level": 3, "credential": view3["credential"]}, key=key_b)
             self.assertEqual(st, 422, r)
 
