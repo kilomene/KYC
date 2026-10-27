@@ -223,3 +223,196 @@ advanced, full intelligence, full capabilities"):**
   NIN — it lives in the NQR code, so that type's read strategy
   is QR → MRZ → document number. Per-type calibration against
   the owner's real samples follows when he sends them.
+- **Raw-API marginal-photo limitation (measured 2026-10-27,
+  closing the speed-round residual):** one full-frame portrait
+  photo of the owner's slip, uploaded RAW through the API (not
+  the phone flow), does not yield its printed number through
+  any rendition or recovery matrix tried (native warp, 2048px
+  rescale, phone-emulated JPEG rendition, tiled reads, the full
+  number-zone recovery matrix) — its number zone produces no
+  digit tokens at any scale; the digits sit below that photo's
+  information floor. The PRODUCT path (the phone flow and its
+  renditions) is proven on the same slip: the owner's own
+  session-12 and session-13 tests read names + number exactly,
+  and a fresh live battery on the session-11-class rendition
+  (2026-10-27) returned a complete read with the number tally
+  PASS (upload 25.8s on a lossless PNG, process 200 on the
+  first poll at 41.4s). Vote/corroboration thresholds were NOT
+  weakened to chase the marginal photo. Guidance stands: use
+  the original photo through the flow; a closer, slip-filling
+  shot is the fix at capture time, not looser reading.
+- **Adoption hygiene (2026-10-27, from the owner's session-13
+  test):** decision-time identity adoption now requires a
+  STRONG read (framing pass; structural source — label / zone
+  / MRZ / payload / band / zone recovery; plausible value),
+  fills only empty fields, REPAIRS stored values that are not
+  plausible as names at all (header debris from an early
+  fragmentary read — the owner's applicant record carried
+  'FEDERAL REPUBLIC IDENTIFICATIOR' as a surname and correct
+  reads failed name_mismatch against it), and lets a later
+  strong read supersede values the system itself adopted.
+  Tenant-declared values are never overwritten. The owner's
+  record was repaired from his session-13 document, audit-
+  logged. Face-side session-13 reasons adjudicated as capture
+  quality (face present in 7/29 track frames and 2/30 liveness
+  frames; when present, identity was consistent) against the
+  slip portrait's known weak reference — the flow-side lesson
+  (live face-presence coaching during liveness) is recorded
+  for the hardening pass.
+- **Name-band rescue (2026-10-27):** the digital NIN slip's
+  stylized name print over the coat-of-arms watermark yields
+  no usable full-page tokens; a band crop (surname+given zones,
+  3x, plain grey) re-read with fused-bilingual-label span
+  matching and a band-local corroboration gate now extracts
+  surname + given names (source: band_reread). Three defects
+  were found and fixed inside the chain (fused label tokens,
+  the page verifier judging band boxes against the warped
+  page image, and a crop pad calibrated for pages merging
+  neighbouring print at band scale).
+- **Digital NIN slip DOB — rescue built, sample below the
+  floor (2026-10-27):** a label-anchored date-band rescue
+  (_recover_dob_band, source band_reread) now serves any
+  template whose DOB the full-page stream loses: it crops the
+  DOB zone, anchors on the field's label (fused bilingual
+  labels handled), and adopts ONLY a fully parseable, sane
+  date. On the one calibration sample the date print (small
+  digits over the coat-of-arms watermark, beside the SEX
+  column) stays below the read floor in every rendition
+  tried — band at two scales, value-row crops, psm 6/7,
+  digit-whitelist reads: the birth YEAR legible across
+  renditions, day/month never assembling. The rescue
+  correctly returns nothing rather than fabricating a date;
+  a wrong DOB would poison consistency checks and adoption.
+  Revisit when a cleaner capture of this card type arrives.
+- **WS7 fraud intelligence SHIPPED (2026-10-27):** server/
+  fraud.py — cross-session duplicate detection over a hashed,
+  tenant+env-scoped index (fraud_index): document numbers as
+  HMACs of the normalised number; faces as LSH bucket hashes
+  (4 bands x 12 key-derived projection bits, multi-probe
+  one-bit neighbours; the embedding itself is never stored and
+  nothing in the index reverses to a number or a face).
+  Signals: duplicate_document, duplicate_face_suspected
+  (>=2 band collisions, different applicant), velocity_ip_high
+  (5+/hour per IP), velocity_applicant_high (3+/day),
+  coordinated_abuse_suspected (one IP, 3+ distinct applicants
+  per day) — wired into fraud_signals + the explainable risk
+  score (35/35/30/20/15 points) and the engine's elevated-
+  signal routing: they send a case to human review, they never
+  auto-reject (a person re-verifying, or a family on one IP,
+  are legitimate patterns). Every decided session is indexed
+  AFTER its own evaluation. Proven: unit suite 7/7 + pipeline
+  e2e (first applicant approves; second applicant with the
+  same document is routed to needs_review on
+  duplicate_document); identity + NIN-slip modules green.
+- **WS5 production architecture SHIPPED (2026-10-27):**
+  (a) Submit queue hardened — the async claim design gained a
+  reaper in serve(): 'processing' claims quiet for 3+ minutes
+  with no live worker in-process are re-driven automatically
+  (audit 'decision.reaped'); in-flight workers are tracked in
+  an active set so a live claim is never double-driven.
+  (b) Ops visibility — GET /v1/platform/metrics (operator
+  token, fail-closed): 24h sessions/decisions, queue depth,
+  webhook dead letters, fraud-index size. (c) Staging is real:
+  kyc-staging.service on 8792 with its own data dir, master
+  key and operator token; scripts/seed_staging.py seeded it
+  with synthetic data only and a synthetic passport session
+  approved end-to-end there. (d) DR drill executed for real
+  (scripts/restore_drill.py): backup 0.089s/~284KB on the
+  drill set, restore verified — decision preserved, document
+  decrypts byte-identical, keyless read fails closed (503);
+  numbers in benchmarks/BACKUP-RESTORE.md. (e) Runbook:
+  docs/RUNBOOK.md. (f) Cloudflare assessment:
+  docs/CLOUDFLARE-ARCHITECTURE.md — measured verdict: the
+  native OCR/OpenCV/SQLite core stays on the origin behind
+  the Worker front door; edge caching of versioned assets +
+  WAF rules are the next step; a Workers-native rewrite of
+  the reader is not recommended on current evidence.
+- **WS4 authoritative-data layer SHIPPED (2026-10-27):**
+  server/registry.py — one fail-closed adapter contract
+  (verified | not_found | name_mismatch | unavailable |
+  not_configured; only a real registry record whose name
+  matches earns 'verified'). Live-shaped adapters: UK
+  Companies House (official API, KYC_REGISTRY_GB_KEY) and AU
+  ABN Lookup (KYC_REGISTRY_AU_GUID), both unit-proven against
+  stub transports for verified/not_found/mismatch/unavailable.
+  NG CAC and NG NIMC report not_configured with the reason
+  stated plainly (no public self-serve API; partner/licence
+  access) until the owner authorises credentials — the live
+  hooks ARE those env credentials. POST
+  /v1/businesses/{id}/registry-check stores source +
+  timestamp + lookup status on the business (new columns via
+  migration) WITHOUT touching the reviewer's decision fields.
+  NFC chip reading: NOT built — Web NFC cannot read eMRTD
+  chips (Android Chrome reads NDEF only; iOS has no Web NFC);
+  per the plan it is stated, never faked.
+- **WS6 billing machinery SHIPPED (2026-10-27; prices still
+  D7-open):** server/billing.py — metering hooks the decision
+  pipeline: exactly ONE usage event per decided session
+  (UNIQUE session_id; reviewer overrides and duplicate submits
+  never double-bill — proven end-to-end). Amounts are priced
+  at metering time from the operator's active price for
+  (level, env); prices are versioned (a new price deactivates
+  the old; old events keep their amount). No price configured
+  => the live event is recorded UNPRICED (amount NULL) —
+  visible and honest, never a guessed zero. Sandbox (test env)
+  is free per the D7 shape. Invoices aggregate priced,
+  uninvoiced events in a period exactly once (unpriced events
+  are reported, never billed); tenants read their own usage +
+  invoices; operator endpoints (prices / quotas / invoice
+  generation) sit behind the fail-closed platform gate. Tenant
+  quotas: an operator-set monthly cap on LIVE verifications,
+  enforced at session creation (429 quota_exceeded); test env
+  never capped. Collection itself (charging) is a Nova
+  Payments integration on top — not part of this engine.
+- **WS8 assurance prep SHIPPED (2026-10-27):** (a) PAD
+  evaluation harness (scripts/pad_eval.py) scoring the
+  PRODUCTION liveness decision logic with ISO 30107-3 metrics.
+  Feature-level synthetic battery (40 trials/class, seeded;
+  bona-fide incl. a noisy variant): APCER 0.0% on every attack
+  class (static-photo replay, face-absent, partial replay),
+  BPCER reject 0.0%, BPCER nonpass 2.5% (unclear -> review),
+  ACER 0.0% — benchmarks/PAD-EVAL.md. A video-corpus mode
+  exists for real recordings; no corpus exists yet, so NO
+  video-level or laboratory PAD claim is made — iBeta
+  certification requires an accredited lab with physical
+  artefacts, stated in the doc itself. (b) SOC 2 readiness
+  map (docs/SOC2-READINESS.md): existing controls
+  evidence-linked, gaps named (formal policies, people
+  controls, INDEPENDENT pen test — the in-repo battery is a
+  self-test and labelled as such — PAD lab, vendor inventory,
+  key custody, observation window), sequence to Type I/II,
+  and the claims discipline: 'readiness assessed internally',
+  never 'certified', until a report exists.
+- **Internal integration DONE (2026-10-27):** production
+  operator token created (data/platform-admin.env, 600,
+  loaded by the service's EnvironmentFile) — tenant bootstrap
+  and /v1/platform/metrics are live (metrics verified answering
+  with the token, 403 without). Tenants 'Nova Payments' and
+  'Agent Exchange' created on production; their keys live in
+  data/internal-tenants.json (600, never printed). Webhook
+  wiring proven end-to-end on a scratch instance using the
+  guard's documented test override: bootstrap -> register ->
+  synthetic verification approved -> session.completed
+  delivered -> HMAC signature verified. ON PRODUCTION the SSRF
+  guard correctly BLOCKED the loopback proof endpoint
+  ('blocked by SSRF guard: target resolves to non-public
+  address') — the guard works; the two tenants' current
+  endpoints are loopback placeholders and MUST be replaced
+  with each product's real public HTTPS endpoint when those
+  products integrate (no endpoint-delete API exists yet).
+  The two throwaway 'Probe Tenant' rows from earlier probing
+  are still in the production DB — cleanup pending (no
+  tenant-delete API; removal is a deliberate DB operation).
+- **Master-key sealed backup CREATED + PROVEN (2026-10-27):**
+  scripts/key_backup.py seals the production master key with
+  AES-256-GCM under a scrypt-derived key (n=2^15, passphrase
+  from the environment only, never persisted). Verification:
+  unseal -> MATCH against the live key -> the restored key
+  decrypted a real production document (1.77MB) -> temp copy
+  destroyed. Envelope copies: data/kyc-master.key.sealed
+  (local) and deploy/kyc-master.key.sealed (rides the repo
+  push = the off-machine copy; it is ciphertext, safe to
+  publish). The passphrase was delivered to the owner once, in
+  the milestone report; it is stored NOWHERE on this machine.
+  Recovery drill for a future VM: unseal with the passphrase,
+  place at data/kyc-master.key (600), restart the service.
