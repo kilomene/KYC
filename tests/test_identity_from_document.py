@@ -375,5 +375,113 @@ class TestFlowPageHasNoForm(unittest.TestCase):
         self.assertIn("That's right — continue", self.html)
 
 
+class TestPayloadMerge(unittest.TestCase):
+    """The document's own machine-readable payload is a trust-order
+    source (2026-10-27): it fills slots the printed reads left empty,
+    completes fragment reads, and never silently overrides a
+    genuinely different printed read."""
+
+    PAYLOAD = {"surname": "AYANSIPE", "first_name": "ZENAS OLATUNDE",
+               "dob": "2004-12-18", "number": "12345678901"}
+
+    def _fields(self, **kw):
+        base = {"surname": {"value": None}, "given_names": {"value": None},
+                "dob": {"value": None}, "number": {"value": None},
+                "expiry": {"value": None}}
+        base.update(kw)
+        return base
+
+    def test_payload_fills_empty_slots(self):
+        ident = I.derive_document_identity(self._fields(), None, {},
+                                            payload_fields=self.PAYLOAD)
+        self.assertEqual(ident["last_name"], "AYANSIPE")
+        self.assertEqual(ident["sources"]["last_name"], "payload")
+        self.assertEqual(ident["first_name"], "ZENAS OLATUNDE")
+        self.assertEqual(ident["dob"], "2004-12-18")
+        self.assertEqual(ident["sources"]["dob"], "payload")
+
+    def test_payload_completes_a_fragment_read(self):
+        fields = self._fields(surname={"value": "YANSIPE"})
+        ident = I.derive_document_identity(fields, None, {},
+                                            payload_fields=self.PAYLOAD)
+        self.assertEqual(ident["last_name"], "AYANSIPE")
+        self.assertEqual(ident["sources"]["last_name"], "payload")
+
+    def test_payload_never_overrides_a_different_read(self):
+        fields = self._fields(surname={"value": "OKAFOR"})
+        ident = I.derive_document_identity(fields, None, {},
+                                            payload_fields=self.PAYLOAD)
+        self.assertEqual(ident["last_name"], "OKAFOR")
+        self.assertEqual(ident["sources"]["last_name"], "extraction")
+
+    def test_payload_number_beats_format_invalid_extraction(self):
+        fields = self._fields(number={"value": "999", "format_valid": False})
+        ident = I.derive_document_identity(fields, None, {},
+                                            payload_fields=self.PAYLOAD)
+        self.assertEqual(ident["number"], "12345678901")
+        self.assertEqual(ident["sources"]["number"], "payload")
+
+    def test_payload_number_loses_to_format_valid_extraction(self):
+        fields = self._fields(number={"value": "22222222222", "format_valid": True})
+        ident = I.derive_document_identity(fields, None, {},
+                                            payload_fields=self.PAYLOAD)
+        self.assertEqual(ident["number"], "22222222222")
+        self.assertEqual(ident["sources"]["number"], "extraction")
+
+
+class TestNamePlausible(unittest.TestCase):
+    """The adoption-hygiene screen (2026-10-27): document header
+    debris must never be adopted as a person's name; real names —
+    including short single-token surnames — pass."""
+
+    def test_debris_rejected(self):
+        from server.app import _name_plausible
+        for v in ("FEDERAL REPUBLIC IDENTIFICATIOR", "MAD AG OF",
+                  "FEDERAL REPUBLIC OF NIGERIA", "IDENTITY MANAGEMENT",
+                  "NATIONAL IDENTITY", "", None, "123 456"):
+            self.assertFalse(_name_plausible(v), v)
+
+    def test_real_names_pass(self):
+        from server.app import _name_plausible
+        for v in ("AYANSIPE", "ZENAS OLATUNDE", "ERIKSSON", "ANNA",
+                  "O'BRIEN", "NG", "LI", "SAMPLETON", "EXAMPLE ANNA"):
+            self.assertTrue(_name_plausible(v), v)
+
+
+class TestAdoptionRepairEndToEnd(unittest.TestCase):
+    def test_strong_read_repairs_debris_despite_mismatch(self):
+        # The owner's session-13 failure, reproduced: the applicant
+        # record carries header debris adopted by an early bad read
+        # (with adoption provenance). A later strong read must
+        # REPAIR it — even though the session decides name_mismatch
+        # against the debris (the mismatch is the symptom).
+        import sqlite3
+        with Server() as srv:
+            _, key, _ = make_tenant(srv)
+            app, sess, token = _document_session(srv, key, level=1)
+            up = _upload_doc(srv, token, _slip_on_table_bytes(), "nin_slip")
+            dbp = os.path.join(srv.data_dir, "kyc.db")
+            conn = sqlite3.connect(dbp)
+            conn.execute("UPDATE applicants SET first_name=?, last_name=?, "
+                         "identity_document_id=? WHERE id=?",
+                         ("MAD AG OF", "FEDERAL REPUBLIC IDENTIFICATIOR",
+                          up["document_id"], app["id"]))
+            conn.commit(); conn.close()
+            st, r = multipart(srv, "/v1/flow/selfie", {},
+                              {"selfie": ("selfie.png", selfie_bytes(), "image/png")}, token)
+            assert st == 201, r
+            st, view = call(srv, "POST", "/v1/flow/submit", {}, token=token)
+            self.assertEqual(st, 200, view)
+            checks = _checks(srv, key, sess["id"])
+            # The debris DID contradict the document (finding kept)…
+            self.assertEqual(checks["consistency"]["status"], "fail",
+                             checks["consistency"])
+            # …and the record was still repaired by the strong read.
+            st, after = call(srv, "GET", f"/v1/applicants/{app['id']}", key=key)
+            self.assertEqual(after["last_name"], "SAMPLETON")
+            self.assertIn("EXAMPLE", after["first_name"])
+            self.assertEqual(after["identity_document_id"], up["document_id"])
+
+
 if __name__ == "__main__":
     unittest.main()
