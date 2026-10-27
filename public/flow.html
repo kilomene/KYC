@@ -95,7 +95,17 @@ pre{background:#f6f6f6;padding:.6rem;overflow:auto;font-size:.8rem;white-space:p
 <label>Document type</label>
 <select id="kind"></select>
 <p id="doc-note" style="font-size:.9em;color:#555"></p>
-<p style="font-size:.95em">That is all you choose. <b>You never type your name, date of birth or document number</b> — the scanner reads them from the document itself, and shows you what it read before you continue.</p>
+<p id="doc-notype" style="font-size:.95em">That is all you choose. <b>You never type your name, date of birth or document number</b> — the scanner reads them from the document itself, and shows you what it read before you continue.</p>
+<div id="nin-panel" style="display:none">
+  <p style="font-size:.95em">The NIN slip is laminated paper — a live scan reads it badly, so <b>for this document only</b> you upload a photo of the slip and type your NIN. Everything else is unchanged: your name is still read from the slip itself, and your selfie is still a live camera check, matched against the photo printed on the slip. The number on the slip must match the number you type.</p>
+  <label>Your NIN (11 digits)</label>
+  <input id="nin-number" inputmode="numeric" autocomplete="off" placeholder="Your 11-digit NIN">
+  <label>Photo of your NIN slip</label>
+  <input id="nin-file" type="file" accept="image/*">
+  <img id="nin-preview" alt="" style="display:none;max-width:100%;border-radius:8px;margin-top:8px">
+  <button id="btn-nin-use" disabled>Use this slip</button>
+  <p id="nin-note" style="font-size:.9em;color:#555"></p>
+</div>
 <h3 id="scan-title">Scan the FRONT of your document</h3>
 <p style="font-size:.95em">Hold your document inside the frame. The scanner has to <b>see</b> your ID — its edges and shape — before it can take the picture, and it takes it <b>automatically</b> the moment everything is right. There is no button to press.</p>
 <div class="camwrap">
@@ -111,6 +121,13 @@ pre{background:#f6f6f6;padding:.6rem;overflow:auto;font-size:.8rem;white-space:p
     <p id="doc-read-status" style="font-weight:600">Reading your document…</p>
     <p id="doc-read-text" style="font-size:1.05em"></p>
     <p id="doc-read-note" style="font-size:.9em;color:#555"></p>
+  </div>
+  <div id="nin-tally" style="display:none">
+    <p id="nin-tally-text" style="font-weight:600"></p>
+    <div id="nin-retype" style="display:none">
+      <input id="nin-retype-input" inputmode="numeric" autocomplete="off" placeholder="Re-type your 11-digit NIN">
+      <button id="btn-nin-retype" class="ghost">Save corrected NIN</button>
+    </div>
   </div>
   <button id="btn-doc-continue" style="display:none">That's right — continue</button>
   <button id="btn-doc-retake-front" class="ghost">Rescan front</button>
@@ -1249,8 +1266,29 @@ async function finishDocStep(){
     VOICE.say('doc_read_bad', true);
     return;
   }
+  docState.lastRead = r;
   const rd = r.read || {};
   const nm = [rd.first_name, rd.last_name].filter(Boolean).join(' ');
+  // NIN-slip tally (this type only): the typed number vs the number
+  // read off the slip. A known mismatch blocks Continue — the
+  // decision would refuse it anyway; fixing the typo here is kinder.
+  (function(){
+    const tEl = $('nin-tally');
+    const tally = r.number_tally;
+    if(!isNinSlip() || !tally){ tEl.style.display = 'none'; return; }
+    tEl.style.display = '';
+    if(tally.status === 'pass'){
+      $('nin-tally-text').textContent = '✓ The NIN on your slip matches the number you typed.';
+      $('nin-retype').style.display = 'none';
+    }else if(tally.status === 'fail'){
+      $('nin-tally-text').textContent = '✗ The NIN on your slip does NOT match the number you typed. Check it against the slip and re-type it, or use a different photo.';
+      $('nin-retype').style.display = '';
+      $('btn-doc-continue').style.display = 'none';
+    }else{
+      $('nin-tally-text').textContent = 'We could not read the NIN on the slip clearly enough to check it against your number — a sharper, flatter photo of the slip is the fix.';
+      $('nin-retype').style.display = 'none';
+    }
+  })();
   if(r.complete){
     $('doc-read-status').textContent = 'We read:';
     $('doc-read-text').textContent = (nm || '—') + ' · ' + (r.document_label || '') + (rd.number ? ' ' + rd.number : '')
@@ -1271,8 +1309,64 @@ async function finishDocStep(){
 $('btn-doc-continue').onclick = () => { msg(''); nextStep(); };
 $('btn-doc-retake-front').onclick = () => {
   $('doc-done').style.display = 'none'; docState.side = 'front'; docState.frontBlob = null; docState.backBlob = null;
+  if(isNinSlip()){
+    // Upload path: "rescan" means choosing a different photo.
+    $('scan-title').textContent = 'Upload your NIN slip';
+    $('nin-file').value = ''; $('nin-preview').style.display = 'none';
+    $('btn-nin-use').disabled = true;
+    applyEntry();
+    return;
+  }
   $('scan-title').textContent = 'Scan the FRONT of your document';
   docScanner.start('environment').catch(()=>{ camRetry = $('btn-doc-retake-front').onclick; });
+};
+// ---- NIN slip upload path (this type only) ----
+function ninDigits(){ return ($('nin-number').value || '').replace(/\D/g, ''); }
+function ninReady(){
+  $('btn-nin-use').disabled = !(ninDigits().length === 11 && $('nin-file').files && $('nin-file').files.length);
+  $('nin-note').textContent = (ninDigits().length && ninDigits().length !== 11) ? 'The NIN is 11 digits.' : '';
+}
+$('nin-number').addEventListener('input', ninReady);
+$('nin-file').addEventListener('change', () => {
+  const f = $('nin-file').files && $('nin-file').files[0];
+  if(f){ $('nin-preview').src = URL.createObjectURL(f); $('nin-preview').style.display = ''; }
+  ninReady();
+});
+$('btn-nin-use').onclick = async () => {
+  const f = $('nin-file').files && $('nin-file').files[0];
+  if(!f || ninDigits().length !== 11) return;
+  $('btn-nin-use').disabled = true;
+  try{
+    docState.frontBlob = f; docState.backBlob = null;
+    const fd = new FormData();
+    fd.append('kind', $('kind').value); fd.append('issuing_country', $('country').value);
+    fd.append('claimed_number', ninDigits());
+    fd.append('capture_meta', JSON.stringify({front:{method:'file_upload', side:'front'}}));
+    fd.append('front', f, f.name || 'nin-slip.jpg');
+    const r = await api('POST', '/v1/flow/document', fd, true, true);
+    docState.docId = r.document_id;
+    upsertDocInfo({id:r.document_id, kind:r.kind, issuing_country:r.issuing_country, has_front:true, has_back:false});
+    msg('Slip uploaded.');
+    finishDocStep();
+  }catch(e){ msg(e.message, true); $('btn-nin-use').disabled = false; }
+};
+$('btn-nin-retype').onclick = async () => {
+  const digits = ($('nin-retype-input').value || '').replace(/\D/g, '');
+  if(digits.length !== 11){ msg('The NIN is 11 digits.', true); return; }
+  try{
+    const r = await api('POST', '/v1/flow/document/claim', {document_id: docState.docId, claimed_number: digits});
+    if(r.match){
+      $('nin-tally-text').textContent = '✓ The NIN on your slip matches the number you typed.';
+      $('nin-retype').style.display = 'none';
+      if(docState.lastRead && docState.lastRead.complete) $('btn-doc-continue').style.display = '';
+    }else if(r.match === false){
+      $('nin-tally-text').textContent = '✗ Still no match — that number is not the one printed on this slip. Check the slip itself, digit by digit.';
+    }else{
+      $('nin-tally-text').textContent = 'Saved. The number will be checked against the slip when you submit.';
+      $('nin-retype').style.display = 'none';
+      if(docState.lastRead && docState.lastRead.complete) $('btn-doc-continue').style.display = '';
+    }
+  }catch(e){ msg(e.message, true); }
 };
 $('btn-doc-retake-back').onclick = () => {
   $('doc-done').style.display = 'none'; startBackScan();
@@ -1283,6 +1377,7 @@ function refreshDocTypes(){
   $('kind').innerHTML = entries.map(e => '<option value="'+e.id+'">'+e.label+'</option>').join('');
   applyEntry();
 }
+function isNinSlip(){ return !!docState.entry && docState.entry.id === 'nin_slip'; }
 function applyEntry(){
   const entries = registry[$('country').value] || [];
   docState.entry = entries.find(e => e.id === $('kind').value) || entries[0] || null;
@@ -1294,6 +1389,20 @@ function applyEntry(){
   $('doc-note').textContent =
     (docState.entry.sides === 2 ? 'This document has two sides — the scanner will ask for the back automatically. ' : 'One side to scan. ') +
     (docState.entry.has_expiry ? '' : 'This document type has no expiry date.');
+  // NIN slip ONLY (owner's order): laminated paper defeats the live
+  // scanner, so this one type swaps the scanner for an upload + a
+  // typed NIN that must tally with the number on the slip. Every
+  // other type: scanner only, no upload exists.
+  const nin = isNinSlip();
+  $('nin-panel').style.display = nin ? '' : 'none';
+  $('doc-video').parentElement.style.display = nin ? 'none' : '';
+  $('doc-hint').style.display = nin ? 'none' : '';
+  $('doc-progress').parentElement.style.display = nin ? 'none' : '';
+  $('doc-notype').textContent = nin
+    ? 'For the NIN slip only: type your NIN and upload a photo of the slip. Your name is still read from the slip itself — never typed.'
+    : 'That is all you choose. You never type your name, date of birth or document number — the scanner reads them from the document itself, and shows you what it read before you continue.';
+  if(nin) $('scan-title').textContent = 'Upload your NIN slip';
+  $('btn-doc-retake-front').textContent = nin ? 'Choose a different photo' : 'Rescan front';
 }
 $('country').onchange = refreshDocTypes;
 $('kind').onchange = applyEntry;
@@ -1315,6 +1424,12 @@ function enterDocStep(resumeBack){
     }
   }
   $('doc-done').style.display = 'none';
+  applyEntry();
+  if(isNinSlip()){
+    docState.side = 'front';
+    $('scan-title').textContent = 'Upload your NIN slip';
+    return;   // no camera for this type — the upload panel is the step
+  }
   if(resumeBack){
     const d = (info.documents||[]).filter(x=>x.kind!=='proof_of_address').pop();
     docState.docId = d.id;
