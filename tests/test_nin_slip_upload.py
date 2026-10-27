@@ -213,6 +213,76 @@ class TestOrientationNormalization(unittest.TestCase):
             self.assertTrue(p["number_tally"]["match"], p)
 
 
+class TestPortraitOrientationDecider(unittest.TestCase):
+    """The orientation chain's third decider: when the text
+    deciders tie (tesseract auto-rotates sideways text internally,
+    erasing the score evidence), the document's printed portrait
+    decides — a face is only detectable upright. Uses a real LFW
+    face composed into a card scene; skips when the corpus or the
+    face models are unavailable (same contract as test_attacks)."""
+
+    CORPUS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                          "benchmarks", "corpus", "lfw_funneled")
+
+    def _scene(self):
+        import glob
+        from PIL import Image, ImageDraw
+        from server import face as FACE
+        if not FACE.models_present():
+            self.skipTest("face models not fetched")
+        files = sorted(glob.glob(os.path.join(self.CORPUS, "*", "*.jpg")))
+        if not files:
+            self.skipTest("LFW corpus not extracted")
+        face = Image.open(files[0]).convert("RGB").resize((220, 220))
+        card = Image.new("RGB", (900, 560), (238, 234, 222))
+        d = ImageDraw.Draw(card)
+        d.rectangle([640, 90, 860, 310], outline=(90, 90, 90), width=3)
+        card.paste(face, (640, 90))
+        d.text((60, 80), "SURNAME  EXAMPLE", fill=(20, 20, 20))
+        d.text((60, 150), "FIRST NAME  TEST", fill=(20, 20, 20))
+        d.text((60, 220), "NIN:  12345678901", fill=(20, 20, 20))
+        scene = Image.new("RGB", (1200, 900), (52, 48, 44))
+        scene.paste(card, (150, 170))
+        return scene
+
+    def test_probe_names_every_rotation(self):
+        from server import vision as V
+        scene = self._scene()
+        self.assertEqual(V._portrait_orientation(scene, (1.2, 2.8)), 0)
+        self.assertEqual(V._portrait_orientation(scene.rotate(-90, expand=True), (1.2, 2.8)), 270)
+        self.assertEqual(V._portrait_orientation(scene.rotate(90, expand=True), (1.2, 2.8)), 90)
+        self.assertEqual(V._portrait_orientation(scene.rotate(180, expand=True), (1.2, 2.8)), 180)
+
+    def test_probe_silent_without_a_real_face(self):
+        from PIL import Image
+        from server import vision as V
+        im = Image.open(io.BytesIO(_slip_on_table_bytes())).rotate(-90, expand=True)
+        self.assertIsNone(V._portrait_orientation(im, (1.2, 2.8)))
+
+
+class TestTiledWordFallback(unittest.TestCase):
+    """Low-resolution uploads (owner's session-10 lesson): the
+    full-page word pass goes nearly blind on small print, so
+    ocr_words falls back to overlapping quadrant tiles — the labels
+    and values come back at high confidence, and duplicate reads of
+    the same printed word (a degraded token and its clean twin)
+    merge by box overlap instead of joining into one value."""
+
+    def test_tiles_rescue_labels_and_values(self):
+        from PIL import Image, ImageFilter
+        from server import vision as V
+        im = Image.open(io.BytesIO(_synthetic_slip_bytes())).convert("RGB")
+        im = im.resize((760, 380), Image.LANCZOS).filter(ImageFilter.GaussianBlur(0.9))
+        buf = io.BytesIO(); im.save(buf, format="JPEG", quality=50)
+        fd, path = __import__("tempfile").mkstemp(suffix=".jpg")
+        os.write(fd, buf.getvalue()); os.close(fd)
+        self.addCleanup(os.unlink, path)
+        words = V.ocr_words(path)
+        texts = [w["text"].upper().strip(':') for w in words]
+        self.assertIn("NIN", texts)
+        self.assertIn("SAMPLETON", texts)
+
+
 class TestNumberZoneRecovery(unittest.TestCase):
     """The corroborated digit-zone recovery: completes a partial
     primary read only on a decisive variant vote that agrees with
