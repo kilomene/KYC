@@ -850,9 +850,30 @@ function detectPaperDocument(fr, geo){
     let total = 0;
     for(let x = 0; x < w; x++) if(bright(x, y)) total++;
     if(total < 0.42 * w) continue;
-    const lo = total * 0.01, hi = total * 0.99;
-    let acc = 0, first = -1, last = -1;
+    // The row's document extent is its greatest-MASS run of bright
+    // pixels (gaps of <= 5 px bridged: print rules chop a row INSIDE
+    // the sheet, while the sheet's border shadow separates it from
+    // bright background by more). Total-mass extents provably fail on
+    // real frames: mottled floor highlights sharing the sheet's rows
+    // stretched the extent to the frame edge on ~half the rows of the
+    // owner's floor scene (left extents bimodal: median 2, true edge
+    // ~45), dragging the fitted outline off the document and failing
+    // the left border support (0.21 < 0.30) on a plainly visible ID.
+    let best = null, runStart = -1, runMass = 0, runEnd = -1, gap = 0;
     for(let x = 0; x < w; x++){
+      if(bright(x, y)){
+        if(runStart < 0){ runStart = x; runMass = 0; }
+        runMass++; runEnd = x; gap = 0;
+      }else if(runStart >= 0){
+        gap++;
+        if(gap > 5){ if(!best || runMass > best.mass) best = {first:runStart, last:runEnd, mass:runMass}; runStart = -1; }
+      }
+    }
+    if(runStart >= 0 && (!best || runMass > best.mass)) best = {first:runStart, last:runEnd, mass:runMass};
+    if(!best) continue;
+    const lo = best.mass * 0.01, hi = best.mass * 0.99;
+    let acc = 0, first = -1, last = -1;
+    for(let x = best.first; x <= best.last; x++){
       if(!bright(x, y)) continue;
       acc++;
       if(first < 0 && acc >= lo) first = x;
