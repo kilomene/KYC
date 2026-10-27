@@ -416,3 +416,28 @@ advanced, full intelligence, full capabilities"):**
   the milestone report; it is stored NOWHERE on this machine.
   Recovery drill for a future VM: unseal with the passphrase,
   place at data/kyc-master.key (600), restart the service.
+- **FINAL GATE + PUSH INCIDENT (2026-10-27):** full suite
+  405 tests — the ONLY failure is the known environmental
+  German-labels fixture (this VM's tesseract build). Two
+  programme-caused failures were caught by the gate and fixed
+  properly: (1) a credential test reused one synthetic passport
+  for two applicants — WS7 correctly flagged the second as a
+  duplicate document; the fixture now issues distinct document
+  numbers (helpers.id_image_bytes(number=...), MRZ-consistent);
+  (2) a synthetic-slip classification assertion still encoded
+  the pre-WS1 aspect contract — updated to the WS1 neutral
+  (frame-only aspect 0.48), classification still passes.
+  **Push incident, owned plainly:** the first final push
+  included data-staging/ runtime files (staging DB, staging
+  master key, staging operator token, platform secret, two
+  synthetic media files) because the push script's exclusion
+  list predated the WS5 staging directory. The files were
+  deleted from the repo within the same hour (verified: no
+  data paths remain on main), ALL staging secrets were rotated
+  and staging was rebuilt + reseeded from scratch, and the
+  push script now excludes every top-level data* directory.
+  The deleted values remain in git history — they are
+  staging-only, synthetic, and now rotated/worthless; no
+  production secret or real person's data was involved
+  (production data/ was always excluded). Post-fix push
+  verified 0 mismatches.
