@@ -118,6 +118,15 @@ function paperSlipScene(opts = {}) {
       if (d < 30) g[y * W + x] = Math.min(255, g[y * W + x] + (30 - d) * 6);
     }
   }
+  if (opts.floorGlow) { // bright floor patches sharing the sheet's rows,
+    // separated from the sheet by a dark gap (the owner's real floor
+    // scene: total-mass row extents stretched to the frame edge on
+    // ~half the rows and the visible ID read as doc_none)
+    for (let y = yTop + 40; y <= yBot; y++) {
+      for (let x = 0; x <= x0 - 9; x++) g[y * W + x] = 196 + (rnd() - 0.5) * 14;
+      for (let x = x1 + 9; x < W; x++) g[y * W + x] = 190 + (rnd() - 0.5) * 14;
+    }
+  }
   if (opts.hand) { // hand-like occlusion over the bottom-left corner
     for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
       const dx = (x - 24) / 54, dy = (y - 282) / 27;
@@ -178,6 +187,7 @@ function fixtures() {
   // hand occlusion — must DETECT.
   out.push({ expect: 'doc_hold', ...runScenario('paper_curved_glare_hand', settle(paperSlipScene({ glare: true, hand: true })), slipGeo, 'doc_none') });
   out.push({ expect: 'doc_hold', ...runScenario('paper_flat', settle(paperSlipScene({ bow: 0 })), slipGeo, 'doc_none') });
+  out.push({ expect: 'doc_hold', ...runScenario('paper_floor_glow', settle(paperSlipScene({ floorGlow: true })), slipGeo, 'doc_none') });
   // Negatives.
   out.push({ expect: 'doc_none', ...runScenario('room_paper_geo', settle(roomScene()), slipGeo, 'doc_none') });
   out.push({ expect: 'doc_none', ...runScenario('room_card_geo', settle(roomScene()), cardGeo, 'doc_none') });
