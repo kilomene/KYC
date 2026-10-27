@@ -106,3 +106,30 @@ Scope enforcement is mechanical, not conventional: the API refuses a
 typed number for any other kind (422), the claim-correction endpoint
 refuses non-slip documents (422), and the hosted flow renders the
 upload panel only when the selected type is `nin_slip`.
+
+**Orientation + read-recovery addendum (owner's order, same evening —
+"it can be portrait, it can be in landscape no matter how"):** his own
+first upload was a portrait photo holding the landscape slip sideways,
+and the reader — which assumed the document's long axis horizontal —
+read a scrambled mosaic and no number at all. Two platform-level
+fixes, proven on his actual uploaded photo before shipping:
+
+- **Orientation normalization at ingest** (uploaded images only):
+  the image is tried at 0/90/180/270 degrees; the rotation whose read
+  is decisively best (OCR score, bonused when framing finds the
+  document quad inside the type's aspect range) is stored as the
+  artifact, so every downstream check consumes the document upright.
+  A rotation is applied only when it beats the as-is read by ≥1.5× —
+  an upright image is never gratuitously rotated — and the correction
+  is recorded in the document's capture metadata.
+- **Corroborated digit-zone recovery** (field extraction): when the
+  number resolves missing or format-invalid for a fixed-length digit
+  format, a dedicated pass crops the number's own location from the
+  ORIGINAL image (located by the primary read's digit word boxes,
+  mapped through the framing quad — never the double-resampled warp)
+  and votes across independent variants (scales × {plain, Otsu,
+  median+Otsu} × two page modes). A candidate is adopted only on a
+  decisive vote (≥3 exact-length reads, ≥2× the runner-up) that also
+  agrees with the primary partial read on ≥75% of the overlapping
+  prefix. On the owner's slip this recovered the full 11 digits the
+  general passes had truncated at 8, where they cross the watermark.
