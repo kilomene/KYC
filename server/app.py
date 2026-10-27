@@ -1126,6 +1126,33 @@ def make_handler(db: DB, data_dir: str):
                                     "note": "hit cleared as false positive; approving this case now requires a second reviewer (four-eyes)"})
 
         # ---- hosted flow ----
+        def _number_tally(self, doc, ident):
+            """NIN-slip typed-number tally (owner's order 2026-10-26,
+            nin_slip ONLY): the number the user typed must equal the
+            number read off the slip itself. The slip is the source of
+            truth — the typed number is a claim that is only ever
+            compared, never adopted into the identity. Returns None
+            for every other document type."""
+            if doc["kind"] != "nin_slip":
+                return None
+            try: cm = json.loads(doc["capture_meta"] or "{}")
+            except Exception: cm = {}
+            claimed = re.sub(r"\D", "", str(cm.get("claimed_number") or "")) or None
+            extracted = None
+            if ident and ident.get("number_format_valid"):
+                extracted = re.sub(r"\D", "", str(ident.get("number") or "")) or None
+            if not claimed:
+                return {"status": "fail", "reason_codes": ["nin_number_not_provided"],
+                        "findings": {"claimed_provided": False, "extracted_present": bool(extracted)}}
+            if not extracted:
+                return {"status": "unclear", "reason_codes": ["nin_number_unreadable"],
+                        "findings": {"claimed_provided": True, "extracted_present": False}}
+            if claimed == extracted:
+                return {"status": "pass", "reason_codes": [],
+                        "findings": {"claimed_provided": True, "extracted_present": True, "match": True}}
+            return {"status": "fail", "reason_codes": ["nin_number_mismatch"],
+                    "findings": {"claimed_provided": True, "extracted_present": True, "match": False}}
+
         def _read_document(self, doc, always_read=False):
             """The document READING pipeline, shared by the flow
             read-back endpoint and submit: framing + multi-pass OCR +
@@ -1162,7 +1189,7 @@ def make_handler(db: DB, data_dir: str):
                 return {"framing": framing, "ocr": None, "ocr_text": "",
                         "mrz_check": None, "mrz_parsed": None,
                         "extraction": None, "extracted_fields": {},
-                        "identity": ident,
+                        "identity": ident, "number_tally": self._number_tally(doc, ident),
                         "merged_doc_fields": dict(uploaded), "entry": entry}
             ocr = C.check_ocr(front_path, expect_mrz=bool(entry.get("mrz")))
             ocr_text = ocr.get("text", "")
@@ -1186,7 +1213,8 @@ def make_handler(db: DB, data_dir: str):
             return {"framing": framing, "ocr": ocr, "ocr_text": ocr_text,
                     "mrz_check": mrz_check, "mrz_parsed": parsed,
                     "extraction": extraction, "extracted_fields": fields,
-                    "identity": ident, "merged_doc_fields": merged, "entry": entry}
+                    "identity": ident, "number_tally": self._number_tally(doc, ident),
+                    "merged_doc_fields": merged, "entry": entry}
 
         def _flow_post(self, p, s):
             tid, env = s["tenant_id"], s["env"]
@@ -1238,6 +1266,22 @@ def make_handler(db: DB, data_dir: str):
                 if country not in ALLOWED_DOCS or kind not in ALLOWED_DOCS[country]:
                     return self._err(422, f"document type {kind} not supported for {country or '?'} (see the per-country document registry: GET /v1/flow/session -> document_registry)")
                 if not front or not front["data"]: return self._err(422, "front image required")
+                # Typed-number claim — NIN SLIP ONLY (owner's order
+                # 2026-10-26): the laminated slip defeats live
+                # scanning, so for this one type the user uploads the
+                # slip and types their NIN; the number read off the
+                # slip must tally with the typed number at decision
+                # (check: number_tally). Any other document type
+                # sending a typed number is refused — the exception
+                # is scoped to nin_slip and nothing else.
+                claimed_raw = field_text(parts, "claimed_number")
+                claimed_digits = None
+                if claimed_raw is not None and claimed_raw.strip() != "":
+                    if kind != "nin_slip":
+                        return self._err(422, "a typed document number is only accepted for the NIN slip")
+                    claimed_digits = re.sub(r"\D", "", claimed_raw)
+                    if len(claimed_digits) != 11:
+                        return self._err(422, "the NIN must be 11 digits")
                 did = new_id()
                 rel_dir = os.path.join("files", tid, s["id"]); os.makedirs(os.path.join(data_dir, rel_dir), exist_ok=True)
                 def save(part, tag):
@@ -1248,6 +1292,8 @@ def make_handler(db: DB, data_dir: str):
                 back_rel = save(back, "back") if back and back["data"] else None
                 meta_in = parse_capture_meta(field_text(parts, "capture_meta"))
                 capture_meta = {"front": {"method": (meta_in.get("front") or {}).get("method") or meta_in.get("method") or "not_declared", "side": "front"}}
+                if claimed_digits:
+                    capture_meta["claimed_number"] = claimed_digits
                 if back_rel:
                     capture_meta["back"] = {"method": (meta_in.get("back") or {}).get("method") or meta_in.get("method") or "not_declared", "side": "back"}
                 entry = DOCREG.get_document(country, kind) or {}
@@ -1399,7 +1445,34 @@ def make_handler(db: DB, data_dir: str):
                                                  "dob": ident["dob"],
                                                  "number": ident["number"],
                                                  "expiry": ident["expiry"]},
+                                        "number_tally": ({"status": read["number_tally"]["status"],
+                                                          "match": read["number_tally"]["findings"].get("match")}
+                                                         if read.get("number_tally") else None),
                                         "missing": missing, "complete": complete})
+            if p == "/v1/flow/document/claim":
+                # Correct the typed NIN after an upload (nin_slip ONLY):
+                # a typo must not force a re-upload; the tally at
+                # decision compares the corrected claim against the
+                # number read off the slip itself.
+                if not s["consent_at"]: return self._err(422, "consent required")
+                b = self._json()
+                doc = db.one("SELECT * FROM documents WHERE id=? AND session_id=?",
+                             (b.get("document_id") or "", s["id"]))
+                if not doc: return self._err(404, "document not found for this session")
+                if doc["kind"] != "nin_slip":
+                    return self._err(422, "a typed number applies to the NIN slip only")
+                digits = re.sub(r"\D", "", str(b.get("claimed_number") or ""))
+                if len(digits) != 11: return self._err(422, "the NIN must be 11 digits")
+                try: cm = json.loads(doc["capture_meta"] or "{}")
+                except Exception: cm = {}
+                cm["claimed_number"] = digits
+                db.execute("UPDATE documents SET capture_meta=? WHERE id=?",
+                           (json.dumps(cm), doc["id"]))
+                db.audit("applicant", s["applicant_id"], tid, "document.claim_number", "document", doc["id"],
+                         metadata={"kind": doc["kind"]})
+                extracted = re.sub(r"\D", "", doc["doc_number"] or "") or None
+                return self._send(200, {"claimed_number": digits, "extracted_number": extracted,
+                                        "match": (extracted == digits) if extracted else None})
             if p == "/v1/flow/submit":
                 return self._submit(s, self._client_geo())
             return self._err(404, "not found")
@@ -1635,6 +1708,11 @@ def make_handler(db: DB, data_dir: str):
                     # after data_consistency; it IS a read, and the
                     # consistency semantics below consume it).
                     record("field_extraction", doc_read["extraction"], provider="local-fieldtemplates")
+                    if doc_read.get("number_tally"):
+                        # NIN slip only (the helper returns None for
+                        # every other type): typed number vs the
+                        # number read off the slip itself.
+                        record("number_tally", doc_read["number_tally"], provider="local-tally")
                     record("expiry_age", C.check_expiry_age(parsed if parsed and parsed.get("valid") else None,
                                                             doc_expiry=docm["doc_expiry"], doc_dob=docm["doc_dob"], applicant_dob=app_eff["dob"],
                                                             has_expiry=doc_entry.get("has_expiry", True),
