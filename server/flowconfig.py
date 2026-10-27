@@ -22,6 +22,7 @@ DEFAULT_REQUIRED = {
 KNOWN_CHECKS = ["capture_quality", "ocr", "mrz", "expiry_age", "consistency",
                 "authenticity", "face_match", "liveness", "poa", "screening_sanctions",
                 "document_framing", "location_consistency", "vpn_proxy",
+                "number_tally",
                 "mrz_viz_consistency", "code_decode", "verification_layers", "deepfake",
                 "face_track", "biometric_evidence", "document_classification",
                 "data_consistency", "document_evidence"]
