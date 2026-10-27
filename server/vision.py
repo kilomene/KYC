@@ -216,13 +216,51 @@ def normalize_orientation_bytes(data, expected_aspect_range=None):
             continue
     if best is None:
         return data, info
-    score, angle, im = best
     base = info["scores"].get("0", 0)
-    if angle == 0 or score < 1.5 * max(base, 1.0) or score < 200:
-        return data, info
+    # Orientation detection (tesseract OSD) decides FIRST when it is
+    # confident: on clean rendered documents the plain OCR score can
+    # TIE between the as-is and corrected reads (the sideways page's
+    # columns harvest the same real words — measured on the synthetic
+    # slip at -90 degrees, 34.7k vs 27.8k for the WRONG winner),
+    # while OSD names the rotation outright (confidence ~5-7). On
+    # noisy real photos OSD is blind (the owner's laminated slip:
+    # confidence 0.15) — there the score competition below is the
+    # decider, exactly as proven on his upload. OSD's degrees are the
+    # counter-clockwise correction; this function's angle is CW.
+    chosen = None
+    try:
+        small0 = im0.copy(); small0.thumbnail((1000, 1000))
+        fd, tmp = tempfile.mkstemp(suffix=".png"); os.close(fd)
+        small0.save(tmp, format="PNG")
+        try:
+            out_osd = subprocess.run([exe, tmp, "stdout", "--psm", "0"],
+                                     capture_output=True, text=True, timeout=60)
+            fields = {}
+            for line in (out_osd.stdout or "").splitlines():
+                if ":" in line:
+                    k, v = line.split(":", 1); fields[k.strip()] = v.strip()
+            osd_deg = float(fields.get("Orientation in degrees", "0"))
+            osd_conf = float(fields.get("Orientation confidence", "0"))
+            if osd_conf >= 2.5 and osd_deg % 360 != 0:
+                angle_cw = int((360 - osd_deg) % 360)
+                if info["scores"].get(str(angle_cw), 0) >= 0.5 * max(base, 1.0):
+                    chosen = angle_cw
+                    info["via"] = "osd"
+        finally:
+            try: os.unlink(tmp)
+            except Exception: pass
+    except Exception:
+        chosen = None
+    if chosen is None:
+        score, angle, _im = best
+        if angle == 0 or score < 1.5 * max(base, 1.0) or score < 200:
+            return data, info
+        chosen = angle
+        info["via"] = "score"
+    im = im0 if chosen == 0 else im0.rotate(-chosen, expand=True)
     out = io.BytesIO()
     im.save(out, format="JPEG", quality=92)
-    info.update({"applied": True, "angle": angle})
+    info.update({"applied": True, "angle": chosen})
     return out.getvalue(), info
 
 
