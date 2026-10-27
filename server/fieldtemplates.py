@@ -531,6 +531,371 @@ _NUMERIC_CONFUSABLES = str.maketrans({"O": "0", "Q": "0", "I": "1", "L": "1",
 def _normalize_numeric(value):
     return str(value or "").upper().translate(_NUMERIC_CONFUSABLES)
 
+_BAND_WORDS_CACHE = {}
+
+
+def _band_name_items(image_path, tpl):
+    """Word stream of the NAME BAND (the union of the surname and
+    given-names zones, padded), re-read from the reading image at
+    ~3x on a plain grey rendition. Measured (2026-10-27, digital
+    NIN slip): the stylized name print over the coat-of-arms
+    watermark contributes NO usable tokens to the full-page stream
+    (its name zones come back empty), while the band crop at 3x
+    reads the surname as one clean token and the given names as
+    two; CLAHE / adaptive / Otsu renditions of the same band read
+    WORSE, so the rescue uses plain grey. Returns (band_path,
+    items) or (None, []). Cached per (image, zones)."""
+    fields = (tpl or {}).get("fields") or {}
+    zones = []
+    for f in ("surname", "given_names"):
+        z = ((fields.get(f) or {}).get("zone"))
+        if z:
+            zones.append(tuple(z))
+    if not zones:
+        return None, []
+    return _band_items_for_zones(image_path, zones)
+
+
+def _band_items_for_zones(image_path, zones):
+    """Shared band reader: crop the union of `zones` (padded) from
+    the reading image, upscale to ~900px tall, one plain-grey
+    TSV read at psm 6. Returns (band_path, items) or (None, []).
+    Cached per (image, zone-union)."""
+    try:
+        import os as _os
+        x0 = max(0.0, min(z[0] for z in zones) - 0.03)
+        x1 = min(1.0, max(z[2] for z in zones) + 0.04)
+        y0 = max(0.0, min(z[1] for z in zones) - 0.02)
+        y1 = min(1.0, max(z[3] for z in zones) + 0.03)
+        key = (image_path, round(x0, 3), round(y0, 3), round(x1, 3), round(y1, 3))
+        if key in _BAND_WORDS_CACHE:
+            return _BAND_WORDS_CACHE[key]
+        import tempfile
+        import cv2
+        # _reading_image returns the reading rendition as a
+        # GRAYSCALE ARRAY (not a path) — crop the band from it.
+        img = _reading_image(image_path)
+        if img is None:
+            return None, []
+        hh, ww = img.shape[:2]
+        band = img[int(y0 * hh):int(y1 * hh), int(x0 * ww):int(x1 * ww)]
+        if band.size == 0:
+            return None, []
+        factor = max(2, min(4, round(900 / max(1, band.shape[0]))))
+        grey = cv2.resize(band, None, fx=factor, fy=factor,
+                          interpolation=cv2.INTER_CUBIC)
+        fd, tmp = tempfile.mkstemp(suffix=".png")
+        _os.close(fd)
+        cv2.imwrite(tmp, grey)
+        # Direct TSV read at psm 6 — vision.ocr_words routes through
+        # the full-page reading machinery (warps, tiles), which
+        # mangles a short wide strip and returned ZERO words for this
+        # band (measured); the plain band read is what the offline
+        # proof used.
+        import shutil
+        import subprocess as _sp
+        words = []
+        exe = shutil.which("tesseract")
+        if exe:
+            out = _sp.run([exe, tmp, "stdout", "--psm", "6", "tsv"],
+                          capture_output=True, text=True, timeout=90,
+                          env={**_os.environ, "OMP_THREAD_LIMIT": "1"})
+            for row in (out.stdout or "").splitlines()[1:]:
+                parts = row.split("\t")
+                if len(parts) != 12 or parts[0] != "5" or not parts[11]:
+                    continue
+                try:
+                    l, t = int(parts[6]), int(parts[7])
+                    wpx, hpx = int(parts[8]), int(parts[9])
+                    conf = float(parts[10])
+                except Exception:
+                    continue
+                words.append({"text": parts[11], "conf": conf,
+                              "box": (l, t, l + wpx, t + hpx)})
+        bh, bw = grey.shape[:2]
+        items = []
+        for wd in words:
+            bx = wd.get("box") or (0, 0, 0, 0)
+            items.append({"text": wd.get("text", ""), "conf": wd.get("conf", 0),
+                          "box": (bx[0] / bw, bx[1] / bh, bx[2] / bw, bx[3] / bh),
+                          "cx": ((bx[0] + bx[2]) / 2.0) / bw,
+                          "cy": ((bx[1] + bx[3]) / 2.0) / bh})
+        if len(_BAND_WORDS_CACHE) >= 4:
+            _BAND_WORDS_CACHE.clear()
+        _BAND_WORDS_CACHE[key] = (tmp, items)
+        return tmp, items
+    except Exception:
+        return None, []
+
+
+def _band_verify(band_path, cand_items):
+    """Corroboration for band-rescue candidates, on the BAND FILE
+    itself. _verify_name_tokens cannot serve here: it re-reads
+    token boxes from the page's READING image, and for a band
+    strip that machinery warps/rescales the strip, so the boxes
+    land on the wrong print and the gate vetoes TRUE tokens
+    (measured 2026-10-27: the digital slip's cleanly-read surname
+    was vetoed while a bracket fragment survived). Same recipe,
+    correct substrate: tight-crop each token's box from the band
+    image (±3px, 5x, psm 8, A-Z whitelist — _reread_token's own
+    recipe); a non-empty disagreeing re-read vetoes; then the
+    row-geometry chain around the first verified token drops
+    off-row fragments."""
+    import os as _os
+    import shutil as _sh
+    import subprocess as _sp
+    import tempfile as _tf
+    try:
+        import cv2
+        img = cv2.imread(band_path, cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            return []
+        exe = _sh.which("tesseract")
+        if not exe:
+            return []
+        H, W = img.shape[:2]
+
+        def _reread(box):
+            # Pad scales with the token: the page verifier's fixed
+            # ±3px was calibrated on full-page images; on the band
+            # strip it crops so tight that tesseract merges
+            # neighbouring print into the word (measured: the true
+            # surname read back as 10 chars at ±3px, exactly itself
+            # at ±8px). A quarter-height pad reproduces the page
+            # recipe's proportions at band scale.
+            _pad = max(6, int(0.25 * (box[3] - box[1]) * H))
+            x0 = max(0, int(box[0] * W) - _pad); y0 = max(0, int(box[1] * H) - _pad)
+            x1 = min(W, int(box[2] * W) + _pad); y1 = min(H, int(box[3] * H) + _pad)
+            crop = img[y0:y1, x0:x1]
+            if crop.size == 0:
+                return ""
+            big = cv2.resize(crop, None, fx=5, fy=5, interpolation=cv2.INTER_CUBIC)
+            fd, tmp = _tf.mkstemp(suffix=".png"); _os.close(fd)
+            try:
+                cv2.imwrite(tmp, big)
+                out = _sp.run([exe, tmp, "stdout", "--psm", "8",
+                               "-c", "tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ"],
+                              capture_output=True, text=True, timeout=30,
+                              env={**_os.environ, "OMP_THREAD_LIMIT": "1"})
+                return re.sub(r"[^A-Z]", "", (out.stdout or "").upper())
+            finally:
+                try: _os.unlink(tmp)
+                except Exception: pass
+
+        alpha = [it for it in cand_items
+                 if len(re.sub(r"[^A-Za-z]", "", str(it["text"]))) >= 2]
+        if not alpha:
+            return []
+        surv = []
+        for it in alpha:
+            want = re.sub(r"[^A-Z]", "", str(it["text"]).upper())
+            got = _reread(it["box"])
+            if got and want and got != want:
+                continue
+            surv.append((it, bool(got and got == want)))
+        if not surv:
+            return []
+        ref_idx = next((i for i, (_it, v) in enumerate(surv) if v), 0)
+        ref = surv[ref_idx][0]
+        rh = max(1e-6, ref["box"][3] - ref["box"][1])
+        rcy = (ref["box"][1] + ref["box"][3]) / 2.0
+        kept = []
+        for i, (it, _v) in enumerate(surv):
+            h = it["box"][3] - it["box"][1]
+            cy = (it["box"][1] + it["box"][3]) / 2.0
+            if i < ref_idx:
+                if h >= 0.6 * rh and abs(cy - rcy) <= 0.7 * rh:
+                    kept.append(it)
+                continue
+            if i == ref_idx:
+                kept.append(it)
+                continue
+            if 0.55 * rh <= h <= 1.7 * rh and abs(cy - rcy) <= 0.7 * rh:
+                kept.append(it)
+            else:
+                break
+        return kept
+    except Exception:
+        return []
+
+
+def _recover_name_band(image_path, field, fspec, tpl, all_labels):
+    """Name-band rescue: find this field's label line in the band
+    stream and take its value — the tokens after the label on the
+    same line, or the whole next line when the layout prints the
+    value BELOW the label (the digital slip's arrangement, measured).
+    The candidate passes the same corroboration gate as every other
+    name source (_verify_name_tokens against the band rendition)."""
+    band_path, items = _band_name_items(image_path, tpl)
+    if not band_path or not items:
+        return None
+    labels = list((fspec or {}).get("labels") or [])
+    if not labels:
+        return None
+    # group into lines by row proximity
+    items = sorted(items, key=lambda it: (it["cy"], it["cx"]))
+    lines = []
+    for it in items:
+        h = max(1e-6, it["box"][3] - it["box"][1])
+        if lines and abs(it["cy"] - lines[-1][0]["cy"]) <= 0.9 * h:
+            lines[-1].append(it)
+        else:
+            lines.append([it])
+    for ln in lines:
+        ln.sort(key=lambda it: it["cx"])
+    label_norms = [_norm_word(x) for x in all_labels]
+
+    def _band_span(ln):
+        """Label span in a band line. The band's tight crop fuses
+        bilingual labels into single tokens ('SURNAME/NOM' reads as
+        one word; 'NAMES/PRENOMS' likewise) that the exact matcher
+        cannot see — so after the standard span, accept a token
+        sequence whose normalised forms carry the label's words as
+        prefixes, any remainder being another known label word."""
+        span = _label_span(ln, labels)
+        if span:
+            return span
+        norms = [_norm_word(it["text"]) for it in ln]
+        for lab in labels:
+            words = [_norm_word(w) for w in str(lab).split() if _norm_word(w)]
+            if not words:
+                continue
+            for i in range(len(ln)):
+                j, wi, ok = i, 0, True
+                while wi < len(words):
+                    if j >= len(ln):
+                        ok = False
+                        break
+                    tok = norms[j]
+                    if tok == words[wi]:
+                        j += 1
+                        wi += 1
+                    elif tok.startswith(words[wi]) and \
+                            tok[len(words[wi]):] in label_norms:
+                        j += 1
+                        wi += 1
+                    else:
+                        ok = False
+                        break
+                if ok:
+                    return (i, j)
+        return None
+
+    def _yields(cand_items):
+        if not cand_items:
+            return None
+        kept = _band_verify(band_path, cand_items)
+        cand = _value_from_tokens(field, [it["text"] for it in kept])
+        if cand and max((len(t) for t in re.findall(r"[A-Za-z]+", cand)), default=0) >= 3:
+            return cand
+        return None
+
+    for li, ln in enumerate(lines):
+        span = _band_span(ln)
+        if not span:
+            continue
+        same_line = [it for it in ln[span[1]:]
+                     if _norm_word(it["text"]) not in label_norms]
+        got = _yields(same_line)
+        if got:
+            return got
+        if li + 1 < len(lines):
+            next_line = [it for it in lines[li + 1]
+                         if _norm_word(it["text"]) not in label_norms
+                         and not _band_span([it])]
+            got = _yields(next_line)
+            if got:
+                return got
+    return None
+
+
+def _recover_dob_band(image_path, fspec, tpl, all_labels):
+    """Date-band rescue for a printed DOB the full-page stream
+    lost (the digital NIN slip's date row sits in the same
+    watermark field as its names). Crops the DOB zone alone,
+    finds the field's label line (fused bilingual labels handled
+    with the same prefix rule as the name band), and assembles
+    the date from the tokens after the label or on the next
+    line through the ordinary date parser. The label anchor +
+    a fully parseable, sane date is the gate — stray digit
+    groups elsewhere never qualify."""
+    try:
+        zone = ((fspec or {}).get("zone"))
+        if not zone:
+            return None
+        band_path, items = _band_items_for_zones(image_path, [tuple(zone)])
+        if not band_path or not items:
+            return None
+        labels = list((fspec or {}).get("labels") or [])
+        if not labels:
+            return None
+        items = sorted(items, key=lambda it: (it["cy"], it["cx"]))
+        lines = []
+        for it in items:
+            h = max(1e-6, it["box"][3] - it["box"][1])
+            if lines and abs(it["cy"] - lines[-1][0]["cy"]) <= 0.9 * h:
+                lines[-1].append(it)
+            else:
+                lines.append([it])
+        for ln in lines:
+            ln.sort(key=lambda it: it["cx"])
+        label_norms = [_norm_word(x) for x in all_labels]
+
+        def _span(ln):
+            span = _label_span(ln, labels)
+            if span:
+                return span
+            norms = [_norm_word(it["text"]) for it in ln]
+            for lab in labels:
+                words = [_norm_word(w) for w in str(lab).split() if _norm_word(w)]
+                if not words:
+                    continue
+                for i in range(len(ln)):
+                    j, wi, ok = i, 0, True
+                    while wi < len(words):
+                        if j >= len(ln):
+                            ok = False
+                            break
+                        tok = norms[j]
+                        if tok == words[wi] or (tok.startswith(words[wi])
+                                                and tok[len(words[wi]):] in label_norms):
+                            j += 1
+                            wi += 1
+                        else:
+                            ok = False
+                            break
+                    if ok:
+                        return (i, j)
+            return None
+
+        from datetime import date as _date
+        for li, ln in enumerate(lines):
+            span = _span(ln)
+            if not span:
+                continue
+            cand_sets = [[it for it in ln[span[1]:]
+                          if _norm_word(it["text"]) not in label_norms]]
+            if li + 1 < len(lines):
+                cand_sets.append([it for it in lines[li + 1]
+                                  if _norm_word(it["text"]) not in label_norms
+                                  and not _span([it])])
+            for cand in cand_sets:
+                if not cand:
+                    continue
+                val = _value_from_tokens("dob", [it["text"] for it in cand])
+                if not val:
+                    continue
+                try:
+                    d = _date.fromisoformat(str(val)[:10])
+                except Exception:
+                    continue
+                if _date(1900, 1, 1) <= d <= _date.today():
+                    return val
+        return None
+    except Exception:
+        return None
+
+
 def _is_digit_format(spec):
     """True when the field's number format is digit-only (a check-digit
     validator for digits, or a pattern with no letter classes)."""
@@ -745,7 +1110,7 @@ def _recover_number_zone(image_path, spec, partial, words=None):
                     cv2.imwrite(tmp, arr)
                     out = subprocess.run([exe, tmp, "stdout", "--psm", psm,
                                           "-c", "tessedit_char_whitelist=0123456789"],
-                                         capture_output=True, text=True, timeout=60)
+                                         capture_output=True, text=True, timeout=60, env={**os.environ, "OMP_THREAD_LIMIT": "1"})
                     return fam, re.sub(r"\D", "", out.stdout or "")
                 except Exception:
                     return fam, ""
@@ -803,7 +1168,7 @@ def _recover_number_zone(image_path, spec, partial, words=None):
                     cv2.imwrite(_tmp, _up)
                     _out = subprocess.run([exe, _tmp, "stdout", "--psm", "6", "tsv",
                                           "-c", "tessedit_char_whitelist=0123456789"],
-                                         capture_output=True, text=True, timeout=60)
+                                         capture_output=True, text=True, timeout=60, env={**os.environ, "OMP_THREAD_LIMIT": "1"})
                     _d = ""
                     for _row in (_out.stdout or "").splitlines()[1:]:
                         _p = _row.split("\t")
@@ -1016,7 +1381,7 @@ def _reread_token(image_path, box):
             cv2.imwrite(tmp, big)
             out = subprocess.run([exe, tmp, "stdout", "--psm", "8",
                                   "-c", "tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ"],
-                                 capture_output=True, text=True, timeout=30)
+                                 capture_output=True, text=True, timeout=30, env={**os.environ, "OMP_THREAD_LIMIT": "1"})
             return re.sub(r"[^A-Z]", "", (out.stdout or "").upper())
         finally:
             try: os.unlink(tmp)
@@ -1196,20 +1561,34 @@ def _recover_vin(lines, text_lines):
     pass texts) whose joined form is 15-24 chars with >= 8 digits
     and >= 1 letter. Returns the joined candidate or None."""
     def _best_from(token_rows):
-        best = None  # (digits, joined)
+        best = None  # (digits, trimmed_rank, joined)
         for toks in token_rows:
             run = []
             def flush(run):
                 nonlocal best
                 if not run:
                     return
-                joined = re.sub(r"[^A-Z0-9]", "", "".join(run).upper())
-                digs = sum(c.isdigit() for c in joined)
-                if 15 <= len(joined) <= 24 and digs >= 8 and \
-                        any(c.isalpha() for c in joined):
-                    if best is None or digs > best[0] or \
-                            (digs == best[0] and len(joined) > len(best[1])):
-                        best = (digs, joined)
+                # The run can open with the field's own LABEL misread
+                # and fused in ('VIN' -> 'YIN' chained straight into
+                # the number groups — measured on the genuine card: a
+                # 22-char candidate whose first 3 chars were the
+                # label, the VIN itself 19). Judge the run both ways;
+                # on equal digits the label-trimmed form wins.
+                variants = [(run, 0)]
+                first = re.sub(r"[^A-Z0-9]", "", str(run[0]).upper())
+                if first in ("VIN", "YIN") and len(run) > 1:
+                    variants.append((run[1:], 1))
+                for variant, trimmed_rank in variants:
+                    joined = re.sub(r"[^A-Z0-9]", "", "".join(variant).upper())
+                    digs = sum(c.isdigit() for c in joined)
+                    if 15 <= len(joined) <= 24 and digs >= 8 and \
+                            any(c.isalpha() for c in joined):
+                        cand = (digs, trimmed_rank, joined)
+                        if best is None or cand[0] > best[0] or \
+                                (cand[0] == best[0] and cand[1] > best[1]) or \
+                                (cand[0] == best[0] and cand[1] == best[1]
+                                 and len(joined) > len(best[2])):
+                            best = cand
             for t in toks:
                 cleaned = re.sub(r"[^A-Z0-9]", "", str(t).upper())
                 if len(cleaned) >= 2:
@@ -1217,7 +1596,7 @@ def _recover_vin(lines, text_lines):
                 else:
                     flush(run); run = []
             flush(run)
-        return best[1] if best else None
+        return best[2] if best else None
     rows = []
     for ln in lines or []:
         try:
@@ -1225,9 +1604,19 @@ def _recover_vin(lines, text_lines):
         except Exception:
             continue
     hit = _best_from(rows)
-    if hit:
-        return hit
-    return _best_from([str(l).split() for l in (text_lines or [])])
+    if not hit:
+        hit = _best_from([str(l).split() for l in (text_lines or [])])
+    if hit and len(hit) > 21 and hit[:3] in ("VIN", "YIN"):
+        # Over-length with the label fused INTO the leading token
+        # (not a separate token the variant judge above can drop):
+        # the dossier's VIN is ~19 chars, so a 22-char candidate
+        # opening with the misread label carries the label's glyphs
+        # inside its first group. Strip the label prefix; the digits
+        # — the identity-critical part — are untouched either way.
+        rest = hit[3:]
+        if len(rest) >= 15 and sum(c.isdigit() for c in rest) >= 8:
+            return rest
+    return hit
 
 def _extract_fields_pass(image_path, country, kind, ocr_text="", words=None, ocr_texts=None):
     """Template-guided field extraction. Returns the standard check
@@ -1503,6 +1892,30 @@ def _extract_fields_pass(image_path, country, kind, ocr_text="", words=None, ocr
                     break
             if value is None and fallback is not None:
                 value, source = fallback, "text"
+        # 3c) name-band rescue (surname / given_names only): the
+        # resolved name is missing or a fragment (no alpha token of
+        # 3+ letters — watermark-era stylized print can vanish from
+        # the full-page stream entirely) while the template carries
+        # name zones. The band re-read (see _band_name_items) is
+        # adopted only when it is strictly stronger: a longer
+        # longest-alpha-token than the current value's.
+        if field in ("surname", "given_names"):
+            def _longest_alpha(v):
+                toks = [t for t in re.findall(r"[A-Za-z]+", str(v or ""))]
+                return max((len(t) for t in toks), default=0)
+            if _longest_alpha(value) < 3:
+                band_val = _recover_name_band(image_path, field, spec, tpl, all_labels)
+                if band_val and _longest_alpha(band_val) > _longest_alpha(value):
+                    value, source = band_val, "band_reread"
+        # 3d) date-band rescue (dob only): the DOB resolved to
+        # nothing while the template carries a dob zone — the
+        # digital slip's date row shares the watermark field that
+        # swallows its names. Label-anchored band read; see
+        # _recover_dob_band for the gate.
+        if field == "dob" and value is None:
+            band_val = _recover_dob_band(image_path, spec, tpl, all_labels)
+            if band_val:
+                value, source = band_val, "band_reread"
         # 4) corroborated digit-zone recovery (number field only):
         # the resolved number is missing or format-invalid, but the
         # digits may still be recoverable from the number zone by a
@@ -1537,7 +1950,15 @@ def _extract_fields_pass(image_path, country, kind, ocr_text="", words=None, ocr
         # it still has to pass the type's format validation at the
         # entry step below.
         if field == "number" and (country, kind) == ("NG", "voter_card") and \
-                (value is None or validate_number(country, kind, value) is False):
+                (value is None or validate_number(country, kind, value) is False
+                 or not any(c.isalpha() for c in str(value))):
+            # The all-digit case: the resolved value can be format-valid
+            # yet be the WRONG FIELD — the card's other number, the PU
+            # code, is all digits, while the VIN (this type's identity
+            # number) is alphanumeric. A format-valid all-digit value
+            # must not shadow the VIN run (measured 2026-10-27: zone
+            # step adopted a 10-digit value while _recover_vin held a
+            # 22-char letter-bearing run from the VIN line itself).
             vin = _recover_vin(lines, text_lines)
             if vin:
                 value, source = vin, "zone_recovery"
