@@ -77,6 +77,12 @@ CREATE TABLE IF NOT EXISTS screening_hits(
 CREATE TABLE IF NOT EXISTS monitoring_alerts(
   id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, env TEXT NOT NULL, applicant_id TEXT NOT NULL,
   hit_id TEXT NOT NULL, case_id TEXT, status TEXT NOT NULL DEFAULT 'open', created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS fraud_index(
+  id TEXT PRIMARY KEY, tenant_id TEXT, env TEXT, kind TEXT,
+  key_hash TEXT, band INTEGER, session_id TEXT,
+  applicant_id TEXT, created_at TEXT);
+CREATE INDEX IF NOT EXISTS idx_fraud_lookup
+  ON fraud_index(tenant_id, env, kind, key_hash);
 CREATE TABLE IF NOT EXISTS businesses(
   id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, env TEXT NOT NULL, legal_name TEXT NOT NULL,
   registration_number TEXT NOT NULL, country TEXT NOT NULL,
@@ -136,6 +142,10 @@ _MIGRATIONS = [
     # ---- Identity-from-document (owner's order, 2026-10-26) ----
     ("applicants", "identity_source", "TEXT NOT NULL DEFAULT 'declared'"),  # declared = tenant states name/DOB, document cross-checked; document = identity is read FROM the document (OCR), nothing pre-declared
     ("applicants", "identity_document_id", "TEXT"),  # documents.id that supplied the adopted identity (document path, set at decision time)
+    # ---- WS4 authoritative data (2026-10-27) ----
+    ("businesses", "registry_source", "TEXT"),  # adapter that produced the last authoritative lookup (e.g. companies_house)
+    ("businesses", "registry_checked_at", "TEXT"),  # when that lookup ran
+    ("businesses", "registry_lookup_status", "TEXT"),  # verified|not_found|name_mismatch|unavailable|not_configured
 ]
 
 def now_iso():
