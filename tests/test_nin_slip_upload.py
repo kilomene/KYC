@@ -149,6 +149,11 @@ class TestFlowScoping(unittest.TestCase):
         self.assertIn("/v1/flow/document/claim", html)
         # the panel starts hidden; the scanner remains the default path
         self.assertIn('id="nin-panel" style="display:none"', html)
+        # camera-roll photos exceed the tunnel's body limit (the
+        # owner's first real upload got HTTP 413): the upload path
+        # downscales to the scanner's own maxDim before sending.
+        self.assertIn("downscaleForUpload", html)
+        self.assertIn("2048", html)
 
 
 if __name__ == "__main__":
