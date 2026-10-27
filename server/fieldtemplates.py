@@ -16,12 +16,21 @@ Extraction is zone-first with label anchoring:
      (date-shaped token for dates, pattern-shaped token for numbers,
      alphabetic tokens for names);
   3. text fallback — the label-anchored logic over the plain OCR text
-     (what the pre-WS1 pipeline effectively did).
+     (what the pre-WS1 pipeline effectively did), run over the UNION
+     of all OCR passes' lines when the caller supplies them
+     (ocr_texts), not only the winning pass.
 Every field records its SOURCE (label | zone | text) and, for the
 document number, whether the extracted value passes the type's format
 validator. A number extracted from the document that FAILS its own
 type's format is a fail (field_number_format_invalid): the value was
 read, and it is not shaped like the number that document carries.
+Fallback discipline: an invalid candidate only surfaces that fail
+when it is PLAUSIBLY the number (digit-bearing, or entirely
+confusable-mappable to digits at plausible length — see
+_plausible_number_fallback); a non-digit word harvested after a
+label that appears in the document's own TITLE (the NIN slip's
+header contains its number label) is discarded as not_found, never
+adopted into a fail.
 
 Honest limits: zones are the standard layout conventions for each
 document family (portrait-left ID-1 cards, TD3 data pages, the NIN
@@ -366,9 +375,45 @@ def _is_digit_format(spec):
     pattern = (spec or {}).get("pattern") or ""
     return bool(pattern) and "[A-Z" not in pattern
 
-def extract_fields(image_path, country, kind, ocr_text="", words=None):
+def _plausible_number_fallback(cand):
+    """Fallback discipline (Session-5 diagnosis, 2026-10-26): may an
+    INVALID label-line candidate still surface as the number (so its
+    format failure fails the extraction)? Only when it is PLAUSIBLY
+    the number:
+
+      * it bears a real digit (a short or misread number — "12345"
+        for an 11-digit NIN — is a number that failed, and the FAIL
+        is the honest verdict), or
+      * it carries no digit but is ENTIRELY confusable-mappable to
+        digits at a plausible length (>= 6) — a digit-format number
+        OCR could have read as pure letters.
+
+    A plain word is neither: the NIN slip's header line contains the
+    label text itself ("...Identification Number" is the field's own
+    anchor), and the token after the title — a 4-char alphabetic
+    header word — was adopted by the old fallback and converted a
+    not-found into a hard FAIL on a genuine document. Implausible
+    candidates are DISCARDED: the field records not_found and the
+    search continues."""
+    if not cand:
+        return False
+    if any(ch.isdigit() for ch in cand):
+        return True
+    normed = _normalize_numeric(cand)
+    return normed.isdigit() and len(normed) >= 6
+
+def extract_fields(image_path, country, kind, ocr_text="", words=None, ocr_texts=None):
     """Template-guided field extraction. Returns the standard check
-    dict; findings carry per-field {value, source, format_valid}."""
+    dict; findings carry per-field {value, source, format_valid}.
+
+    ocr_texts: the texts of ALL OCR passes (vision.read_document_text
+    exposes them as "pass_texts"), not only the winning pass. The
+    text fallback (step 3) searches the UNION of every pass's lines:
+    the pass that wins on confidence/MRZ grounds is not always the
+    pass that read a given printed field — passes disagree by zone
+    on real captures, and judging extraction on the winner alone
+    manufactures not-found fields out of text the pipeline had in
+    fact read."""
     country = (country or "").upper()
     tpl = get_field_template(country, kind)
     if tpl is None:
@@ -379,7 +424,13 @@ def extract_fields(image_path, country, kind, ocr_text="", words=None):
         from . import vision as VISION
         words = VISION.ocr_words(image_path) if image_path else []
     lines = _group_lines(words)
-    text_lines = [l for l in (ocr_text or "").splitlines() if l.strip()]
+    text_lines = []
+    _seen_lines = set()
+    for _t in [ocr_text or ""] + list(ocr_texts or []):
+        for _l in _t.splitlines():
+            if _l.strip() and _l not in _seen_lines:
+                _seen_lines.add(_l)
+                text_lines.append(_l)
     fields_out = {}
     all_labels = [lab for spec in tpl["fields"].values() for lab in spec["labels"]]
     for field, spec in tpl["fields"].items():
@@ -391,8 +442,11 @@ def extract_fields(image_path, country, kind, ocr_text="", words=None):
         # words too (the NIN slip's header "...Identification Number
         # Slip" would otherwise harvest the word after the title as
         # the "number" — measured on a layout-faithful drawing). The
-        # first VALID candidate wins; the first invalid one is kept
-        # only as a fallback so the format failure still surfaces.
+        # first VALID candidate wins; the first PLAUSIBLE invalid one
+        # is kept as a fallback so a genuine format failure still
+        # surfaces — an implausible one (a non-digit title word) is
+        # discarded outright, never adopted (see
+        # _plausible_number_fallback).
         fallback = None
         for ln in lines:
             hit = _label_span(ln, labels)
@@ -401,7 +455,7 @@ def extract_fields(image_path, country, kind, ocr_text="", words=None):
                 cand = _value_from_tokens(field, [it["text"] for it in ln[after:]])
                 if cand:
                     if field == "number" and validate_number(country, kind, cand) is False:
-                        if fallback is None:
+                        if fallback is None and _plausible_number_fallback(cand):
                             fallback = cand
                         continue
                     value, source = cand, "label"
@@ -448,7 +502,7 @@ def extract_fields(image_path, country, kind, ocr_text="", words=None):
                         cand = _value_from_tokens(field, raw[m.end():].split())
                         if cand:
                             if field == "number" and validate_number(country, kind, cand) is False:
-                                if fallback is None:
+                                if fallback is None and _plausible_number_fallback(cand):
                                     fallback = cand
                                 continue
                             value, source = cand, "text"
