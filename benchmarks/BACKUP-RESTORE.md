@@ -1,12 +1,12 @@
 # Backup / Restore Drill — measured results (Phase 4 WS3)
 
-Run: 2026-10-26 20:27 UTC by `scripts/restore_drill.py` against a scratch
+Run: 2026-10-27 22:04 UTC by `scripts/restore_drill.py` against a scratch
 instance (media encryption ON). Nothing touched the production data dir.
 
 ## Measured
 
-- Backup size: **272010 bytes** (DB 229376 bytes, 2 media files, 41012 media bytes)
-- Backup wall time: **0.094s** · Restore wall time: **0.004s**
+- Backup size: **284298 bytes** (DB 241664 bytes, 2 media files, 41012 media bytes)
+- Backup wall time: **0.089s** · Restore wall time: **0.003s**
 - Session decision before backup: `approved`
 
 ## Record counts (source DB = backup manifest = restored DB)
