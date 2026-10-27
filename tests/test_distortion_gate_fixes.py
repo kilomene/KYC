@@ -364,5 +364,42 @@ class TestFaceMatchApplicability(unittest.TestCase):
         self.assertFalse(E.biometric_evidence(res2, cf)["all_passing"])
 
 
+class TestWeakGeometryGate(unittest.TestCase):
+    """Decision-grade geometry (owner session-5, second act): an
+    accepted quad in the outer quartile of the claimed type's aspect
+    range on weak border evidence is a guess, not a measurement —
+    framing must answer unclear/document_geometry_weak (a rescan),
+    never pass a warp that bakes the distortion in."""
+
+    def _run_with(self, aspect, border):
+        import cv2
+        from server import framing as F
+        img = _distorted_scene()
+        buf = cv2.imencode(".png", img)[1].tobytes()
+        real = F.analyse_image
+        def fake(im, rng=None):
+            a = real(im, rng)
+            if a and a.get("quad") is not None:
+                a = dict(a); a["aspect"] = aspect; a["border_support"] = border
+            return a
+        F.analyse_image = fake
+        try:
+            return F.check_document_framing(data=buf,
+                                            expected_aspect_range=(1.2, 2.8))
+        finally:
+            F.analyse_image = real
+
+    def test_outer_band_weak_border_is_unclear(self):
+        res = self._run_with(1.40, 0.30)
+        self.assertTrue(res["findings"].get("quad_found"), res["findings"])
+        self.assertEqual(res["status"], "unclear")
+        self.assertEqual(res["reason_codes"], ["document_geometry_weak"])
+
+    def test_mid_range_weak_border_still_passes(self):
+        res = self._run_with(2.20, 0.30)
+        self.assertTrue(res["findings"].get("quad_found"), res["findings"])
+        self.assertEqual(res["status"], "pass")
+
+
 if __name__ == "__main__":
     unittest.main()
