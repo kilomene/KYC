@@ -239,7 +239,7 @@ def normalize_orientation_bytes(data, expected_aspect_range=None, portrait_expec
     applied=False. The stored artifact IS the corrected image, so
     every downstream read (framing, OCR, zones, classification,
     portrait) consumes the document upright."""
-    info = {"applied": False, "angle": 0, "scores": {}}
+    info = {"applied": False, "angle": 0, "scores": {}, "confs": {}}
     if Image is None or not data:
         return data, info
     exe = shutil.which("tesseract")
@@ -274,6 +274,7 @@ def normalize_orientation_bytes(data, expected_aspect_range=None, portrait_expec
                 except Exception:
                     pass
             info["scores"][str(angle)] = round(score, 1)
+            info["confs"][str(angle)] = round(float(conf or 0), 1)
             if best is None or score > best[0]:
                 best = (score, angle, im)
         except Exception:
@@ -320,6 +321,27 @@ def normalize_orientation_bytes(data, expected_aspect_range=None, portrait_expec
         if not (angle == 0 or score < 1.5 * max(base, 1.0) or score < 200):
             chosen = angle
             info["via"] = "score"
+    if chosen is None:
+        # Confidence tie-break (calibration 2026-10-27): when the
+        # score competition is indecisive, tesseract's MEAN word
+        # confidence still separates the true orientation — it reads
+        # sideways text by auto-rotating internally, which keeps the
+        # volume score close, but it is visibly MORE CONFIDENT at
+        # the geometrically true angle (NY non-driver ID, laser-
+        # engraved portrait the face decider cannot see: conf 74 at
+        # the true 270 vs 64 as-is, scores within 6%). A rotation
+        # wins on confidence only when it is at least as confident
+        # in absolute terms (>= 55), beats as-is by >= 8 points, and
+        # holds >= 80% of the as-is volume score — an upright
+        # document, whose rotations are all weak, never qualifies.
+        base_conf = info["confs"].get("0", 0)
+        cands = [(c, int(a)) for a, c in info["confs"].items() if a != "0"]
+        if cands:
+            c_conf, c_ang = max(cands)
+            if (c_conf >= 55 and c_conf >= base_conf + 8
+                    and info["scores"].get(str(c_ang), 0) >= 0.8 * max(base, 1.0)):
+                chosen = c_ang
+                info["via"] = "confidence"
     if chosen is None and portrait_expected:
         face_angle = _portrait_orientation(im0, expected_aspect_range)
         if face_angle:
@@ -339,19 +361,64 @@ def normalize_orientation_bytes(data, expected_aspect_range=None, portrait_expec
     return out.getvalue(), info
 
 
+def _quick_token_yield(img_path):
+    """Cheap OCR yield probe: word-token count of a downscaled TSV
+    pass. Used only to arbitrate between renditions, never as a read."""
+    exe = shutil.which("tesseract")
+    if not exe or Image is None:
+        return 0
+    tmp = None
+    try:
+        im = Image.open(img_path).convert("RGB")
+        im.thumbnail((1000, 1000))
+        fd, tmp = tempfile.mkstemp(suffix=".png"); os.close(fd)
+        im.save(tmp, format="PNG")
+        text, _conf = _tesseract_tsv(exe, tmp)
+        return len((text or "").split())
+    except Exception:
+        return 0
+    finally:
+        if tmp:
+            try: os.unlink(tmp)
+            except Exception: pass
+
+
 def _reading_path(path):
     """The image OCR should READ: the perspective-warped rendition
     when framing finds a document quad in the capture, else the
-    original. Returns (effective_path, warp_findings_or_None)."""
+    original. Returns (effective_path, warp_findings_or_None).
+
+    Yield guard (calibration 2026-10-27): a warp is trusted only
+    when it actually READS. On barcode-dominant card backs the
+    segmentation fallback can lock onto an inner feature (aspect
+    0.70 'card' inside a landscape card) and produce a warp whose
+    OCR yield is zero, while the untouched photo reads fine — the
+    pipeline shipped a 0-char read for a legible document. So when
+    a warp exists, probe its yield; a near-empty warp (< 5 tokens)
+    falls back to the original whenever the original reads
+    materially better (>= 15 tokens and >= 3x). Warps that read
+    anything at all are kept untouched, so the proven document
+    paths (slips, passports) are unaffected."""
     try:
         from . import framing as FRAMING
         analysis = FRAMING.analyse_path(path)
         if analysis and analysis.get("quad") is not None:
             warped = FRAMING.warped_rendition(path)
             if warped:
-                return warped, {"applied": True, "method": analysis.get("method"),
-                                "aspect": analysis.get("aspect"),
-                                "area_ratio": analysis.get("area_ratio")}
+                info = {"applied": True, "method": analysis.get("method"),
+                        "aspect": analysis.get("aspect"),
+                        "area_ratio": analysis.get("area_ratio")}
+                wy = _quick_token_yield(warped)
+                if wy < 5:
+                    oy = _quick_token_yield(path)
+                    if oy >= 15 and oy >= 3 * (wy + 1):
+                        return path, {"applied": False,
+                                      "warp_rejected": "low_yield",
+                                      "warp_yield": wy,
+                                      "original_yield": oy,
+                                      "method": analysis.get("method"),
+                                      "aspect": analysis.get("aspect")}
+                return warped, info
     except Exception:
         pass
     return path, {"applied": False}
@@ -933,16 +1000,59 @@ def _aamva_date(mmddyyyy):
         return None
 
 def _decode_barcodes(path):
-    """zxing-cpp (optional): all barcodes on one image."""
+    """zxing-cpp (optional): all barcodes on one image. Rendition
+    ladder (calibration 2026-10-27): the native frame first; when
+    it yields nothing, the three rotations; when still nothing, a
+    2x upscale (small codes in hand-held photos — the California
+    back's PDF417 sits in a corner at a fraction of the frame).
+    Results dedupe on (format, text); the ladder stops at the
+    first rendition that finds anything."""
     if zxingcpp is None or not path or Image is None:
         return []
     try:
-        out = []
-        for r in zxingcpp.read_barcodes(Image.open(path)):
-            out.append({"format": str(r.format), "text": (r.text or "")[:2000]})
-        return out
+        base = Image.open(path)
     except Exception:
         return []
+    renditions = [base]
+    try:
+        renditions += [base.transpose(t) for t in
+                       (Image.ROTATE_90, Image.ROTATE_180, Image.ROTATE_270)]
+    except Exception:
+        pass
+    for im in list(renditions):
+        try:
+            w, h = im.size
+            if max(w, h) < 3000:
+                renditions.append(im.resize((w * 2, h * 2), Image.LANCZOS))
+        except Exception:
+            pass
+    seen, out = set(), []
+    for im in renditions:
+        try:
+            for r in zxingcpp.read_barcodes(im):
+                # zxing-cpp renders the AAMVA separator bytes of
+                # PDF417 payloads as literal placeholder strings
+                # ("<LF>", "<CR>", "<RS>"...) in its text output —
+                # measured 2026-10-27: every parsed element value
+                # arrived with a junk tail and the date/sex formats
+                # failed. Normalise them back to the real control
+                # characters here so every downstream parser sees
+                # the payload as issued.
+                text = (r.text or "")
+                for ph, ch in (("<LF>", "\n"), ("<CR>", "\r"), ("<RS>", "\x1e"),
+                               ("<GS>", "\x1d"), ("<FS>", "\x1c"), ("<VT>", "\x0b"),
+                               ("<FF>", "\x0c"), ("<HT>", "\t")):
+                    text = text.replace(ph, ch)
+                key = (str(r.format), text)
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append({"format": key[0], "text": key[1][:2000]})
+        except Exception:
+            continue
+        if out:
+            break
+    return out
 
 def _alnum(s):
     return re.sub(r"[^A-Z0-9]", "", (s or "").upper())
@@ -962,6 +1072,7 @@ def decode_codes(front_path=None, back_path=None, doc_fields=None, country=None,
                 "zxing": "available" if zxingcpp is not None else "unavailable",
                 "opencv": "available" if cv2 is not None else "unavailable"}
     mismatches = []
+    near_mismatches = []
     found_any = False
 
     def _absorb(parsed, side):
@@ -984,8 +1095,11 @@ def decode_codes(front_path=None, back_path=None, doc_fields=None, country=None,
                                  "dob": f.get("dob_raw"), "expiry": f.get("expiry_raw")}
             findings["aamva_format"] = parsed.get("format")
             findings["aamva_format_valid"] = parsed.get("format_valid")
-        mm, compared = PAYLOADS.cross_check_payload(parsed, doc_fields, country=country, kind=kind)
+        mm, compared, near = PAYLOADS.cross_check_payload(parsed, doc_fields, country=country, kind=kind)
         entry["cross_checked_fields"] = compared
+        if near:
+            entry["near_fields"] = near
+            near_mismatches.extend(near)
         findings["payloads"].append(entry)
         mismatches.extend(mm)
 
@@ -1015,10 +1129,27 @@ def decode_codes(front_path=None, back_path=None, doc_fields=None, country=None,
             entry = {"side": side, "format": bc["format"], "chars": len(bc["text"])}
             findings["barcodes"].append(entry)
             parsed = PAYLOADS.parse_aamva(bc["text"])
+            if parsed is None and "PDF417" in bc["format"]:
+                # A PDF417 that is not AAMVA: the INEC voter's card
+                # carries its holder record in one (calibration
+                # 2026-10-27). The parser self-guards on shape, so
+                # it is safe to offer any PDF417 text to it.
+                parsed = PAYLOADS.parse_inec_pvc(bc["text"])
             if parsed is None and "PDF417" not in bc["format"]:
-                parsed = (PAYLOADS.parse_nin_qr(bc["text"]) or PAYLOADS.parse_philid_qr(bc["text"]))
+                # Jurisdiction-bound QR grammars only (calibration
+                # 2026-10-27): a US card's 1D inventory barcode is
+                # 16 digits — exactly a PhilID PCN's shape — and an
+                # ungated PhilID parse turned it into a false
+                # identity mismatch on a genuine card. A 1D code on
+                # any other jurisdiction's document is presence
+                # evidence, never an identity payload.
+                if country == "PH":
+                    parsed = PAYLOADS.parse_philid_qr(bc["text"])
+                elif country == "NG":
+                    parsed = PAYLOADS.parse_nin_qr(bc["text"])
             _absorb(parsed, side)
     findings["mismatches"] = mismatches
+    findings["near_mismatches"] = near_mismatches
     findings["found_any"] = found_any
     if mismatches:
         return {"status": "fail", "findings": findings, "reason_codes": ["code_decode_mismatch"]}
