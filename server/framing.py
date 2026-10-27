@@ -42,6 +42,25 @@ Decision contract (unchanged, fail-closed):
                                      small in frame)
     no quad / texture-less quad   -> fail / unclear per findings
 
+Quad quality gate (Session-5 diagnosis, 2026-10-26): the two quad
+families can DISAGREE about the document's shape. On the owner's real
+NIN slip the segmentation quad measured aspect 1.401 against the
+slip's true ~2.20 — the perspective warp then stretched the document
+~1.57x vertically and every downstream check (classification,
+extraction) consumed the distortion. analyse_image therefore keeps
+the best ACCEPTED quad per family (edges vs segmentation) and, when
+their aspects disagree by more than 25%, resolves the conflict
+instead of silently taking the larger blob: the quad sitting
+MID-RANGE in the claimed type's registry aspect range wins; with no
+range (or no mid-range quad), the EDGE quad wins (segmentation is
+the distortion-prone family — it fits filled luminance regions, edges
+trace the physical border); when neither quad can be preferred
+(both/neither inside the claimed range, or only a rejected
+document-scale edge outline contradicts an accepted segmentation
+quad), framing answers UNCLEAR (rescan) rather than passing a
+distorted warp downstream. Findings record the conflict and its
+resolution either way.
+
 When a quad is found, the capture can be perspective-WARPED to a flat
 rectangle (warp_document / warped_rendition): OCR and extraction run
 on the warp, authenticity keeps the original. Framing findings record
@@ -68,6 +87,53 @@ WIDE_PASS_AREA = 0.10
 WIDE_UNCLEAR_AREA = 0.06
 _ANALYSIS_MAX_DIM = 1000
 _WARP_WIDTH = 1240
+# Edge-vs-segmentation aspect disagreement beyond this relative
+# difference means the two families measured DIFFERENT shapes.
+ASPECT_CONFLICT_REL = 0.25
+
+def _resolve_aspect_conflict(edge_aspect, seg_aspect, expected_range):
+    """Choose between two ACCEPTED quads whose aspects disagree.
+    -> (group, resolution): group is "edges" | "segmentation" | None
+    (None = ambiguous: neither quad may be preferred).
+
+    With the claimed type's registry range: a quad whose aspect sits
+    in the range's central band (mid-range) beats one in the outer
+    band; failing that, a quad INSIDE the range beats one outside it;
+    if both are equally placed (both mid-range, both merely in-range,
+    or both out of range) the shapes are genuinely ambiguous at >25%
+    disagreement and the caller answers unclear (rescan). Without a
+    range, the EDGE quad wins outright: segmentation fits filled
+    luminance blobs (the family that produced the 1.401-vs-2.20
+    distortion), edges trace the document's physical border."""
+    if expected_range:
+        lo, hi = expected_range
+        if hi and hi > lo:
+            mid_lo = lo + 0.25 * (hi - lo)
+            mid_hi = hi - 0.25 * (hi - lo)
+            e_mid = mid_lo <= edge_aspect <= mid_hi
+            s_mid = mid_lo <= seg_aspect <= mid_hi
+            if e_mid != s_mid:
+                return ("edges", "midrange_preferred") if e_mid else ("segmentation", "midrange_preferred")
+            e_in = lo <= edge_aspect <= hi
+            s_in = lo <= seg_aspect <= hi
+            if e_in != s_in:
+                return ("edges", "in_range_preferred") if e_in else ("segmentation", "in_range_preferred")
+            return (None, "ambiguous_both_in_range" if e_in else "ambiguous_neither_in_range")
+    return ("edges", "edge_preferred")
+
+def expected_range_from_entry(entry):
+    """The (lo, hi) registry aspect range for a docregistry entry, or
+    None. Paper/booklet entries carry aspect_min/aspect_max directly;
+    card entries carry a point aspect, whose range is the ±10%
+    classification tolerance band around it."""
+    if not entry:
+        return None
+    if entry.get("aspect_min") and entry.get("aspect_max"):
+        return (float(entry["aspect_min"]), float(entry["aspect_max"]))
+    a = entry.get("aspect")
+    if a:
+        return (round(float(a) * 0.90, 4), round(float(a) * 1.10, 4))
+    return None
 
 # ------------------------------------------------------------------
 # quad fitting helpers
@@ -200,11 +266,16 @@ def _candidates(grey, edges, method):
             out.append(quad)
     return out, (cv2.contourArea(contours[0]) if contours else 0.0)
 
-def analyse_image(img):
+def analyse_image(img, expected_aspect_range=None):
     """Full framing analysis of a BGR image. Returns a dict:
     {quad (4x2 float32, original coords) or None, method, area_ratio,
      width_frac, height_frac, aspect, texture{}, largest_contour_ratio,
-     width, height}. Quad search runs on a downscaled copy."""
+     width, height}. Quad search runs on a downscaled copy.
+    expected_aspect_range: the claimed document type's registry
+    aspect range (lo, hi) when the caller knows it — used only by the
+    quad quality gate to resolve edge-vs-segmentation aspect
+    conflicts (see the module docstring); the gate works without it
+    (edge quad preferred)."""
     if cv2 is None or img is None:
         return None
     h0, w0 = img.shape[:2]
@@ -221,7 +292,7 @@ def analyse_image(img):
     result = {"quad": None, "method": None, "area_ratio": 0.0, "width_frac": 0.0,
               "height_frac": 0.0, "aspect": 0.0, "texture": None,
               "border_support": None, "ring_contrast": None, "accepted": False,
-              "candidate": None,
+              "candidate": None, "aspect_conflict": None, "ambiguous_aspect": False,
               "largest_contour_ratio": 0.0, "width": w0, "height": h0}
 
     strategies = []
@@ -249,6 +320,8 @@ def analyse_image(img):
         strategies.append(("segmentation", closed))
 
     best_ok = None    # accepted candidate: (score, area_ratio, quad, method, met, tex, border, ring)
+    best_ok_edge = None   # best accepted EDGE-family candidate (quad quality gate)
+    best_ok_seg = None    # best accepted SEGMENTATION candidate (quad quality gate)
     best_any = None   # strongest rejected EDGE candidate, for honest unclear findings
     for method, emap in strategies:
         quads, largest = _candidates(grey, emap, method)
@@ -287,10 +360,78 @@ def analyse_image(img):
                 score = met["area_ratio"] * border
                 if best_ok is None or score > best_ok[0]:
                     best_ok = (score,) + entry
+                if method.startswith("edges"):
+                    if best_ok_edge is None or score > best_ok_edge[0]:
+                        best_ok_edge = (score,) + entry
+                else:
+                    if best_ok_seg is None or score > best_ok_seg[0]:
+                        best_ok_seg = (score,) + entry
             elif method.startswith("edges"):
                 score = (bool(tex["ok"]), met["area_ratio"])
                 if best_any is None or score > (bool(best_any[4]["ok"]), best_any[0]):
                     best_any = entry
+    def _summarise(entry):
+        area_ratio, quad, method, met, tex, border, ring = entry
+        quad_orig = (quad / scale) if scale != 1.0 else quad
+        return {"method": method,
+                "area_ratio": round(met["area_ratio"], 4),
+                "width_frac": round(met["width_frac"], 4),
+                "height_frac": round(met["height_frac"], 4),
+                "aspect": round(met["aspect"], 3), "texture": tex,
+                "border_support": border, "ring_contrast": ring,
+                "quad": [[round(float(x) / w0, 4), round(float(y) / h0, 4)] for x, y in _order_quad(quad_orig)]}
+
+    # ---- quad quality gate: edge-vs-segmentation aspect conflict ----
+    # Two accepted quads that disagree > 25% on aspect measured
+    # DIFFERENT shapes; the larger-blob winner takes the warp either
+    # way under the ranking above, which is how a segmentation blob
+    # at aspect 1.401 warped (and stretched) a 2.20 slip. Resolve the
+    # conflict explicitly; an unresolvable one marks the analysis
+    # ambiguous and the check answers unclear (rescan) — no warp.
+    ambiguous_entry = None
+    if best_ok is not None:
+        edge_e = best_ok_edge[1:] if best_ok_edge is not None else None
+        seg_e = best_ok_seg[1:] if best_ok_seg is not None else None
+        # A sub-document-scale edge quad (an inner feature — a photo
+        # box, a text block) is not a competing document hypothesis:
+        # the gate engages only when the edge quad is document-scale.
+        # (seg_e is pass-size by construction — segmentation
+        # candidates are only accepted at pass size.)
+        if edge_e is not None and edge_e[0] < UNCLEAR_RATIO:
+            edge_e = None
+        if edge_e is not None and seg_e is not None:
+            ea, sa = edge_e[3]["aspect"], seg_e[3]["aspect"]
+            rel = abs(ea - sa) / max(ea, sa) if max(ea, sa) else 0.0
+            if rel > ASPECT_CONFLICT_REL:
+                group, resolution = _resolve_aspect_conflict(ea, sa, expected_aspect_range)
+                result["aspect_conflict"] = {"edge_aspect": round(ea, 3),
+                                             "segmentation_aspect": round(sa, 3),
+                                             "rel_diff": round(rel, 3),
+                                             "resolution": resolution}
+                if group == "edges":
+                    best_ok = best_ok_edge
+                elif group == "segmentation":
+                    best_ok = best_ok_seg
+                else:
+                    ambiguous_entry = seg_e
+        elif seg_e is not None and best_any is not None:
+            # Only segmentation was accepted, but a document-scale
+            # edge outline (rejected on some other gate) traces a
+            # fundamentally different shape: trust neither quad.
+            wa, sa = best_any[3]["aspect"], seg_e[3]["aspect"]
+            rel = abs(wa - sa) / max(wa, sa) if max(wa, sa) else 0.0
+            if (best_any[0] >= UNCLEAR_RATIO and (best_any[5] or 0) >= 0.30
+                    and rel > ASPECT_CONFLICT_REL):
+                result["aspect_conflict"] = {"edge_aspect": round(wa, 3),
+                                             "segmentation_aspect": round(sa, 3),
+                                             "rel_diff": round(rel, 3),
+                                             "resolution": "ambiguous_edge_witness"}
+                ambiguous_entry = seg_e
+    if ambiguous_entry is not None:
+        result["ambiguous_aspect"] = True
+        result["candidate"] = _summarise(ambiguous_entry)
+        result["largest_contour_ratio"] = round(result["largest_contour_ratio"], 4)
+        return result
     chosen = None
     if best_ok is not None:
         chosen = best_ok[1:]
@@ -299,13 +440,7 @@ def analyse_image(img):
     if chosen is not None:
         area_ratio, quad, method, met, tex, border, ring = chosen
         quad_orig = (quad / scale) if scale != 1.0 else quad
-        summary = {"method": method,
-                   "area_ratio": round(met["area_ratio"], 4),
-                   "width_frac": round(met["width_frac"], 4),
-                   "height_frac": round(met["height_frac"], 4),
-                   "aspect": round(met["aspect"], 3), "texture": tex,
-                   "border_support": border, "ring_contrast": ring,
-                   "quad": [[round(float(x) / w0, 4), round(float(y) / h0, 4)] for x, y in _order_quad(quad_orig)]}
+        summary = _summarise(chosen)
         if best_ok is not None:
             # summary carries a NORMALISED "quad" for findings
             # reporting; the analysis "quad" must stay in ORIGINAL
@@ -416,7 +551,7 @@ def warped_rendition(path):
 # the check
 # ------------------------------------------------------------------
 
-def check_document_framing(path=None, data=None):
+def check_document_framing(path=None, data=None, expected_aspect_range=None):
     if cv2 is None:
         return {"status": "error", "findings": {"error": "opencv_unavailable"}, "reason_codes": ["framing_unavailable"]}
     try:
@@ -429,14 +564,29 @@ def check_document_framing(path=None, data=None):
     if img is None:
         return {"status": "fail", "findings": {"error": "image_unreadable"}, "reason_codes": ["invalid_image"]}
     h, w = img.shape[:2]
-    a = analyse_image(img)
+    a = analyse_image(img, expected_aspect_range)
     findings = {"width": w, "height": h, "quad_found": False, "area_ratio": 0.0,
                 "largest_contour_ratio": a["largest_contour_ratio"] if a else 0.0,
                 "quad": None, "aspect": None, "method": None, "warp_applied": False,
                 "fill_rule": None, "texture": None, "border_support": None,
-                "ring_contrast": None}
+                "ring_contrast": None,
+                "aspect_conflict": a.get("aspect_conflict") if a else None}
     if a is None or a.get("quad") is None:
         cand = (a or {}).get("candidate")
+        if (a or {}).get("ambiguous_aspect"):
+            # The quad quality gate could not resolve WHICH shape is
+            # the document (edge and segmentation aspects disagree
+            # > 25% with no preference rule able to separate them).
+            # Passing either warp downstream would risk deciding on a
+            # geometrically distorted document — the honest verdict
+            # is a rescan, with both measured aspects on the record.
+            if cand:
+                findings.update({"area_ratio": cand["area_ratio"], "aspect": cand["aspect"],
+                                 "method": cand["method"], "texture": cand["texture"],
+                                 "border_support": cand["border_support"],
+                                 "ring_contrast": cand["ring_contrast"]})
+            return {"status": "unclear", "findings": findings,
+                    "reason_codes": ["document_aspect_ambiguous"]}
         # A rejected candidate only earns the "unclear" (rescan)
         # verdict when it carries SOME document evidence — print
         # texture, or an outline the edge map can see at all. A region
