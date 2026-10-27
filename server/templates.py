@@ -39,6 +39,8 @@ driver's licence; a room/scene photo scores near 0. Real documents
 carry more of every element (a real portrait photo, full printed
 labels) than the drawn fixture does.
 """
+import re
+
 try:
     import cv2
 except Exception:
@@ -238,6 +240,64 @@ def get_template(country, kind):
 def _centre(box):
     return ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)
 
+def _assemble_zone_number(zone_words, country, kind):
+    """Assemble the document number from FRAGMENTED digit tokens
+    inside the number zone (Session-5 diagnosis, 2026-10-26).
+
+    The single-token rule (one token with >= 5 alphanumerics) misses
+    numbers OCR shatters into short tokens — on the owner's slip the
+    stretched warp broke the digit line into 1-3 char tokens — and it
+    also misses numbers PRINTED in groups (the print itself separates
+    the groups, so each group is its own word box). This path groups
+    the zone's word boxes into lines, walks runs of ADJACENT
+    pure-digit tokens (same line, small horizontal gap), concatenates
+    each run, and counts the zone as read only when a concatenation
+    satisfies the type's OWN number format (fieldtemplates
+    validate_number — pattern or check-digit validator). A run that
+    assembles to the wrong shape is not evidence and is skipped; for
+    types with no format to judge by, an assembled run needs >= 8
+    digits before it counts. Returns the assembled number or None."""
+    try:
+        from . import fieldtemplates as FT
+    except Exception:
+        return None
+    items = sorted(zone_words or [],
+                   key=lambda wd: ((wd["box"][1] + wd["box"][3]) / 2.0, wd["box"][0]))
+    lines = []
+    for wd in items:
+        cy = (wd["box"][1] + wd["box"][3]) / 2.0
+        if lines and abs(cy - lines[-1][0]) <= 0.03:
+            lines[-1][1].append(wd)
+        else:
+            lines.append((cy, [wd]))
+    for _cy, line in lines:
+        line.sort(key=lambda wd: wd["box"][0])
+        runs = []
+        run = []
+        prev_x1 = None
+        for wd in line:
+            digits = re.sub(r"\D", "", wd["text"] or "")
+            pure = bool(digits) and not re.search(r"[A-Za-z]", wd["text"] or "")
+            gap = (wd["box"][0] - prev_x1) if prev_x1 is not None else 0.0
+            if pure and gap <= 0.08:
+                run.append(digits)
+            else:
+                if len(run) >= 2:
+                    runs.append("".join(run))
+                run = [digits] if pure else []
+            prev_x1 = wd["box"][2]
+        if len(run) >= 2:
+            runs.append("".join(run))
+        for joined in runs:
+            if len(joined) < 6:
+                continue
+            valid = FT.validate_number(country, kind, joined)
+            if valid is True:
+                return joined
+            if valid is None and len(joined) >= 8:
+                return joined
+    return None
+
 def _inside(pt, zone, pad=0.0):
     return (zone[0] - pad <= pt[0] <= zone[2] + pad) and (zone[1] - pad <= pt[1] <= zone[3] + pad)
 
@@ -353,11 +413,21 @@ def check_classification(image_path, country, kind, ocr_text="", mrz_parsed=None
     if zone:
         if words is None:
             words = VISION.ocr_words(image_path)
-        hits = [wd["text"] for wd in (words or [])
-                if _inside(_centre(wd["box"]), zone)
-                and sum(ch.isalnum() for ch in wd["text"]) >= 5]
-        findings["elements"]["number_zone"] = {"read": bool(hits), "tokens": hits[:4]}
-        scored.append((15, 1.0 if hits else 0.0))
+        zone_words = [wd for wd in (words or []) if _inside(_centre(wd["box"]), zone)]
+        hits = [wd["text"] for wd in zone_words
+                if sum(ch.isalnum() for ch in wd["text"]) >= 5]
+        # Assembly path: no single token qualifies, but the zone's
+        # digit tokens may still BE the number — shattered by OCR or
+        # printed in groups — when concatenated (see
+        # _assemble_zone_number; the type's own format judges).
+        assembled = None
+        if not hits:
+            assembled = _assemble_zone_number(zone_words, country, kind)
+        zone_rec = {"read": bool(hits) or assembled is not None, "tokens": hits[:4]}
+        if assembled is not None:
+            zone_rec["assembled"] = assembled
+        findings["elements"]["number_zone"] = zone_rec
+        scored.append((15, 1.0 if zone_rec["read"] else 0.0))
     # --- MRZ zone ---
     if mrz_parsed is None:
         # Independent band probe (2026-10-26): the OCR pipeline no
