@@ -177,7 +177,9 @@ def _reading_path(path):
 
 def read_document_text(path, expect_mrz=True):
     """Multi-pass OCR. Returns {"status", "findings", "reason_codes",
-    "text"} with the same contract as the old single-pass check_ocr.
+    "text", "pass_texts"} with the same contract as the old
+    single-pass check_ocr; "text" is the winning pass, "pass_texts"
+    carries every pass's text for union consumers (field extraction).
     `expect_mrz=False` (card-type documents, per the registry) skips
     the dedicated MRZ-band pass entirely — up to three tesseract runs
     that cannot find an MRZ the document type does not carry. When the
@@ -216,7 +218,7 @@ def read_document_text(path, expect_mrz=True):
                 try: os.unlink(vpath)
                 except Exception: pass
     if not passes:
-        return {"status": "error", "findings": {"error": "ocr_passes_failed"}, "reason_codes": ["ocr_error"], "text": ""}
+        return {"status": "error", "findings": {"error": "ocr_passes_failed"}, "reason_codes": ["ocr_error"], "text": "", "pass_texts": []}
     valids = [p for p in passes if p["mrz_valid"]]
     if len(valids) == 1:
         winner, why = valids[0], "only pass with a check-digit-valid MRZ"
@@ -242,9 +244,17 @@ def read_document_text(path, expect_mrz=True):
                           + [{"name": "mrz_band", "confidence": None, "chars": len(band_text),
                               "mrz_valid": bool(band_parsed and band_parsed.get("valid"))}],
                 "chosen": winner["name"], "choice_reason": why, "mrz_band_merged": merged_band}
+    # pass_texts: EVERY pass's text, not only the winner's. Field
+    # extraction searches their union (the winning pass is chosen for
+    # MRZ/confidence, and is not necessarily the pass that read each
+    # printed field). Kept out of `findings` — the texts are bulky and
+    # the findings record is stored per check.
+    pass_texts = [p["text"] for p in passes]
     if len(text) >= 10:
-        return {"status": "pass", "findings": findings, "reason_codes": [], "text": text}
-    return {"status": "unclear", "findings": findings, "reason_codes": ["ocr_low_text"], "text": text}
+        return {"status": "pass", "findings": findings, "reason_codes": [], "text": text,
+                "pass_texts": pass_texts}
+    return {"status": "unclear", "findings": findings, "reason_codes": ["ocr_low_text"], "text": text,
+            "pass_texts": pass_texts}
 
 # ---------------- OCR word boxes (for classification) ----------------
 
