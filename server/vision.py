@@ -158,6 +158,74 @@ def _mrz_band_text(path, exe):
             return last
     return last
 
+def normalize_orientation_bytes(data, expected_aspect_range=None):
+    """Orientation normalization for UPLOADED document images
+    (owner's order 2026-10-26, after his own upload proved the gap):
+    a slip photographed sideways — portrait photo, landscape document
+    — must read exactly as well as one photographed straight. "It can
+    be portrait, it can be landscape, no matter how."
+
+    Tries the image at 0/90/180/270 degrees and keeps the rotation
+    whose read is decisively best: OCR score (mean word confidence x
+    text length on a downscaled pass), with a bonus when framing
+    finds the document quad at an aspect inside the type's expected
+    range. A rotation is applied ONLY when it beats the as-is read by
+    >= 1.5x — an upright image is never gratuitously rotated. Returns
+    (bytes, info); on any doubt the original bytes come back with
+    applied=False. The stored artifact IS the corrected image, so
+    every downstream read (framing, OCR, zones, classification,
+    portrait) consumes the document upright."""
+    info = {"applied": False, "angle": 0, "scores": {}}
+    if Image is None or not data:
+        return data, info
+    exe = shutil.which("tesseract")
+    if not exe:
+        return data, info
+    try:
+        im0 = Image.open(io.BytesIO(data)).convert("RGB")
+    except Exception:
+        return data, info
+    from . import framing as FRAMING
+    best = None  # (score, angle, image)
+    for angle in (0, 90, 180, 270):
+        im = im0 if angle == 0 else im0.rotate(-angle, expand=True)  # PIL rotate is CCW; angle means CW here
+        try:
+            small = im.copy()
+            small.thumbnail((1000, 1000))
+            fd, tmp = tempfile.mkstemp(suffix=".png"); os.close(fd)
+            small.save(tmp, format="PNG")
+            try:
+                text, conf = _tesseract_tsv(exe, tmp)
+            finally:
+                try: os.unlink(tmp)
+                except Exception: pass
+            score = max(0.0, conf) * len(text)
+            if expected_aspect_range and cv2 is not None:
+                try:
+                    import numpy as _np
+                    a = FRAMING.analyse_image(cv2.cvtColor(_np.array(im), cv2.COLOR_RGB2BGR),
+                                              expected_aspect_range)
+                    if a and a.get("quad") is not None and expected_aspect_range[0] <= (a.get("aspect") or 0) <= expected_aspect_range[1]:
+                        score *= 1.25
+                except Exception:
+                    pass
+            info["scores"][str(angle)] = round(score, 1)
+            if best is None or score > best[0]:
+                best = (score, angle, im)
+        except Exception:
+            continue
+    if best is None:
+        return data, info
+    score, angle, im = best
+    base = info["scores"].get("0", 0)
+    if angle == 0 or score < 1.5 * max(base, 1.0) or score < 200:
+        return data, info
+    out = io.BytesIO()
+    im.save(out, format="JPEG", quality=92)
+    info.update({"applied": True, "angle": angle})
+    return out.getvalue(), info
+
+
 def _reading_path(path):
     """The image OCR should READ: the perspective-warped rendition
     when framing finds a document quad in the capture, else the
