@@ -23,6 +23,12 @@ REASON_POINTS = {
     "ip_document_country_mismatch": 25,
     "ip_country_mismatch": 15,
     "velocity_high": 25,
+    # WS7 fraud intelligence (2026-10-27): cross-session signals.
+    "duplicate_document": 35,
+    "duplicate_face_suspected": 35,
+    "coordinated_abuse_suspected": 30,
+    "velocity_ip_high": 20,
+    "velocity_applicant_high": 15,
     "injection_signal_present": 15,
     "image_blurred": 15,
     "document_not_detected": 25,
