@@ -439,14 +439,47 @@ def read_document_text(path, expect_mrz=True):
 
 # ---------------- OCR word boxes (for classification) ----------------
 
-def ocr_words(path):
+_OCR_WORDS_CACHE = {}
+
+def ocr_words(path, force_tiles=False):
+    """Memoised ocr_words: one submit runs the SAME word stream
+    through field extraction AND the authenticity signals (two
+    further calls), and re-reading the tiles each time tripled the
+    OCR cost of a decision (measured: end-to-end submits pushed
+    past their client budget). Same file bytes (path + mtime +
+    size) and the same tile mode yield the same stream — tesseract
+    is deterministic per build — so the result is shared. Bounded
+    like the reading-image cache."""
+    try:
+        _st = os.stat(path)
+        _key = (path, _st.st_mtime_ns, _st.st_size, bool(force_tiles))
+    except Exception:
+        _key = None
+    if _key is not None and _key in _OCR_WORDS_CACHE:
+        return _OCR_WORDS_CACHE[_key]
+    _result = _ocr_words_uncached(path, force_tiles=force_tiles)
+    if _key is not None:
+        if len(_OCR_WORDS_CACHE) >= 4:
+            _OCR_WORDS_CACHE.clear()
+        _OCR_WORDS_CACHE[_key] = _result
+    return _result
+
+
+def _ocr_words_uncached(path, force_tiles=False):
     """Tesseract TSV on the plain pass, as word boxes in NORMALISED
     image coordinates: [{"text", "conf", "box": (x0, y0, x1, y1)}].
     Used by document classification to map where text actually sits.
     Coordinates are in the READING image's space — the warped
     rendition when framing found a quad (see read_document_text) —
     so template zones, which are document-relative, compare against
-    document-relative boxes."""
+    document-relative boxes.
+
+    force_tiles: run the quadrant-tile rescue reads regardless of
+    the word-count gate — the caller (field extraction) asks for
+    this when a first pass over the plain stream failed to find a
+    template's core fields: a page can read RICH in total words
+    (background junk) while its value rows are blind, and no
+    count-based gate can see that shape."""
     exe = shutil.which("tesseract")
     if not exe or Image is None:
         return []
@@ -472,15 +505,20 @@ def ocr_words(path):
                 continue
             words.append({"text": parts[11], "conf": conf,
                           "box": (left / vw, top / vh, (left + width) / vw, (top + height) / vh)})
-        if len(words) < 60:
-            # Tiled fallback (owner's low-resolution upload,
-            # 2026-10-26): at low source resolution the full-page
-            # pass goes nearly blind — 47 words on his real slip,
-            # with neither the field labels nor the values found —
-            # while the SAME image read in overlapping quadrant
-            # tiles yields the labels and values at high confidence
-            # ('NIN:' 96, 'AYANSIPE' 91, 'ZENAS' 78 measured). Small
-            # print needs the pixels per word that tiling gives it.
+        if force_tiles or 25 <= len(words) < 120:
+            # Tiled fallback (owner's low-resolution uploads,
+            # 2026-10-26/27): at low source resolution the full-page
+            # pass goes partly blind — 47 words on his real slip at
+            # the first threshold, and at 73 words it still missed
+            # whole printed rows (the slip's Middle Name row never
+            # appeared) — while the SAME image read in overlapping
+            # quadrant tiles yields the labels and values at high
+            # confidence ('NIN:' 96, 'AYANSIPE' 91, 'ZENAS' 78
+            # measured). Small print needs the pixels per word that
+            # tiling gives it. Floor of 25 words: below that the
+            # page carries no recoverable field structure (a sparse
+            # synthetic card measured 12 words) and the tiles only
+            # burn seconds before the same honest not-found.
             # Tiles are cut from this same 2x prep image, so tile
             # boxes map back into reading-image fractions directly;
             # duplicates in the overlaps are dropped by centre.
@@ -512,54 +550,179 @@ def ocr_words(path):
                         smaller = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]))
                         return inter / smaller if smaller > 0 else 0.0
                     seen = [w for w in words]
-                    for qy in (0.0, 0.44):
-                        for qx in (0.0, 0.44):
-                            tx0, ty0 = int(qx * tw), int(qy * th)
-                            tile = timg[ty0:int((qy + 0.56) * th), tx0:int((qx + 0.56) * tw)]
-                            fd, ttmp = tempfile.mkstemp(suffix=".png"); os.close(fd)
+                    # Rescue views: the four prep quadrants, plus the
+                    # READING IMAGE AT NATIVE SCALE as a fifth view.
+                    # The 2x prep upscale itself blinds some
+                    # renditions (measured on the owner's
+                    # full-resolution upload: the prep stream garbles
+                    # the surname/first-name/number rows and its
+                    # quadrant tiles — still huge, busy regions —
+                    # read almost nothing, while the native-scale
+                    # warp reads those rows cleanly). Fractions are
+                    # scale-invariant, so the native view's boxes
+                    # merge into the same stream.
+                    _jobs = [(timg, qx, qy, 0.56) for qy in (0.0, 0.44) for qx in (0.0, 0.44)]
+                    # The native view is a rescue for streams whose
+                    # number row went blind; a stream that already
+                    # carries a long digit string in the page's body
+                    # (not the bottom-edge helpline strip) does not
+                    # need it, and full-frame reads are the most
+                    # expensive tiles in the set (measured: they
+                    # pushed a submit past its 60s budget).
+                    _native_needed = force_tiles or not any(
+                        len(re.sub(r"\D", "", w["text"])) >= 7
+                        and (w["box"][1] + w["box"][3]) / 2.0 <= 0.92
+                        for w in words)
+                    _rimg = _cv2.imread(path) if _native_needed else None
+                    if _rimg is not None:
+                        _jobs.append((_rimg, 0.0, 0.0, 1.0))
+
+                    def _read_job(_job):
+                        # One rescue view: cut, cap the long side at
+                        # 1400px (tesseract cost grows with pixels;
+                        # box fractions are scale-invariant), read in
+                        # BOTH segmentation modes — psm 3 silently
+                        # classifies busy watermarked regions as
+                        # non-text while psm 6 reads the rows that
+                        # are actually there (the owner's Middle
+                        # Name row exists ONLY in a psm 6 read).
+                        _simg, _qx, _qy, _span = _job
+                        _sh, _sw = _simg.shape[:2]
+                        _tx0, _ty0 = int(_qx * _sw), int(_qy * _sh)
+                        _tile = _simg[_ty0:int((_qy + _span) * _sh), _tx0:int((_qx + _span) * _sw)]
+                        _sf = 1.0
+                        _long = max(_tile.shape[:2])
+                        if _long > 1400:
+                            _sf = _long / 1400.0
+                            _tile = _cv2.resize(_tile, (int(_tile.shape[1] / _sf), int(_tile.shape[0] / _sf)),
+                                                interpolation=_cv2.INTER_AREA)
+                        _fd, _ttmp = tempfile.mkstemp(suffix=".png"); os.close(_fd)
+                        try:
+                            _cv2.imwrite(_ttmp, _tile)
+                            _touts = []
+                            for _psm in ("3", "6"):
+                                _tout = subprocess.run([exe, _ttmp, "stdout", "--psm", _psm, "tsv"],
+                                                       capture_output=True, text=True, timeout=60)
+                                _touts.append(_tout.stdout or "")
+                        finally:
+                            try: os.unlink(_ttmp)
+                            except Exception: pass
+                        return (_tx0, _ty0, _sw, _sh, _sf, _touts)
+
+                    # The views are independent reads: run two at a
+                    # time (this host has 2 cores) and consume the
+                    # results IN JOB ORDER, so the merge arithmetic
+                    # is identical to the sequential version — only
+                    # the wall time changes.
+                    import concurrent.futures as _cf
+                    with _cf.ThreadPoolExecutor(max_workers=2) as _pool:
+                        _job_results = list(_pool.map(_read_job, _jobs))
+                    for tx0, ty0, sw, sh, _sf, touts in _job_results:
+                        # Each tile is read in BOTH segmentation
+                        # modes: psm 3 (automatic) silently
+                        # classifies busy watermarked regions as
+                        # non-text and returns almost nothing for
+                        # them, while psm 6 (uniform block) reads
+                        # the rows that are actually there —
+                        # measured on the owner's slip, whose
+                        # Middle Name row exists ONLY in the
+                        # psm 6 tile read. Both modes' tokens go
+                        # through the same overlap merge below.
+                        for _tout in touts:
+                         for row in _tout.splitlines()[1:]:
+                            parts = row.split("\t")
+                            if len(parts) != 12 or parts[0] != "5" or not parts[11].strip():
+                                continue
                             try:
-                                _cv2.imwrite(ttmp, tile)
-                                tout = subprocess.run([exe, ttmp, "stdout", "--psm", "3", "tsv"],
-                                                      capture_output=True, text=True, timeout=60)
-                            finally:
-                                try: os.unlink(ttmp)
-                                except Exception: pass
-                            tth, ttw = tile.shape[:2]
-                            for row in (tout.stdout or "").splitlines()[1:]:
-                                parts = row.split("\t")
-                                if len(parts) != 12 or parts[0] != "5" or not parts[11].strip():
-                                    continue
-                                try:
-                                    left, top, width, height = (float(parts[6]), float(parts[7]), float(parts[8]), float(parts[9]))
-                                    conf = float(parts[10])
-                                except Exception:
-                                    continue
-                                gx = (tx0 + left) / tw; gy = (ty0 + top) / th
-                                gx1 = (tx0 + left + width) / tw; gy1 = (ty0 + top + height) / th
-                                nbox = (gx, gy, gx1, gy1)
-                                clash = None
-                                for s in seen:
-                                    if _iou(nbox, s["box"]) > 0.6:
-                                        clash = s
-                                        break
-                                if clash is not None:
-                                    if conf > clash["conf"]:
-                                        clash["text"] = parts[11]
+                                left, top, width, height = (float(parts[6]), float(parts[7]), float(parts[8]), float(parts[9]))
+                                conf = float(parts[10])
+                            except Exception:
+                                continue
+                            gx = (tx0 + left * _sf) / sw; gy = (ty0 + top * _sf) / sh
+                            gx1 = (tx0 + (left + width) * _sf) / sw; gy1 = (ty0 + (top + height) * _sf) / sh
+                            nbox = (gx, gy, gx1, gy1)
+                            clash = None
+                            for s in seen:
+                                if _iou(nbox, s["box"]) > 0.6:
+                                    clash = s
+                                    break
+                            if clash is not None:
+                                new_t, old_t = parts[11], clash["text"]
+                                if new_t != old_t and (new_t in old_t or old_t in new_t):
+                                    # Same ink, two readings, one
+                                    # truncated (a tile edge cut
+                                    # the word; the fragment can
+                                    # still win on confidence —
+                                    # measured: the synthetic
+                                    # slip's SAMPLETON replaced by
+                                    # a 93-conf 'SAMPL'). The
+                                    # complete token stands; only
+                                    # a LONGER containing read may
+                                    # replace it.
+                                    if len(new_t) > len(old_t):
+                                        clash["text"] = new_t
                                         clash["conf"] = conf
                                         clash["box"] = nbox
-                                    continue
-                                nw = {"text": parts[11], "conf": conf, "box": nbox}
-                                seen.append(nw)
-                                words.append(nw)
+                                elif conf > clash["conf"]:
+                                    clash["text"] = new_t
+                                    clash["conf"] = conf
+                                    clash["box"] = nbox
+                                continue
+                            nw = {"text": parts[11], "conf": conf, "box": nbox}
+                            seen.append(nw)
+                            words.append(nw)
             except Exception:
                 pass
-        return words
+        return _drop_fragment_words(words)
     except Exception:
         return []
     finally:
         if vpath != path:
             try: os.unlink(vpath)
             except Exception: pass
+
+def _drop_fragment_words(words):
+    """Drop double-read fragments: a token whose box sits (nearly)
+    entirely inside another token's box AND whose text is a strict
+    substring of that token's text is the same ink read twice — once
+    whole, once as a fragment (owner's real NIN slip, 2026-10-27: the
+    full-page pass emitted both 'AYANSIPE' and a small 'AY' inside
+    its box, and the field harvester stitched them into
+    'AY AYANSIPE'). A fragment is never a separate printed word:
+    printed words do not nest inside one another's boxes. Equal-text
+    duplicates on the same ink keep the higher-confidence box."""
+    def _norm(t):
+        return re.sub(r"[^A-Za-z0-9]", "", str(t or "")).upper()
+    def _overlap_coeff(a, b):
+        ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+        iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+        inter = ix * iy
+        if inter <= 0:
+            return 0.0
+        smaller = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]))
+        return inter / smaller if smaller > 0 else 0.0
+    drop = set()
+    for i, a in enumerate(words):
+        na = _norm(a.get("text"))
+        if not na:
+            continue
+        for j, b in enumerate(words):
+            if i == j:
+                continue
+            nb = _norm(b.get("text"))
+            if not nb:
+                continue
+            if _overlap_coeff(a["box"], b["box"]) < 0.8:
+                continue
+            if na == nb:
+                # same text on the same ink: keep the surer read
+                if (b.get("conf") or 0) > (a.get("conf") or 0):
+                    drop.add(i)
+                break
+            if na in nb and len(na) < len(nb):
+                drop.add(i)
+                break
+    return [w for k, w in enumerate(words) if k not in drop]
 
 # ---------------- 2. MRZ <-> VIZ cross-validation ----------------
 
