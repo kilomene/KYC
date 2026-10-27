@@ -172,3 +172,54 @@ fixes, proven on his actual uploaded photo before shipping:
   on composed scenes at all four rotations, silent on faceless
   images, and on the owner's real sideways photo it independently
   returns the same 270° the score path chose.
+
+**Intelligent-read fix rounds (2026-10-27, owner's orders: "very
+highly intelligent OCR"; zoom + four-corner capture; "highly
+advanced, full intelligence, full capabilities"):**
+
+- **Round 1 — faithful reads of the owner's real slip.** Fragment
+  suppression in the word stream (a double-read fragment inside a
+  whole token is dropped); tiles engage up to 120 words, read in
+  BOTH psm 3 and psm 6, with a truncation guard (a tile-edge
+  fragment never overwrites a complete token); number candidates
+  are punctuation-tolerant and a 12-digit faithful read of an
+  11-digit number reaches zone recovery; zone recovery re-reads
+  the number across colour channels × binarisation × scale × psm
+  and adopts only on decisive votes or cross-family containment;
+  an over-length unrecoverable read is discarded as not-read
+  instead of manufactured into a format failure; name harvests are
+  corroborated token-by-token (tight-crop re-reads; an empty
+  re-read never vetoes) plus row-geometry checks; given names join
+  FIRST NAME + MIDDLE NAME label values and label-less sibling
+  rows; labels match fused and one-letter-misread forms. Proven
+  on the owner's stored uploads: surname, both given names and
+  the number extract EXACTLY (sessions 9 and 11 artifacts).
+- **Round 2 — blind rows at full resolution.** A page can read
+  rich in total words while its value rows are garbled (the 2x
+  prep upscale itself blinds some renditions): the tile rescue
+  gains the reading image AT NATIVE SCALE as a fifth view; field
+  extraction retries once with forced tiles when a first pass
+  leaves any of the identity triad unfound (skipped for
+  near-empty pages); zone recovery anchors strictly inside the
+  zone and falls back to a probed band sweep when its landmark
+  crop yields no votes, with an exact-vote decision stage before
+  containment. Corroboration thresholds were NOT weakened: on a
+  heavily messaging-compressed copy of the slip the number still
+  honestly reads as not-read (the stamp arc corrupts the final
+  glyph in most renditions) — the flow's guidance to use the
+  ORIGINAL photo is the designed behaviour there.
+- **Decision-path performance.** The word stream is memoised per
+  file (extraction, classification and the authenticity signals
+  share one read — a submit previously paid the tile cost three
+  times); tile jobs run two-at-a-time in job order with a 1400px
+  cap; the recovery matrix is parallelised the same way. Full
+  affected suite green except the one pre-existing environmental
+  German-labels fixture failure on this host.
+- **Specimen dossier** (research/specimens/, official sources
+  only): Texas DL and Texas ID share the 8-digit number — the
+  classifier must separate them by title/fields, never the
+  number; the INEC voter's card has NO expiry (never require
+  one); the current NIMC multipurpose card does not print the
+  NIN — it lives in the NQR code, so that type's read strategy
+  is QR → MRZ → document number. Per-type calibration against
+  the owner's real samples follows when he sends them.
