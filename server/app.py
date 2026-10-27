@@ -1284,18 +1284,48 @@ def make_handler(db: DB, data_dir: str):
                         return self._err(422, "the NIN must be 11 digits")
                 did = new_id()
                 rel_dir = os.path.join("files", tid, s["id"]); os.makedirs(os.path.join(data_dir, rel_dir), exist_ok=True)
+                meta_in = parse_capture_meta(field_text(parts, "capture_meta"))
+                method_front = (meta_in.get("front") or {}).get("method") or meta_in.get("method") or "not_declared"
+                method_back = (meta_in.get("back") or {}).get("method") or meta_in.get("method") or "not_declared"
+                # Orientation normalization for UPLOADED images
+                # (owner's order 2026-10-26): a document photographed
+                # sideways — portrait photo, landscape slip — is
+                # stored UPRIGHT, so every later read sees the
+                # document the way it is printed. Live scanner
+                # captures are upright by construction (the detector
+                # requires it) and are never touched.
+                entry0 = DOCREG.get_document(country, kind) or {}
+                rng = FRAMING.expected_range_from_entry(entry0)
+                orient_front = orient_back = None
+                if method_front == "file_upload":
+                    new_data, orient_front = VISION.normalize_orientation_bytes(front["data"], rng)
+                    if orient_front.get("applied"):
+                        front = {**front, "data": new_data, "content_type": "image/jpeg",
+                                 "filename": (front["filename"] or "front") + ".jpg"}
+                if back and back["data"] and method_back == "file_upload":
+                    new_data, orient_back = VISION.normalize_orientation_bytes(back["data"], rng)
+                    if orient_back.get("applied"):
+                        back = {**back, "data": new_data, "content_type": "image/jpeg",
+                                "filename": (back["filename"] or "back") + ".jpg"}
                 def save(part, tag):
                     ext = ".jpg" if "jpeg" in (part["content_type"] or "") or (part["filename"] or "").lower().endswith((".jpg", ".jpeg")) else ".png"
                     rel = os.path.join(rel_dir, f"{did}_{tag}{ext}")
                     return STORAGE.write_file(data_dir, rel, part["data"])
                 front_rel = save(front, "front")
                 back_rel = save(back, "back") if back and back["data"] else None
-                meta_in = parse_capture_meta(field_text(parts, "capture_meta"))
-                capture_meta = {"front": {"method": (meta_in.get("front") or {}).get("method") or meta_in.get("method") or "not_declared", "side": "front"}}
+                capture_meta = {"front": {"method": method_front, "side": "front"}}
+                if orient_front:
+                    capture_meta["front"]["orientation"] = {"applied": orient_front["applied"], "angle": orient_front["angle"]}
+                if orient_back:
+                    capture_meta.setdefault("back", {"method": method_back, "side": "back"})
+                    capture_meta["back"]["orientation"] = {"applied": orient_back["applied"], "angle": orient_back["angle"]}
                 if claimed_digits:
                     capture_meta["claimed_number"] = claimed_digits
                 if back_rel:
-                    capture_meta["back"] = {"method": (meta_in.get("back") or {}).get("method") or meta_in.get("method") or "not_declared", "side": "back"}
+                    back_meta = {"method": method_back, "side": "back"}
+                    if orient_back:
+                        back_meta["orientation"] = {"applied": orient_back["applied"], "angle": orient_back["angle"]}
+                    capture_meta["back"] = back_meta
                 entry = DOCREG.get_document(country, kind) or {}
                 db.execute("INSERT INTO documents(id,tenant_id,env,session_id,kind,issuing_country,storage_path,back_storage_path,doc_first_name,doc_last_name,doc_dob,doc_number,doc_expiry,capture_meta,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                            (did, tid, env, s["id"], kind, country, front_rel, back_rel,
