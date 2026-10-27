@@ -8,6 +8,7 @@ Auth model:
     token configured it is disabled entirely (WS0 audit fix, 2026-10-26).
 """
 import hashlib, json, os, re, secrets
+import threading, traceback
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
@@ -17,7 +18,7 @@ from .db import DB, new_id, now_iso, row_to_dict
 from . import checks as C
 from . import framing as FRAMING
 from . import docregistry as DOCREG
-from .engine import decide, required_for, verification_layers, biometric_evidence, document_evidence
+from .engine import decide, required_for, verification_layers, biometric_evidence, document_evidence, face_match_applicable
 from . import webhooks as WH
 from . import face as FACE
 from . import liveness as LV
@@ -142,6 +143,50 @@ def mask_ip(ip):
         return f"{parts[0]}.{parts[1]}.x.x"
     s = str(ip)
     return s[:6] + "…" if len(s) > 6 else s
+
+def _json_default(o):
+    """json.dumps fallback for numpy-typed values in check findings.
+
+    The face track's findings carry numpy scalars (float32 cosine
+    scores, int64 counts): plain json.dumps raises TypeError on them,
+    which killed the decision pipeline mid-pass in production
+    (2026-10-26 16:57 PDT — record("face_track", ...) crashed and the
+    session was orphaned in 'processing'). Duck-typed on purpose —
+    numbers ABCs cover numpy's registered scalar types, .item()
+    covers the rest (incl. np.bool_), .tolist() covers arrays — so
+    app.py needs no numpy import.
+    """
+    import numbers
+    if isinstance(o, bool):
+        return bool(o)
+    if isinstance(o, numbers.Integral):
+        return int(o)
+    if isinstance(o, numbers.Real):
+        return float(o)
+    item = getattr(o, "item", None)
+    if callable(item):
+        try:
+            return item()
+        except Exception:
+            pass
+    tolist = getattr(o, "tolist", None)
+    if callable(tolist):
+        try:
+            return tolist()
+        except Exception:
+            pass
+    raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")
+
+class _SubmitRejected(Exception):
+    """A pre-decision rejection raised inside the decision pipeline
+    (HTTP status + message). The submit wrapper pre-checks these
+    synchronously, so inside the background worker this is only a
+    safety net; the worker treats it like any pipeline failure and
+    reverts the session's claim to a retryable state."""
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
+        self.message = message
 
 class Ctx:
     def __init__(self, db): self.db = db
@@ -1102,10 +1147,12 @@ def make_handler(db: DB, data_dir: str):
             they stay at submit, where they are recorded as checks."""
             front_path = self._fs(doc["storage_path"]) if doc["storage_path"] else None
             entry = DOCREG.get_document(doc["issuing_country"], doc["kind"]) or {}
-            framing_front = FRAMING.check_document_framing(path=front_path)
+            framing_front = FRAMING.check_document_framing(
+                path=front_path, expected_aspect_range=FRAMING.expected_range_from_entry(entry))
             framing_back = None
             if doc["back_storage_path"]:
-                framing_back = FRAMING.check_document_framing(path=self._fs(doc["back_storage_path"]))
+                framing_back = FRAMING.check_document_framing(
+                    path=self._fs(doc["back_storage_path"]), expected_aspect_range=FRAMING.expected_range_from_entry(entry))
             framing = FRAMING.combine_framing(framing_front, framing_back)
             uploaded = {"doc_first_name": doc["doc_first_name"], "doc_last_name": doc["doc_last_name"],
                         "doc_dob": doc["doc_dob"], "doc_number": doc["doc_number"],
@@ -1122,7 +1169,8 @@ def make_handler(db: DB, data_dir: str):
             mrz_check = C.check_mrz(ocr_text)
             parsed = mrz_check.get("parsed")
             extraction = FIELDTEMPLATES.extract_fields(front_path, doc["issuing_country"], doc["kind"],
-                                                       ocr_text=ocr_text)
+                                                       ocr_text=ocr_text,
+                                                       ocr_texts=ocr.get("pass_texts"))
             fields = (extraction.get("findings") or {}).get("fields") or {}
             ident = IDENTITY.derive_document_identity(fields, parsed, uploaded, ocr_text=ocr_text)
             merged = {"doc_first_name": ident["first_name"] or doc["doc_first_name"],
@@ -1356,10 +1404,125 @@ def make_handler(db: DB, data_dir: str):
                 return self._submit(s, self._client_geo())
             return self._err(404, "not found")
 
+        def _decided_view(self, sid):
+            """The submit response for a session that already has a
+            decision — the same shape the old synchronous submit
+            returned (session view, credential attached when issued)."""
+            if not db.one("SELECT id FROM decisions WHERE session_id=? LIMIT 1", (sid,)):
+                return None
+            row = db.one("SELECT * FROM sessions WHERE id=?", (sid,))
+            view = self._session_view(row)
+            if row["status"] == "approved":
+                cred = db.one("SELECT claims, signature FROM credentials WHERE session_id=? AND status='active' ORDER BY issued_at DESC LIMIT 1", (sid,))
+                if cred: view["credential"] = {"claims": json.loads(cred["claims"]), "signature": cred["signature"]}
+            case = db.one("SELECT id FROM cases WHERE session_id=? ORDER BY created_at DESC LIMIT 1", (sid,))
+            if case: view["case_id"] = case["id"]
+            return view
+
         def _submit(self, s, req_info=None):
+            """POST /v1/flow/submit — asynchronous and idempotent.
+
+            The decision pipeline takes 60-120s on a real session while
+            the tunnel caps a single request at ~30s, so the old
+            synchronous submit died as HTTP 502 while the pipeline kept
+            running behind it — and a re-tap started a SECOND pass over
+            the same session. Now:
+              * a session that already has a decision gets it back at
+                once (200, the old response shape);
+              * otherwise the session is claimed with ONE atomic
+                UPDATE: a submit that finds a fresh claim already
+                running gets 202 {"status":"processing"} and starts
+                nothing; a claim older than 10 minutes is stale (its
+                worker died) and may be reclaimed;
+              * the pipeline runs on ONE background thread
+                (_submit_worker). This call waits a bounded grace
+                (KYC_SUBMIT_GRACE_SEC, default 180s — above the
+                pipeline's 60-120s envelope) for it: sessions that
+                decide within the grace answer 200 with the decision
+                exactly as before. Through the tunnel the request is
+                cut at ~30-60s regardless of the grace: the client's
+                retry then finds the fresh claim, gets the 202 at
+                once, and the flow polls GET /v1/flow/session until
+                the worker lands the decision.
+            """
+            sid = s["id"]
+            view = self._decided_view(sid)
+            if view: return self._send(200, view)
+            # The old in-line submit's synchronous rejections, unchanged.
+            if not s["consent_at"]: return self._err(422, "consent required")
+            doc = db.one("SELECT id FROM documents WHERE session_id=? AND kind!='proof_of_address' LIMIT 1", (sid,))
+            if not doc and not s["credential_id"]: return self._err(422, "document required before submit")
+            now = now_iso()
+            stale = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+            cur = db.execute(
+                "UPDATE sessions SET status='processing', processing_started_at=?, submitted_at=?, updated_at=? "
+                "WHERE id=? AND (status='in_progress' OR (status='processing' AND (processing_started_at IS NULL OR processing_started_at<?)))",
+                (now, now, now, sid, stale))
+            if cur.rowcount != 1:
+                # Lost the claim race: a fresh pass is already running
+                # (or the session was decided a moment ago — re-check).
+                view = self._decided_view(sid)
+                if view: return self._send(200, view)
+                return self._send(202, {"status": "processing", "session_id": sid})
+            claimed = db.one("SELECT * FROM sessions WHERE id=?", (sid,))
+            done = threading.Event()
+            out = {}
+            t = threading.Thread(target=self._submit_worker, args=(claimed, req_info, done, out),
+                                 daemon=True, name="submit-" + sid[:8])
+            t.start()
+            try:
+                grace = float(os.environ.get("KYC_SUBMIT_GRACE_SEC") or 180)
+            except ValueError:
+                grace = 180.0
+            if done.wait(grace):
+                # The pipeline's OWN return value is the response —
+                # byte-for-byte the shape the synchronous submit
+                # produced, case_id and credential included.
+                if "view" in out: return self._send(200, out["view"])
+                view = self._decided_view(sid)
+                if view: return self._send(200, view)
+                # The worker finished without a decision: it failed and
+                # reverted the claim — say so, and the submit is safe
+                # to retry (the session is back to 'in_progress').
+                return self._err(500, "the decision pipeline failed — please submit again")
+            return self._send(202, {"status": "processing", "session_id": sid})
+
+        def _submit_worker(self, s, req_info, done, out):
+            """The ONE background decision pass for a claimed session.
+
+            Runs the pipeline on its OWN DB connection (a fresh DB for
+            the data dir; DB connections are lock-guarded, and every
+            direct statement of the pipeline goes through this one —
+            the handler helpers it calls, e.g. document reading and
+            credential issuance, use the server's shared lock-guarded
+            DB as elsewhere in this codebase). The pipeline itself
+            marks the session terminal on success. On ANY exception
+            the claim is reverted to a retryable state and the failure
+            is logged and audited, so a later submit can run again.
+            """
+            sid = s["id"]
+            wdb = None
+            try:
+                wdb = DB(data_dir)
+                srow = wdb.one("SELECT * FROM sessions WHERE id=?", (sid,)) or s
+                out["view"] = self._run_decision_pipeline(srow, wdb, req_info)
+            except Exception:
+                traceback.print_exc()
+                try:
+                    rdb = wdb if wdb is not None else db
+                    rdb.execute("UPDATE sessions SET status='in_progress', processing_started_at=NULL, updated_at=? WHERE id=? AND status='processing'",
+                                (now_iso(), sid))
+                    rdb.audit("system", None, s["tenant_id"], "decision.failed", "session", sid,
+                              metadata={"error": "pipeline exception; claim reverted for retry"})
+                except Exception:
+                    traceback.print_exc()
+            finally:
+                done.set()
+
+        def _run_decision_pipeline(self, s, db, req_info=None):
             tid, env = s["tenant_id"], s["env"]
             req_info = req_info or {}
-            if not s["consent_at"]: return self._err(422, "consent required")
+            if not s["consent_at"]: raise _SubmitRejected(422, "consent required")
             cfg, cfg_version = FC.get_config(db, tid, env, s["level"])
             required = cfg["required_checks"]
             app = db.one("SELECT * FROM applicants WHERE id=?", (s["applicant_id"],))
@@ -1381,13 +1544,15 @@ def make_handler(db: DB, data_dir: str):
                                (client_ip, ip_country, now_iso(), s["id"]))
             doc = db.one("SELECT * FROM documents WHERE session_id=? AND kind!='proof_of_address' ORDER BY created_at DESC LIMIT 1", (s["id"],))
             is_credential_session = bool(s["credential_id"])
-            if not doc and not is_credential_session: return self._err(422, "document required before submit")
-            db.execute("UPDATE sessions SET status='processing', submitted_at=?, updated_at=? WHERE id=?", (now_iso(), now_iso(), s["id"]))
+            if not doc and not is_credential_session: raise _SubmitRejected(422, "document required before submit")
+            # No claim UPDATE here: _submit already claimed the session
+            # atomically (status='processing' + processing_started_at)
+            # before this pass was started on the worker thread.
             results = {}
             def record(ctype, res, provider="local"):
                 results[ctype] = {"status": res["status"], "reason_codes": res.get("reason_codes", [])}
                 db.execute("INSERT INTO checks(id,session_id,tenant_id,env,type,provider,status,findings,reason_codes,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                           (new_id(), s["id"], tid, env, ctype, provider, res["status"], json.dumps(res.get("findings", {})), json.dumps(res.get("reason_codes", [])), now_iso()))
+                           (new_id(), s["id"], tid, env, ctype, provider, res["status"], json.dumps(res.get("findings", {}), default=_json_default), json.dumps(res.get("reason_codes", []), default=_json_default), now_iso()))
             # Checks already recorded for this session (credential inheritance).
             inherited = {}
             for row in db.all("SELECT type,status,reason_codes FROM checks WHERE session_id=? AND provider='verified_credential'", (s["id"],)):
@@ -1558,23 +1723,44 @@ def make_handler(db: DB, data_dir: str):
                                 pass_threshold=cfg["face_pass_threshold"], margin=cfg["face_margin"])
                             record("face_track", track, provider="yunet-sface-track")
                             agg = track.get("aggregate_embedding")
-                            if agg:
-                                doc_feat, doc_face, ferr = FACE.extract_face_feature(front_path)
+                            if not face_match_applicable(doc["issuing_country"], doc["kind"]):
+                                # The document type carries no portrait
+                                # (single source of truth: the full
+                                # classification template) — face match is
+                                # not applicable; identity rests on the
+                                # document, liveness and track continuity.
+                                record("face_match", {"status": "not_applicable",
+                                                      "findings": {"applicability": "document type carries no portrait",
+                                                                   "template_source": "server/templates.py"},
+                                                      "reason_codes": []}, provider="yunet-sface")
+                            elif agg:
+                                # Portrait comes from the WARPED rendition
+                                # (the geometrically true document), never
+                                # the raw frame.
+                                portrait_path = FRAMING.warped_rendition(front_path) or front_path
+                                portrait_source = "warped" if portrait_path != front_path else "raw"
+                                doc_feat, doc_face, ferr = FACE.extract_face_feature(portrait_path)
                                 if ferr:
                                     record("face_match", ferr, provider="yunet-sface")
                                 elif doc_face is None:
-                                    record("face_match", {"status": "unclear", "findings": {"face_in_document": False}, "reason_codes": ["no_face_in_document"]}, provider="yunet-sface")
+                                    record("face_match", {"status": "unclear",
+                                                          "findings": {"face_in_document": False, "portrait_source": portrait_source,
+                                                                       "rescan": "document"},
+                                                          "reason_codes": ["document_portrait_not_detected_rescan"]}, provider="yunet-sface")
                                 else:
                                     sim = FACE.cosine_similarity(doc_feat, agg)
                                     mstatus, mreasons = FACE.similarity_decision(sim, cfg["face_pass_threshold"], cfg["face_margin"])
                                     record("face_match", {"status": mstatus,
                                                           "findings": {"similarity": round(float(sim), 4), "method": "document_vs_track_median_embedding",
+                                                                       "portrait_source": portrait_source,
                                                                        "track_frames": track["findings"].get("frames_with_face")},
                                                           "reason_codes": mreasons}, provider="yunet-sface")
                             else:
                                 # No track could be built (e.g. no video):
-                                # fall back to the still-vs-still comparison.
-                                record("face_match", FACE.check_face_match(front_path, selfie_path,
+                                # fall back to the still-vs-still comparison,
+                                # still against the warped portrait source.
+                                portrait_path = FRAMING.warped_rendition(front_path) or front_path
+                                record("face_match", FACE.check_face_match(portrait_path, selfie_path,
                                                                            pass_threshold=cfg["face_pass_threshold"], margin=cfg["face_margin"]),
                                        provider="yunet-sface")
             # Liveness (Phase 2): active challenge video. Never inherited
@@ -1751,8 +1937,8 @@ def make_handler(db: DB, data_dir: str):
                     reasons = sorted(set(reasons) | {"biometric_evidence_incomplete"})
             did = new_id()
             db.execute("INSERT INTO decisions(id,session_id,tenant_id,env,outcome,decided_by,reason_codes,rules_version,risk_score,risk_band,risk_contributions,config_version,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                       (did, s["id"], tid, env, outcome, "engine", json.dumps(reasons), RULES_VERSION,
-                        risk["score"], risk["band"], json.dumps(risk["contributions"]), f"v{cfg_version}", now_iso()))
+                       (did, s["id"], tid, env, outcome, "engine", json.dumps(reasons, default=_json_default), RULES_VERSION,
+                        risk["score"], risk["band"], json.dumps(risk["contributions"], default=_json_default), f"v{cfg_version}", now_iso()))
             db.execute("UPDATE sessions SET status=?, decision_id=?, updated_at=? WHERE id=?", (outcome, did, now_iso(), s["id"]))
             db.audit("system", None, tid, "decision.engine", "session", s["id"],
                      metadata={"outcome": outcome, "reasons": reasons, "risk_score": risk["score"], "risk_band": risk["band"], "config_version": cfg_version})
@@ -1798,7 +1984,7 @@ def make_handler(db: DB, data_dir: str):
                 db.audit("system", None, tid, "case.open", "case", cid, metadata={"origin_outcome": outcome})
                 WH.fire(db, tid, env, "case.opened", {"case_id": cid, "session_id": s["id"], "reason_codes": reasons})
                 view["case_id"] = cid
-            return self._send(200, view)
+            return view
     return H
 
 def serve(port=8765, data_dir="data"):
