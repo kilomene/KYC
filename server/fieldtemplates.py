@@ -146,8 +146,45 @@ _LABEL_OVERRIDES = {
     ("NG", "nin_slip"): {"number": ["NATIONAL IDENTIFICATION NUMBER", "NIN"],
                          "surname": ["SURNAME", "LAST NAME"],
                          "given_names": ["FIRST NAME", "MIDDLE NAME", "GIVEN NAMES"]},
-    ("NG", "nin_card"): {"number": ["NIN", "NUMBER"]},
+    ("NG", "nin_card"): {"number": ["NIN", "NUMBER"],
+                         "surname": ["SURNAME", "NOM"],
+                         "given_names": ["GIVEN NAMES", "PRENOMS", "PRÉNOMS"],
+                         "dob": ["DATE OF BIRTH", "DATE DE NAISSANCE", "DOB"]},
     ("NG", "national_id"): {"number": ["NIN", "NUMBER"]},
+    # INEC voter's card (calibration 2026-10-27, owner's genuine
+    # sample): the identity number is the VIN; the PU code beside
+    # the portrait is a polling-unit code, not an identity number.
+    ("NG", "voter_card"): {"number": ["VIN", "VOTER IDENTIFICATION NUMBER"],
+                           "surname": ["SURNAME"],
+                           "given_names": ["FIRST NAME", "GIVEN NAMES"],
+                           "dob": ["DATE OF BIRTH", "DOB"]},
+    # FRSC driver's licence, 2011 scheme (calibration 2026-10-27):
+    # the front's own abbreviations are the anchors — L/NO for the
+    # number, D of B / ISS / EXP for the dates.
+    ("NG", "drivers_licence"): {"number": ["L/NO", "LICENCE NO", "LICENSE NO"],
+                                "surname": ["SURNAME", "NAME"],
+                                "given_names": ["FIRST NAME", "OTHER NAMES", "GIVEN NAMES"],
+                                "dob": ["D OF B", "DOB", "DATE OF BIRTH"],
+                                "expiry": ["EXP", "EXPIRY"]},
+    # California DL (2018 + 2025 generations): AAMVA-style short
+    # labels LN / FN / DL / DOB / EXP printed beside the values.
+    ("US", "drivers_license"): {"number": ["DL", "DLN", "4D"],
+                                "surname": ["LN", "SURNAME"],
+                                "given_names": ["FN", "GIVEN NAMES", "FIRST NAME"],
+                                "dob": ["DOB", "DATE OF BIRTH"],
+                                "expiry": ["EXP", "EXPIRES"]},
+    # New York non-driver ID: sparse printed labels; the number
+    # sits under the ID banner, DOB/Expires anchor the dates.
+    ("US", "state_id"): {"number": ["ID", "ID NUMBER"],
+                         "dob": ["DOB", "DATE OF BIRTH"],
+                         "expiry": ["EXPIRES", "EXPIRY", "EXP"]},
+    # Canada passport data page is bilingual throughout; the
+    # French halves of the labels are first-class anchors.
+    ("CA", "passport"): {"number": ["PASSPORT NO", "PASSPORT", "PASSEPORT"],
+                         "surname": ["SURNAME", "NOM"],
+                         "given_names": ["GIVEN NAMES", "PRENOMS", "PRÉNOMS"],
+                         "dob": ["DATE OF BIRTH", "DATE DE NAISSANCE"],
+                         "expiry": ["DATE OF EXPIRY", "DATE D'EXPIRATION", "EXPIRY"]},
     ("SG", "nric"): {"number": ["NRIC NUMBER", "NRIC NO", "IC NUMBER", "NUMBER"]},
     ("AE", "emirates_id"): {"number": ["ID NUMBER", "IDENTITY NUMBER", "NUMBER"]},
     ("PH", "philid"): {"number": ["PCN", "CARD NUMBER", "NUMBER"]},
@@ -179,14 +216,53 @@ _ZONES = {
     "book": {"surname": (0.35, 0.10, 0.99, 0.32), "given_names": (0.35, 0.26, 0.99, 0.46),
              "dob": (0.35, 0.44, 0.80, 0.64), "expiry": (0.35, 0.60, 0.85, 0.80),
              "number": (0.35, 0.04, 0.99, 0.24)},
+    # INEC voter's card (measured on the owner's genuine sample,
+    # 2026-10-27): coat of arms + title band on top, PU CODE beside
+    # the portrait at the right, the data block down the LEFT two
+    # thirds — name line (SURNAME, FIRST MIDDLE) upper-middle, DOB
+    # with GENDER beside it, OCCUPATION, ADDRESS, and the VIN line
+    # across the lower-middle. Portrait occupies the right third.
+    "inecpvc": {"surname": (0.03, 0.27, 0.67, 0.44), "given_names": (0.03, 0.35, 0.67, 0.52),
+                "dob": (0.03, 0.40, 0.50, 0.58), "expiry": (0.0, 0.0, 0.0, 0.0),
+                "number": (0.03, 0.50, 0.70, 0.74)},
+    # FRSC licence, 2011 scheme (owner's genuine sample): header
+    # band, L/NO band under it, portrait LEFT (sample is ground
+    # truth for its vintage), data block to the right of the
+    # portrait, dates mid-block, address lower.
+    "frsc": {"surname": (0.32, 0.28, 0.99, 0.44), "given_names": (0.32, 0.36, 0.99, 0.54),
+             "dob": (0.32, 0.48, 0.68, 0.66), "expiry": (0.58, 0.48, 0.99, 0.68),
+             "number": (0.28, 0.12, 0.99, 0.28)},
+    # NIMC digital NIN slip — the plastic print of the NIN record
+    # (owner's genuine sample): header band, portrait left, name /
+    # DOB / sex block centre, QR top-right, and the 11-digit NIN
+    # printed LARGE across the bottom strip. NOT the paper slip's
+    # table and NOT the GMPC chip card (that card's identity rides
+    # its MRZ, which the identity layer merges before zones).
+    "nin_digital": {"surname": (0.24, 0.36, 0.72, 0.52), "given_names": (0.24, 0.47, 0.72, 0.64),
+                    "dob": (0.24, 0.58, 0.62, 0.78), "expiry": (0.0, 0.0, 0.0, 0.0),
+                    "number": (0.15, 0.76, 0.99, 0.99)},
+    # New York non-driver ID (owner's genuine sample, landscape
+    # 21+ card): greyscale portrait top-LEFT, ID number band under
+    # the title, surname/given stacked centre-right of the portrait
+    # row, address under the names, DOB + Expires bold at the
+    # bottom-left of the data block.
+    "nyid": {"surname": (0.28, 0.26, 0.82, 0.42), "given_names": (0.28, 0.36, 0.82, 0.54),
+             "dob": (0.26, 0.60, 0.62, 0.80), "expiry": (0.52, 0.60, 0.88, 0.82),
+             "number": (0.28, 0.06, 0.82, 0.24)},
 }
 _LAYOUT_CLASS = {"nin_slip": "slip", "green_id_book": "book"}
+# Per-(country, kind) layout classes where one kind name spans
+# countries with genuinely different card geometry.
+_LAYOUT_CLASS_CC = {("NG", "voter_card"): "inecpvc",
+                    ("NG", "drivers_licence"): "frsc",
+                    ("NG", "nin_card"): "nin_digital",
+                    ("US", "state_id"): "nyid"}
 
 # ---------------- document-number format per type ----------------
 _GENERIC_NUM = r"[A-Z0-9]{6,20}"
 _NUMBER_PATTERNS = {
     ("NG", "nin_slip"): r"\d{11}", ("NG", "nin_card"): r"\d{11}", ("NG", "national_id"): r"\d{11}",
-    ("NG", "voter_card"): r"[0-9A-Z]{10,20}", ("NG", "drivers_licence"): r"[A-Z0-9]{8,15}",
+    ("NG", "voter_card"): r"[0-9A-Z]{10,22}", ("NG", "drivers_licence"): r"[A-Z0-9]{10,14}",
     ("IN", "aadhaar"): r"\d{12}", ("IN", "pan_card"): r"[A-Z]{5}\d{4}[A-Z]",
     ("IN", "voter_id"): r"[A-Z]{3}\d{7}", ("IN", "drivers_licence"): r"[A-Z0-9-]{10,20}",
     ("SG", "nric"): r"[STFG]\d{7}[A-Z]", ("SG", "drivers_licence"): r"[STFG]\d{7}[A-Z]",
@@ -211,7 +287,9 @@ def _build_templates():
             labels = {f: list(v) for f, v in _LABELS.get(country, _EN).items()}
             for f, v in _LABEL_OVERRIDES.get((country, kind), {}).items():
                 labels[f] = list(v)
-            zones = _ZONES[_LAYOUT_CLASS.get(kind, "passport" if kind in ("passport",) else "card")]
+            layout = _LAYOUT_CLASS_CC.get((country, kind)) or _LAYOUT_CLASS.get(
+                kind, "passport" if kind in ("passport",) else "card")
+            zones = _ZONES[layout]
             fields = {}
             for field in ("surname", "given_names", "dob", "expiry", "number"):
                 if field == "expiry" and not entry.get("has_expiry"):
@@ -223,7 +301,7 @@ def _build_templates():
                         spec["validator"] = _NUMBER_VALIDATORS[(country, kind)]
                 fields[field] = spec
             level = "full" if (country in ("NG", "US") or kind != "passport") else "generic"
-            out[(country, kind)] = {"level": level, "layout": _LAYOUT_CLASS.get(kind, "passport" if kind == "passport" else "card"),
+            out[(country, kind)] = {"level": level, "layout": layout,
                                     "fields": fields}
     return out
 
@@ -1112,6 +1190,45 @@ def extract_fields(image_path, country, kind, ocr_text="", words=None, ocr_texts
     return result
 
 
+def _recover_vin(lines, text_lines):
+    """Strongest VIN-shaped run on the card: a maximal run of
+    adjacent alphanumeric tokens (word lines first, then the raw
+    pass texts) whose joined form is 15-24 chars with >= 8 digits
+    and >= 1 letter. Returns the joined candidate or None."""
+    def _best_from(token_rows):
+        best = None  # (digits, joined)
+        for toks in token_rows:
+            run = []
+            def flush(run):
+                nonlocal best
+                if not run:
+                    return
+                joined = re.sub(r"[^A-Z0-9]", "", "".join(run).upper())
+                digs = sum(c.isdigit() for c in joined)
+                if 15 <= len(joined) <= 24 and digs >= 8 and \
+                        any(c.isalpha() for c in joined):
+                    if best is None or digs > best[0] or \
+                            (digs == best[0] and len(joined) > len(best[1])):
+                        best = (digs, joined)
+            for t in toks:
+                cleaned = re.sub(r"[^A-Z0-9]", "", str(t).upper())
+                if len(cleaned) >= 2:
+                    run.append(str(t))
+                else:
+                    flush(run); run = []
+            flush(run)
+        return best[1] if best else None
+    rows = []
+    for ln in lines or []:
+        try:
+            rows.append([it["text"] for it in ln])
+        except Exception:
+            continue
+    hit = _best_from(rows)
+    if hit:
+        return hit
+    return _best_from([str(l).split() for l in (text_lines or [])])
+
 def _extract_fields_pass(image_path, country, kind, ocr_text="", words=None, ocr_texts=None):
     """Template-guided field extraction. Returns the standard check
     dict; findings carry per-field {value, source, format_valid}.
@@ -1409,6 +1526,21 @@ def _extract_fields_pass(image_path, country, kind, ocr_text="", words=None, ocr
                 _m = re.fullmatch(r"\\d\{(\d+)\}", (spec or {}).get("pattern") or "")
                 if _m and len(re.sub(r"\D", "", str(value))) > int(_m.group(1)):
                     value, source = None, None
+        # 4b) INEC VIN run recovery (NG voter_card number only,
+        # calibration 2026-10-27): the VIN prints as spaced
+        # alphanumeric groups, and its first glyph misreads often
+        # enough ('VIN' -> 'YIN') that the label and zone paths
+        # miss it, while the line itself carries a long, digit-rich
+        # run that no other line on the card resembles. Adopt the
+        # strongest such run (15-24 chars joined, >= 8 digits, at
+        # least one letter) from the word lines or the pass texts;
+        # it still has to pass the type's format validation at the
+        # entry step below.
+        if field == "number" and (country, kind) == ("NG", "voter_card") and \
+                (value is None or validate_number(country, kind, value) is False):
+            vin = _recover_vin(lines, text_lines)
+            if vin:
+                value, source = vin, "zone_recovery"
         entry = {"value": value, "source": source}
         if field == "number" and value:
             valid = validate_number(country, kind, value)
