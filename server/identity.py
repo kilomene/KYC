@@ -27,7 +27,13 @@ merged into one identity, with an explicit trust order:
   2. template field extraction (zone / label / text reads of the
      printed zone; a document number only outranks the upload when
      its format/check digit validated);
-  3. the doc_* fields uploaded with the document (the hosted flow no
+  3. the document's own machine-readable payload (AAMVA PDF417,
+     INEC PVC code, structured QR) — structured data the issuing
+     authority encoded on the document itself; it fills only slots
+     the printed reads left empty (and, for the number, slots whose
+     extraction read failed format validation), and the code_decode
+     cross-check still judges it against the printed reads;
+  4. the doc_* fields uploaded with the document (the hosted flow no
      longer collects them — the form is gone — but API clients may
      still send them; they are the weakest source, a claim).
 
@@ -73,17 +79,20 @@ def _corroborated_given_names(value, viz_tokens):
     return " ".join(keep) if keep else value
 
 
-def derive_document_identity(extracted_fields=None, mrz_parsed=None, uploaded=None, ocr_text=""):
+def derive_document_identity(extracted_fields=None, mrz_parsed=None, uploaded=None, ocr_text="", payload_fields=None):
     """Merge the document reads into one identity.
 
     extracted_fields: field_extraction findings["fields"] (or None).
     mrz_parsed: checks.parse_mrz output (used only when valid).
+    payload_fields: parsed machine-readable payload fields (or None)
+    with keys among first_name / surname|last_name / dob / number /
+    expiry, dates ISO — see the trust order in the module docstring.
     uploaded: the documents row's client-sent doc_* fields (or None).
     ocr_text: the multi-pass OCR text, used to corroborate MRZ name
     tokens against the visual zone (see _corroborated_given_names).
 
     -> {"first_name", "last_name", "dob", "number", "expiry",
-        "sources": {field: "mrz"|"extraction"|"upload"|None},
+        "sources": {field: "mrz"|"extraction"|"payload"|"upload"|None},
         "number_format_valid": True|False|None,
         "name_fields_carried": [field names the read was expected to
         produce — the extraction template's name fields, or both when
@@ -101,6 +110,13 @@ def derive_document_identity(extracted_fields=None, mrz_parsed=None, uploaded=No
     that was a format-invalid header token)."""
     extracted_fields = extracted_fields or {}
     uploaded = uploaded or {}
+    payload = {}
+    if payload_fields:
+        payload = {"first_name": payload_fields.get("first_name") or None,
+                   "last_name": payload_fields.get("last_name") or payload_fields.get("surname") or None,
+                   "dob": payload_fields.get("dob") or None,
+                   "number": payload_fields.get("number") or None,
+                   "expiry": payload_fields.get("expiry") or None}
     mrz = mrz_parsed if (mrz_parsed and mrz_parsed.get("valid")) else None
     out = {"first_name": None, "last_name": None, "dob": None,
            "number": None, "expiry": None, "sources": {},
@@ -115,6 +131,22 @@ def derive_document_identity(extracted_fields=None, mrz_parsed=None, uploaded=No
     out["name_fields_carried"] = carried
 
     # ---- names ----
+    # Fragment completion: an extraction name that is a strict
+    # substring of the payload's name is a PARTIAL read of the same
+    # print, not a competing read — the payload completes it below.
+    # A genuinely different extraction value stands, and the
+    # code_decode cross-check judges the disagreement. (Measured on
+    # the genuine INEC card: front OCR kept only the surname's tail
+    # fragment while the card's own back code carried it in full.)
+    for _field, _pkey in (("surname", "last_name"), ("given_names", "first_name")):
+        _ev = _ext(extracted_fields, _field)
+        _pv = payload.get(_pkey)
+        if _ev and _pv and _ev.upper() != _pv.upper() and _ev.upper() in _pv.upper():
+            extracted_fields = dict(extracted_fields)
+            _entry = dict(extracted_fields.get(_field) or {})
+            _entry["value"] = None
+            _entry["fragment_of_payload"] = True
+            extracted_fields[_field] = _entry
     if mrz and mrz.get("names"):
         names = mrz["names"]
         if names.get("surname"):
@@ -129,6 +161,12 @@ def derive_document_identity(extracted_fields=None, mrz_parsed=None, uploaded=No
     if not out["first_name"] and _ext(extracted_fields, "given_names"):
         out["first_name"] = _ext(extracted_fields, "given_names")
         out["sources"]["first_name"] = "extraction"
+    if not out["last_name"] and payload.get("last_name"):
+        out["last_name"] = payload["last_name"]
+        out["sources"]["last_name"] = "payload"
+    if not out["first_name"] and payload.get("first_name"):
+        out["first_name"] = payload["first_name"]
+        out["sources"]["first_name"] = "payload"
     if not out["last_name"] and uploaded.get("doc_last_name"):
         out["last_name"] = uploaded["doc_last_name"]
         out["sources"]["last_name"] = "upload"
@@ -145,6 +183,9 @@ def derive_document_identity(extracted_fields=None, mrz_parsed=None, uploaded=No
     if not out["dob"] and _ext(extracted_fields, "dob"):
         out["dob"] = _ext(extracted_fields, "dob")
         out["sources"]["dob"] = "extraction"
+    if not out["dob"] and payload.get("dob"):
+        out["dob"] = payload["dob"]
+        out["sources"]["dob"] = "payload"
     if not out["dob"] and uploaded.get("doc_dob"):
         out["dob"] = uploaded["doc_dob"]
         out["sources"]["dob"] = "upload"
@@ -162,6 +203,15 @@ def derive_document_identity(extracted_fields=None, mrz_parsed=None, uploaded=No
         out["number"] = ext_num
         out["sources"]["number"] = "extraction"
         out["number_format_valid"] = True
+    elif payload.get("number"):
+        # Structured payload data outranks a format-INVALID OCR read
+        # of the number (and an absent one): the read-back contract
+        # already treats a format-failed string as not read. The
+        # payload carries no check digit of its own here, so the
+        # stamp stays None — presence is not validation.
+        out["number"] = payload["number"]
+        out["sources"]["number"] = "payload"
+        out["number_format_valid"] = None
     elif ext_num:
         # Adopted (it is the only read there is) but stamped with the
         # validation verdict the extraction actually reached — False
@@ -184,6 +234,9 @@ def derive_document_identity(extracted_fields=None, mrz_parsed=None, uploaded=No
     if not out["expiry"] and _ext(extracted_fields, "expiry"):
         out["expiry"] = _ext(extracted_fields, "expiry")
         out["sources"]["expiry"] = "extraction"
+    if not out["expiry"] and payload.get("expiry"):
+        out["expiry"] = payload["expiry"]
+        out["sources"]["expiry"] = "payload"
     if not out["expiry"] and uploaded.get("doc_expiry"):
         out["expiry"] = uploaded["doc_expiry"]
         out["sources"]["expiry"] = "upload"
