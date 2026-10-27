@@ -19,6 +19,15 @@ if ! HOME=/home/hatch python3 -c "import cryptography" 2>/dev/null; then
     sudo pip3 install --break-system-packages "cryptography>=42" || \
     echo "WARNING: cryptography install failed — encrypted media reads will 503"
 fi
+# zxing-cpp powers the barcode layer (PDF417/QR decode + payload
+# cross-checks, 2026-10-27). Without it code_decode honestly reports
+# the decoder unavailable and finds no codes — restore it too.
+if ! HOME=/home/hatch python3 -c "import zxingcpp" 2>/dev/null; then
+  echo "zxing-cpp missing — reinstalling..."
+  python3 -m pip install --user "zxing-cpp" || \
+    sudo pip3 install --break-system-packages "zxing-cpp" || \
+    echo "WARNING: zxing-cpp install failed — barcode decoding unavailable until installed"
+fi
 [ -f ~/workspace/KYC/data/kyc-master.key ] || echo "WARNING: data/kyc-master.key missing — encrypted media cannot be read until the master key file is restored"
 
 sudo cp ~/workspace/KYC/deploy/systemd/kyc.service ~/workspace/KYC/deploy/systemd/kyc-tunnel-client.service /etc/systemd/system/
