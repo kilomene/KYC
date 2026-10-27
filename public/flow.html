@@ -1485,6 +1485,7 @@ $('btn-resume').onclick = () => { VOICE.prime('welcome_back'); nextStep(); };
   else show('s-resume');
 })();
 function renderSubmitOutcome(st, credential){
+  $('out').innerHTML = '';
   show('s-status'); $('status').textContent = 'Status: '+st+(st === 'needs_review' ? ' — a reviewer will check your documents.' : st === 'rejected' ? ' — the checks did not pass. The business can send you a new link to try again.' : '');
   if(st === 'approved' && credential){ $('cred').style.display = 'block'; $('cred-json').textContent = JSON.stringify(credential.claims, null, 1); }
 }
@@ -1518,6 +1519,7 @@ async function pollSubmitOutcome(){
 $('btn-submit').onclick = async () => {
   try{ const r = await api('POST', '/v1/flow/submit', {});
     if(r.status === 'processing'){
+      $('out').innerHTML = '';
       show('s-status'); $('status').textContent = 'Processing… your verification is being checked. This can take a minute — keep this page open.';
       pollSubmitOutcome();
       return;
