@@ -55,7 +55,13 @@ from . import RULES_VERSION
 from .flowconfig import DEFAULT_REQUIRED
 
 REQUIRED = DEFAULT_REQUIRED
-HARD_FAIL_REASONS = {"document_expired", "underage", "vpn_proxy_detected"}
+HARD_FAIL_REASONS = {"document_expired", "underage", "vpn_proxy_detected",
+                     # NIN slip typed-number tally (owner's order,
+                     # nin_slip only): the typed number must equal the
+                     # number read off the slip; no claim at all is
+                     # equally decisive — the tally is that type's
+                     # corroboration, not an optional extra.
+                     "nin_number_mismatch", "nin_number_not_provided"}
 
 # Fraud/risk signals are NOT required checks and never auto-reject. An
 # *elevated* signal only routes an otherwise-clean case to a human.
