@@ -72,6 +72,7 @@ If OpenCV is unavailable the check returns 'error' — never a pass
 import hashlib
 import os
 import tempfile
+import threading
 
 try:
     import cv2
@@ -499,7 +500,22 @@ def analyse_path(path):
             _rendition_cache.pop(next(iter(_rendition_cache)))
     return analysis
 
+_WARP_LOCK = threading.Lock()
+
+
 def warped_rendition(path):
+    """Serialised wrapper: the warp lands at a DETERMINISTIC temp
+    path (kyc-warp-<digest>.png), so two threads computing it for
+    the same source concurrently would interleave cv2.imwrite
+    calls on one file and hand OCR a corrupted rendition (measured
+    2026-10-27 once _read_document began reading text and words in
+    parallel: a perfect slip read back as garbage). The lock makes
+    the second caller reuse the finished warp from the cache."""
+    with _WARP_LOCK:
+        return _warped_rendition_impl(path)
+
+
+def _warped_rendition_impl(path):
     """-> path of a perspective-warped rendition of the document in
     the image at `path`, or None when no usable quad exists or the
     quad is already the whole frame axis-aligned (warp would be a
