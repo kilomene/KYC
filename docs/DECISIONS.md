@@ -129,11 +129,46 @@ fixes, proven on his actual uploaded photo before shipping:
 - **Corroborated digit-zone recovery** (field extraction): when the
   number resolves missing or format-invalid for a fixed-length digit
   format, a dedicated pass crops the number's own location from the
-  ORIGINAL image (located by the primary read's digit word boxes,
-  mapped through the framing quad — never the double-resampled warp)
-  and votes across independent variants (scales × {plain, Otsu,
-  median+Otsu} × two page modes). A candidate is adopted only on a
-  decisive vote (≥3 exact-length reads, ≥2× the runner-up) that also
+  ORIGINAL image (located by the field's LABEL — large bold print
+  that survives at resolutions where the digits do not — or by the
+  primary read's digit word boxes, mapped through the framing quad —
+  never the double-resampled warp) and votes across independent
+  variants (scales × {plain, Otsu, median+Otsu} × two page modes;
+  reads longer than the number contribute their windows, junk bled
+  in from neighbouring columns included). A candidate is adopted
+  only on a decisive vote (≥3 reads, ≥2× the runner-up) that also
   agrees with the primary partial read on ≥75% of the overlapping
   prefix. On the owner's slip this recovered the full 11 digits the
   general passes had truncated at 8, where they cross the watermark.
+  The same session's LOW-resolution rendition (647px — the phone
+  handed over a reduced copy of the same photo) measured the honest
+  floor of this discipline: the recovery's vote split 9–6 between two
+  readings differing in exactly one digit, no decisive winner
+  existed, and nothing was adopted — an unreadable digit stays
+  unreadable rather than becoming a wrong number that the tally
+  would reject.
+- **Tiled word fallback** (vision): when the full-page word pass
+  yields <60 words — its near-blind zone on small print — the
+  reading image is re-read in overlapping quadrant tiles and the
+  word sets merged, duplicates resolved by box overlap in favour of
+  the higher-confidence read. On the owner's low-resolution upload
+  this took the word yield from 47 (no labels, no values) to a set
+  carrying 'NIN:' at conf 96, the surname clean, and the given name —
+  the fields the read-back needed.
+- **Lossless storage of corrected uploads**: a rotated upload is
+  stored as PNG, never a second lossy JPEG generation; the flow also
+  warns before upload when the picked copy is small (<1500px long
+  side) and, on an incomplete slip read, directs the user to the
+  ORIGINAL photo rather than a screenshot or forwarded copy.
+- **Portrait orientation decider** (third in the chain, after OSD
+  and the OCR-score competition): tesseract's page segmentation
+  auto-rotates sideways text internally, which can erase the score
+  evidence entirely (a sideways slip on a table measured 27.9k as-is
+  vs 27.8k corrected — a tie neither decider may break). When the
+  document type carries a printed portrait, YuNet is run on the
+  four rotations of the document region: a face is detectable only
+  upright (landmark order eyes → nose → mouth confirms), so a
+  single decisive qualifying rotation names the correction. Proven
+  on composed scenes at all four rotations, silent on faceless
+  images, and on the owner's real sideways photo it independently
+  returns the same 270° the score path chose.
