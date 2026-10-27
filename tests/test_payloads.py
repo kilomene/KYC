@@ -53,9 +53,9 @@ class TestAamva(unittest.TestCase):
         parsed = P.parse_aamva(FULL_AAMVA)
         doc = {"doc_number": "D1234567", "doc_dob": "1974-08-12",
                "doc_expiry": "2032-04-15", "doc_last_name": "ERIKSSON"}
-        mm, compared = P.cross_check_payload(parsed, doc)
+        mm, compared, near = P.cross_check_payload(parsed, doc)
         self.assertEqual(mm, []); self.assertGreaterEqual(compared, 4)
-        mm, _ = P.cross_check_payload(parsed, {**doc, "doc_number": "X9999999"})
+        mm, _, _n = P.cross_check_payload(parsed, {**doc, "doc_number": "X9999999"})
         self.assertIn("number", mm)
 
     def test_decode_codes_uses_full_parse(self):
@@ -93,7 +93,7 @@ class TestNinQr(unittest.TestCase):
 
     def test_cross_check_mismatch(self):
         r = P.parse_nin_qr(self.PAYLOAD)
-        mm, _ = P.cross_check_payload(r, {"doc_number": "99999999999", "doc_dob": "1974-08-12",
+        mm, _, _n = P.cross_check_payload(r, {"doc_number": "99999999999", "doc_dob": "1974-08-12",
                                           "doc_last_name": "ERIKSSON"})
         self.assertIn("number", mm)
 
@@ -125,10 +125,10 @@ class TestAadhaarQr(unittest.TestCase):
     def test_cross_check_last4_and_dob(self):
         uid = self._uid()
         r = P.parse_aadhaar_qr(P.build_aadhaar_payload(uid, "ANNA ERIKSSON", "12-08-1974"))
-        mm, compared = P.cross_check_payload(r, {"doc_number": uid, "doc_dob": "1974-08-12",
+        mm, compared, near = P.cross_check_payload(r, {"doc_number": uid, "doc_dob": "1974-08-12",
                                                  "doc_first_name": "ANNA", "doc_last_name": "ERIKSSON"})
         self.assertEqual(mm, []); self.assertGreaterEqual(compared, 3)
-        mm, _ = P.cross_check_payload(r, {"doc_number": "999988887777", "doc_dob": "1974-08-12"})
+        mm, _, _n = P.cross_check_payload(r, {"doc_number": "999988887777", "doc_dob": "1974-08-12"})
         self.assertIn("number_last4", mm)
 
     def test_real_qr_image_roundtrip(self):
@@ -170,14 +170,75 @@ class TestPhilIdQr(unittest.TestCase):
 
     def test_cross_check(self):
         r = P.parse_philid_qr(self.PAYLOAD)
-        mm, _ = P.cross_check_payload(r, {"doc_number": "1234567890123456", "doc_dob": "1974-08-12",
+        mm, _, _n = P.cross_check_payload(r, {"doc_number": "1234567890123456", "doc_dob": "1974-08-12",
                                           "doc_last_name": "ERIKSSON"})
         self.assertEqual(mm, [])
-        mm, _ = P.cross_check_payload(r, {"doc_number": "9999999999999999"})
+        mm, _, _n = P.cross_check_payload(r, {"doc_number": "9999999999999999"})
         self.assertIn("number", mm)
 
     def test_unrelated_text_is_none(self):
         self.assertIsNone(P.parse_philid_qr("hello world"))
+
+class TestInecPvc(unittest.TestCase):
+    # Shape measured on a genuine INEC PVC back code (2026-10-27):
+    # name line, DOB running straight into the gender, address line.
+    PAYLOAD = "DOE, JOHN ABIODUN\n15-05-2002MALE2\n12 EXAMPLE STREET, LAGOS"
+
+    def test_structural_parse(self):
+        r = P.parse_inec_pvc(self.PAYLOAD)
+        self.assertIsNotNone(r)
+        self.assertEqual(r["standard"], "NG-INEC-PVC")
+        self.assertEqual(r["fields"]["surname"], "DOE")
+        self.assertEqual(r["fields"]["first_name"], "JOHN ABIODUN")
+        # The year runs into "MALE" with no separator — the parse
+        # must still land the DOB (a trailing \b silently failed).
+        self.assertEqual(r["fields"]["dob"], "2002-05-15")
+        self.assertEqual(r["fields"]["gender"], "MALE")
+        self.assertIn("NOT performed", r["depth_note"])
+
+    def test_cross_check(self):
+        r = P.parse_inec_pvc(self.PAYLOAD)
+        mm, compared, near = P.cross_check_payload(
+            r, {"doc_dob": "2002-05-15", "doc_last_name": "DOE", "doc_first_name": "JOHN"},
+            country="NG", kind="voter_card")
+        self.assertEqual(mm, []); self.assertGreaterEqual(compared, 3)
+        mm, _, _n = P.cross_check_payload(r, {"doc_dob": "1999-01-01", "doc_last_name": "DOE"},
+                                          country="NG", kind="voter_card")
+        self.assertIn("dob", mm)
+
+    def test_unrelated_text_is_none(self):
+        self.assertIsNone(P.parse_inec_pvc("just some text"))
+        self.assertIsNone(P.parse_inec_pvc(""))
+
+class TestNearMissAndPackedNames(unittest.TestCase):
+    def test_single_glyph_difference_is_near_not_mismatch(self):
+        parsed = P.parse_aamva(FULL_AAMVA)
+        doc = {"doc_number": "D1234567", "doc_dob": "1974-08-13",  # one digit off the payload
+               "doc_expiry": "2032-04-15", "doc_last_name": "ERIKSSON"}
+        mm, compared, near = P.cross_check_payload(parsed, doc)
+        self.assertEqual(mm, [])
+        self.assertIn("dob", near)
+
+    def test_wholesale_difference_still_mismatches(self):
+        parsed = P.parse_aamva(FULL_AAMVA)
+        mm, _, near = P.cross_check_payload(parsed, {"doc_dob": "1990-01-30"})
+        self.assertIn("dob", mm); self.assertNotIn("dob", near)
+
+    def test_dcs_packed_full_name_splits(self):
+        # Issuer packs the full name into DCS and omits DAC
+        # (measured on genuine NY + FRSC payloads, 2026-10-27).
+        text = "@\n\x1e\rANSI 636001030102DL00410234ZN02750070DLDAQ123456789\nDCSDOE JOHN ALAN\nDBB01151974\nDBA01152032\nDBC1"
+        r = P.parse_aamva(text)
+        self.assertIsNotNone(r)
+        self.assertEqual(r["fields"]["surname"], "DOE")
+        self.assertEqual(r["fields"]["first_name"], "JOHN ALAN")
+        self.assertTrue(r["fields"]["dcs_packed_full_name"])
+
+    def test_label_only_nin_qr_depth(self):
+        r = P.parse_nin_qr("DIGITAL NIN SLIP")
+        self.assertIsNotNone(r)
+        self.assertEqual(r["validation_depth"], "label_only")
+        self.assertEqual(r["fields"], {})
 
 if __name__ == "__main__":
     unittest.main()
