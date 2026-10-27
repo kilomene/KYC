@@ -115,13 +115,17 @@ read a scrambled mosaic and no number at all. Two platform-level
 fixes, proven on his actual uploaded photo before shipping:
 
 - **Orientation normalization at ingest** (uploaded images only):
-  the image is tried at 0/90/180/270 degrees; the rotation whose read
-  is decisively best (OCR score, bonused when framing finds the
-  document quad inside the type's aspect range) is stored as the
-  artifact, so every downstream check consumes the document upright.
-  A rotation is applied only when it beats the as-is read by ≥1.5× —
-  an upright image is never gratuitously rotated — and the correction
-  is recorded in the document's capture metadata.
+  the stored artifact is the document upright, so every downstream
+  check consumes it as printed. The decider is two-layered, because
+  each layer is blind where the other sees: tesseract's orientation
+  detection (OSD) names the rotation outright on clean documents
+  (confidence ≥2.5) but is blind on noisy laminated photos (the
+  owner's slip: 0.15); there, a four-rotation OCR-score competition
+  decides (bonused when framing finds the document quad inside the
+  type's aspect range), and a rotation is applied only when it beats
+  the as-is read by ≥1.5× — an upright image is never gratuitously
+  rotated. The correction is recorded in the document's capture
+  metadata.
 - **Corroborated digit-zone recovery** (field extraction): when the
   number resolves missing or format-invalid for a fixed-length digit
   format, a dedicated pass crops the number's own location from the
