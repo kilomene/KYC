@@ -39,6 +39,17 @@ absence there blocks nothing.
 
 Required-check lists live in server/flowconfig.py (tenant-configurable,
 versioned); the defaults below mirror them for direct unit use.
+
+face_match applicability (Session-5 diagnosis, 2026-10-26): face_match
+compares the selfie against the DOCUMENT PORTRAIT, so it can only
+apply to document types that carry a portrait. The classification
+template system (server/templates.py) is the single source of truth
+for that fact — see face_match_applicable(). A face_match result
+recorded with status "not_applicable" (the type carries no portrait)
+neither fails nor blocks a decision; it is not an unclear read, it is
+a check that does not exist for this document type. (Before this, a
+portrait-less type auto-rejected at Level 2 forever: face_match could
+only ever come back 'no face in document' -> unclear -> rejected.)
 """
 from . import RULES_VERSION
 from .flowconfig import DEFAULT_REQUIRED
@@ -49,6 +60,37 @@ HARD_FAIL_REASONS = {"document_expired", "underage", "vpn_proxy_detected"}
 # Fraud/risk signals are NOT required checks and never auto-reject. An
 # *elevated* signal only routes an otherwise-clean case to a human.
 ELEVATED_SIGNAL_REASONS = {"velocity_high", "ip_document_country_mismatch", "injection_signal_present"}
+
+def face_match_applicable(country=None, kind=None, template=None):
+    """Whether face_match applies to a claimed document type at all:
+    True unless the type's classification template says the document
+    carries NO portrait (portrait_expected False).
+
+    The template consulted is the FULL classification template from
+    server/templates.py whenever one exists for the type — the full
+    templates are the single source of truth. This matters today for
+    nin_slip: get_template's COARSE fallback builder derives
+    portrait_expected from `kind != "nin_slip"` (i.e. False), while
+    the FULL (NG, nin_slip) template — written from the real layout,
+    portrait zone and all — says True: current standard/premium slips
+    DO print a portrait. Consulting the full template first keeps the
+    two systems from disagreeing in the decision path; the coarse
+    builder's contrary rule is flagged for reconciliation in
+    templates.py itself.
+
+    `template` may be passed directly (the dict get_template
+    returned). Unknown types fail closed: face match still applies."""
+    if template is not None:
+        return bool(template.get("portrait_expected", True))
+    if country and kind:
+        from . import templates as TEMPLATES
+        full = TEMPLATES.FULL_TEMPLATES.get(((country or "").upper(), kind))
+        if full is not None:
+            return bool(full.get("portrait_expected", True))
+        tpl, _level = TEMPLATES.get_template(country, kind)
+        if tpl is not None:
+            return bool(tpl.get("portrait_expected", True))
+    return True
 
 def decide(level, check_results, config=None, risk_score=None):
     """check_results: {type: {"status":..., "reason_codes":[...]}}.
@@ -79,6 +121,12 @@ def decide(level, check_results, config=None, risk_score=None):
         # reuse), never a silent skip in the standard path.
         if t in ("document_framing", "document_classification", "data_consistency"):
             return t in check_results
+        # face_match recorded "not_applicable" (the document type
+        # carries no portrait — see face_match_applicable) is not a
+        # missing or failed check: the comparison does not exist for
+        # this type, so it can neither reject nor block.
+        if t == "face_match" and status(t) == "not_applicable":
+            return False
         return True
 
     # 2. Any required check that FAILED is decisive: automatic rejection
@@ -238,8 +286,14 @@ def biometric_evidence(check_results, client_findings=None):
     # on the owner's real captures 2026-10-26, artifact leg clean):
     # an unclear deepfake result does not block the combination; a
     # FAILED one does (and has already auto-rejected as a required
-    # check). Every other component must be present and passing.
-    others_pass = all(v == "pass" for k, v in comp.items() if k != "deepfake")
+    # check). Every other component must be present and passing —
+    # except face_match recorded "not_applicable" (the document type
+    # carries no portrait, so there is nothing to match against): a
+    # non-existent comparison is satisfied by definition, never a
+    # blocker.
+    others_pass = all(v == "pass" for k, v in comp.items()
+                      if k != "deepfake"
+                      and not (k == "face_match" and v == "not_applicable"))
     return {"components": comp,
             "all_passing": others_pass and comp["deepfake"] in ("pass", "unclear"),
             "any_failed": any(v == "fail" for v in comp.values())}
