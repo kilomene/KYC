@@ -1258,12 +1258,38 @@ async function finishDocStep(){
   $('doc-read-status').textContent = 'Reading your document…';
   $('doc-read-text').textContent = '';
   $('doc-read-note').textContent = '';
-  let r;
-  try{ r = await api('POST', '/v1/flow/document/process', {document_id: docState.docId}, false, true); }
-  catch(e){
-    $('doc-read-status').textContent = 'We could not read that scan.';
-    $('doc-read-note').textContent = 'Please rescan — hold the document closer, flat and steady, in good light. There is nothing to type: the document itself is the only source.';
-    VOICE.say('doc_read_bad', true);
+  let r = null;
+  // The read runs as a server job: the endpoint answers 202
+  // {"status":"reading"} until the read lands, and this loop polls.
+  // A transport failure (tunnel timeout, dropped socket) is NOT a
+  // verdict — the read may still be running server-side — so it is
+  // retried, never reported as "could not read". (Owner's live
+  // test 2026-10-27: the read succeeded server-side in ~3.5 min
+  // while the page had already declared failure on a dead socket.)
+  {
+    const deadline = Date.now() + 5 * 60 * 1000;
+    while(Date.now() < deadline){
+      try{
+        const resp = await api('POST', '/v1/flow/document/process', {document_id: docState.docId}, false, true);
+        if(resp && resp.status === 'reading'){
+          $('doc-read-status').textContent = 'Reading your document…';
+          await new Promise(res => setTimeout(res, 2500));
+          continue;
+        }
+        r = resp;
+        break;
+      }catch(e){
+        const transient = !e.status || e.status === 502 || e.status === 503 || e.status === 504;
+        if(!transient) break;
+        $('doc-read-status').textContent = 'Reading your document…';
+        await new Promise(res => setTimeout(res, 3000));
+      }
+    }
+  }
+  if(!r){
+    $('doc-read-status').textContent = 'This is taking longer than usual.';
+    $('doc-read-note').textContent = 'The read has not come back yet — it may still be running. Give it a moment, then use Rescan front below to try again with the document closer, flat and steady, in good light.';
+    $('btn-doc-continue').style.display = 'none';
     return;
   }
   docState.lastRead = r;
