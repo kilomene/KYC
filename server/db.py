@@ -124,6 +124,7 @@ _MIGRATIONS = [
     ("sessions", "client_ip", "TEXT"),  # client IP harvested at flow start (consent), for the location check
     ("sessions", "ip_country", "TEXT"),  # IP geolocation country at flow start (X-IP-Country / CF-IPCountry)
     ("sessions", "vpn_status", "TEXT"),  # VPN/proxy verdict at flow start + submit: detected | clean | unknown
+    ("sessions", "processing_started_at", "TEXT"),  # async submit: when the current decision pass claimed the session (staleness guard for reclaim)
     ("sessions", "device_tz", "TEXT"),  # device timezone reported by the flow page (corroboration, record-only)
     ("sessions", "webrtc_ips", "TEXT"),  # JSON: WebRTC local candidates reported by the flow page (record-only)
     # ---- Phase 4 WS3 (security hardening, verified) ----
