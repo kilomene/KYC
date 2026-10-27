@@ -110,6 +110,17 @@ def parse_aamva(text):
         fields["surname"] = elements["DCS"]
     if elements.get("DAC"):
         fields["first_name"] = elements["DAC"]
+    elif fields.get("surname") and len(fields["surname"].split()) >= 2:
+        # Issuers that pack the FULL name into DCS and omit DAC
+        # (measured 2026-10-27 on a genuine New York ID and on the
+        # Nigerian FRSC licence's AAMVA-structured payload): the
+        # first token is the surname, the remainder the given names.
+        # Only fires when DAC is absent, so conforming payloads —
+        # where DCS is the surname alone — are untouched.
+        toks = fields["surname"].split()
+        fields["surname"] = toks[0]
+        fields["first_name"] = " ".join(toks[1:])
+        fields["dcs_packed_full_name"] = True
     if elements.get("DAD"):
         fields["middle_names"] = elements["DAD"]
     for key, eid in (("dob", "DBB"), ("expiry", "DBA"), ("issue_date", "DBD")):
@@ -191,6 +202,14 @@ def parse_nin_qr(text):
     out = {"standard": "NG-NIN-QR", "validation_depth": "structural",
            "depth_note": "NIMC payload grammar is not published in the research corpus; structure + NIN format validated, NIMC semantic verification NOT performed.",
            "fields": {}}
+    if nin is None and not fields_in:
+        # Label-only payload (measured 2026-10-27: the digital NIN
+        # slip's QR decodes to the constant text 'DIGITAL NIN SLIP'
+        # and nothing else). Presence of the expected constant is
+        # supporting evidence only — it carries no identity fields
+        # and cross-checks nothing.
+        out["validation_depth"] = "label_only"
+        out["depth_note"] = "Payload carries no identity fields (constant label QR, as printed on the digital NIN slip). Presence evidence only; nothing cross-checked."
     if nin:
         out["fields"]["nin"] = nin
         out["fields"]["nin_format_valid"] = FT.validate_number("NG", "nin_slip", nin) is True
@@ -205,6 +224,48 @@ def parse_nin_qr(text):
         d = FT.parse_date_value(dob)
         out["fields"]["dob"] = d.isoformat() if d else None
     return out
+
+# ---------------- NG INEC voter's card PDF417 ----------------
+
+def parse_inec_pvc(text):
+    """Parse the INEC PVC back PDF417 payload (measured on a genuine
+    card, calibration 2026-10-27): line 1 is the holder name
+    'SURNAME, FIRST MIDDLE'; the next line opens with the date of
+    birth DD-MM-YYYY immediately followed by the gender; remaining
+    lines carry the address. INEC publishes no payload grammar in
+    the research corpus, so this is a structural parse of the
+    observed genuine layout — the values are cross-checked against
+    the printed front, and the depth note says exactly that."""
+    if not text:
+        return None
+    lines = [l.strip() for l in re.split(r"[\r\n]+", str(text)) if l.strip()]
+    fields = {}
+    for l in lines:
+        if "," in l and re.search(r"[A-Z]{2,}", l):
+            sur, _, given = l.partition(",")
+            if re.fullmatch(r"[A-Z][A-Z .'-]*", sur.strip()) and given.strip():
+                fields["surname"] = sur.strip().upper()
+                fields["first_name"] = given.strip().upper()
+                break
+    # No trailing \b: on the genuine card the year runs straight
+    # into the gender ("...2002MALE2"), and digit->letter is not a
+    # word boundary — a \b there silently never matches.
+    m = re.search(r"\b(\d{2})-(\d{2})-(\d{4})(?!\d)", str(text))
+    if m:
+        try:
+            fields["dob"] = date(int(m.group(3)), int(m.group(2)), int(m.group(1))).isoformat()
+        except Exception:
+            pass
+    # Same boundary trap as the date: the gender runs into a digit
+    # ("MALE2"), so \b after it never fires — bound it on letters.
+    g = re.search(r"(?<![A-Z])(MALE|FEMALE)(?![A-Z])", str(text).upper())
+    if g:
+        fields["gender"] = g.group(1)
+    if "surname" not in fields and "dob" not in fields:
+        return None
+    return {"standard": "NG-INEC-PVC", "validation_depth": "structural",
+            "depth_note": "INEC payload grammar is not published; layout parsed from a genuine specimen and cross-checked against the printed front. INEC semantic/signature verification NOT performed.",
+            "fields": fields}
 
 # ---------------- Aadhaar secure QR ----------------
 
@@ -351,14 +412,44 @@ def parse_philid_qr(text):
 
 # ---------------- cross-checking ----------------
 
+def _edit_distance_le1(a, b):
+    """True when a and b differ by at most one substitution,
+    insertion or deletion — the single-glyph OCR confusion
+    signature (6/8, 0/O, 1/7, 5/S)."""
+    if a == b:
+        return True
+    la, lb = len(a), len(b)
+    if abs(la - lb) > 1:
+        return False
+    if la == lb:
+        return sum(1 for x, y in zip(a, b) if x != y) <= 1
+    if la > lb:
+        a, b, la, lb = b, a, lb, la
+    i = j = diffs = 0
+    while i < la and j < lb:
+        if a[i] == b[j]:
+            i += 1; j += 1
+        else:
+            j += 1; diffs += 1
+            if diffs > 1:
+                return False
+    return True
+
 def cross_check_payload(parsed, doc_fields, country=None, kind=None):
     """Compare a parsed payload against the printed/submitted document
-    fields. -> (mismatches[list], compared[int]). Only fields present
-    on BOTH sides are compared; absence is not a disagreement."""
+    fields. -> (mismatches[list], compared[int], near[list]). Only
+    fields present on BOTH sides are compared; absence is not a
+    disagreement. A disagreement of exactly one character (after
+    alnum normalisation) is reported as NEAR, not a mismatch: it is
+    the signature of a single-glyph OCR misread on the printed side
+    (calibration 2026-10-27: a genuine card's zone-read DOB differed
+    from its own AAMVA payload by one digit and hard-failed). A
+    forged face disagrees with the encoded record wholesale, which
+    still fails."""
     doc_fields = doc_fields or {}
-    mismatches, compared = [], 0
+    mismatches, near, compared = [], [], 0
     if not parsed:
-        return mismatches, compared
+        return mismatches, compared, near
     f = parsed.get("fields") or {}
     def _alnum(s):
         return re.sub(r"[^A-Z0-9]", "", str(s or "").upper())
@@ -368,37 +459,55 @@ def cross_check_payload(parsed, doc_fields, country=None, kind=None):
     std = parsed.get("standard")
     if std == "AAMVA":
         if f.get("number") and doc_fields.get("doc_number"):
-            checks.append(("number", _alnum(f["number"]) == _alnum(doc_fields["doc_number"])))
+            checks.append(("number", "eq", f["number"], doc_fields["doc_number"]))
         if f.get("dob") and doc_fields.get("doc_dob"):
-            checks.append(("dob", f["dob"] == doc_fields["doc_dob"]))
+            checks.append(("dob", "eq", f["dob"], doc_fields["doc_dob"]))
         if f.get("expiry") and doc_fields.get("doc_expiry"):
-            checks.append(("expiry", f["expiry"] == doc_fields["doc_expiry"]))
+            checks.append(("expiry", "eq", f["expiry"], doc_fields["doc_expiry"]))
         if f.get("surname") and doc_fields.get("doc_last_name"):
-            checks.append(("surname", _alnum(f["surname"]) == _alnum(doc_fields["doc_last_name"])))
+            checks.append(("surname", "eq", f["surname"], doc_fields["doc_last_name"]))
     elif std == "NG-NIN-QR":
         if f.get("nin") and doc_fields.get("doc_number"):
-            checks.append(("number", _alnum(f["nin"]) == _alnum(doc_fields["doc_number"])))
+            checks.append(("number", "eq", f["nin"], doc_fields["doc_number"]))
         if f.get("dob") and doc_fields.get("doc_dob"):
-            checks.append(("dob", f["dob"] == doc_fields["doc_dob"]))
+            checks.append(("dob", "eq", f["dob"], doc_fields["doc_dob"]))
         if f.get("surname") and doc_fields.get("doc_last_name"):
-            checks.append(("surname", _alnum(f["surname"]) == _alnum(doc_fields["doc_last_name"])))
+            checks.append(("surname", "eq", f["surname"], doc_fields["doc_last_name"]))
+    elif std == "NG-INEC-PVC":
+        if f.get("dob") and doc_fields.get("doc_dob"):
+            checks.append(("dob", "eq", f["dob"], doc_fields["doc_dob"]))
+        if f.get("surname") and doc_fields.get("doc_last_name"):
+            checks.append(("surname", "eq", f["surname"], doc_fields["doc_last_name"]))
+        if f.get("first_name") and doc_fields.get("doc_first_name"):
+            payload_given = _name_tokens(f["first_name"])
+            doc_first = _name_tokens(doc_fields["doc_first_name"])
+            checks.append(("first_name", "subset", None, bool(doc_first) and doc_first.issubset(payload_given)))
     elif std == "AADHAAR-SECURE-QR":
         if f.get("uid_last4") and doc_fields.get("doc_number"):
-            checks.append(("number_last4", _alnum(doc_fields["doc_number"])[-4:] == f["uid_last4"]))
+            checks.append(("number_last4", "eq", f["uid_last4"], _alnum(doc_fields["doc_number"])[-4:]))
         if f.get("dob") and doc_fields.get("doc_dob"):
-            checks.append(("dob", f["dob"] == doc_fields["doc_dob"]))
+            checks.append(("dob", "eq", f["dob"], doc_fields["doc_dob"]))
         if f.get("name") and (doc_fields.get("doc_first_name") or doc_fields.get("doc_last_name")):
             want = _name_tokens(f"{doc_fields.get('doc_first_name', '')} {doc_fields.get('doc_last_name', '')}")
-            checks.append(("name", bool(want) and want.issubset(_name_tokens(f["name"]))))
+            checks.append(("name", "subset", None, bool(want) and want.issubset(_name_tokens(f["name"]))))
     elif std == "PHILID-QR":
         if f.get("pcn") and doc_fields.get("doc_number"):
-            checks.append(("number", _alnum(f["pcn"]) == _alnum(doc_fields["doc_number"])))
+            checks.append(("number", "eq", f["pcn"], doc_fields["doc_number"]))
         if f.get("dob") and doc_fields.get("doc_dob"):
-            checks.append(("dob", f["dob"] == doc_fields["doc_dob"]))
+            checks.append(("dob", "eq", f["dob"], doc_fields["doc_dob"]))
         if f.get("surname") and doc_fields.get("doc_last_name"):
-            checks.append(("surname", _alnum(f["surname"]) == _alnum(doc_fields["doc_last_name"])))
-    for name_, ok in checks:
+            checks.append(("surname", "eq", f["surname"], doc_fields["doc_last_name"]))
+    for name_, kind_, a, b in checks:
         compared += 1
-        if not ok:
+        if kind_ == "subset":
+            if not b:
+                mismatches.append(name_)
+            continue
+        na, nb = _alnum(a), _alnum(b)
+        if na == nb:
+            continue
+        if na and nb and _edit_distance_le1(na, nb):
+            near.append(name_)
+        else:
             mismatches.append(name_)
-    return mismatches, compared
+    return mismatches, compared, near
