@@ -212,6 +212,27 @@ GENERIC_TD3 = {
 
 _LABEL_ALIASES = {"LICENCE": ("LICENCE", "LICENSE"), "LICENSE": ("LICENSE", "LICENCE")}
 
+# Country-anchor words: the issuing-country names authorities print
+# on their documents. A template label containing one of these words
+# is an ANCHOR label — the only label family that discriminates
+# between countries whose documents share generic structure (same
+# aspect, same portrait side, "DRIVER LICENCE" in both). Measured
+# 2026-10-27: a California licence claimed as a Nigerian licence
+# scored 76.3 (pass) because DRIVER + LICENCE (via the spelling
+# alias) supplied 2 of the NG template's 3 labels and only NIGERIA
+# was missing. When a template HAS anchor labels and none is found,
+# the labels fraction is capped — generic words alone cannot carry a
+# cross-country claim. Countries whose cards carry no single federal
+# phrase (US state-issued cards) have no entry and are unchanged.
+_COUNTRY_ANCHOR_WORDS = {
+    "NG": ("NIGERIA",), "GH": ("GHANA",), "KE": ("KENYA",),
+    "ZA": ("SOUTH AFRICA",), "AU": ("AUSTRALIA",), "IN": ("INDIA",),
+    "PH": ("PHILIPPINES",), "SG": ("SINGAPORE",), "AE": ("EMIRATES",),
+    "GB": ("UNITED KINGDOM",), "IE": ("IRELAND", "GARDA"),
+    "DE": ("BUNDESREPUBLIK",), "FR": ("REPUBLIQUE",),
+    "NL": ("NEDERLAND",), "CA": ("PERMIS",), "US": ("UNITED STATES",),
+}
+
 def get_template(country, kind):
     """-> (template_dict, level) — level 'full' | 'coarse' | 'generic'.
     Registry geometry is merged over every template: paper/booklet
@@ -314,9 +335,13 @@ def check_classification(image_path, country, kind, ocr_text="", mrz_parsed=None
     # warped rendition's dimensions ARE the document's (the camera
     # frame's own aspect is the phone's, not the document's — scoring
     # a wide paper slip against the portrait frame it was shot in was
-    # part of the 2026-10-26 rectification diagnosis).
+    # part of the 2026-10-26 rectification diagnosis). Callers should
+    # pass ALL OCR evidence text they hold in ocr_text (every read
+    # pass, not only the chosen one): the labels element is judged on
+    # that union — a header can land in a non-chosen pass.
     measure_path = image_path
     quad_area = None
+    warped = None
     try:
         from . import framing as FRAMING
         warped = FRAMING.warped_rendition(image_path)
@@ -378,6 +403,18 @@ def check_classification(image_path, country, kind, ocr_text="", mrz_parsed=None
             aspect_rec["frame_match"] = frame_frac
             a_frac = max(a_frac, frame_frac)
             aspect_rec["match"] = a_frac
+    if not warped:
+        # No document-space measure exists (framing found no quad):
+        # the frame's aspect is the PHONE's, not the document's, and
+        # scoring it against the template manufactures a mismatch on
+        # genuine hand-held captures (measured 2026-10-27: a genuine
+        # CA licence, card upright inside a portrait phone frame,
+        # scored aspect 0). Mirror the portrait element's convention
+        # below: absence of evidence is neutral-low, never proof
+        # against the claim. Framing quality is gated separately.
+        aspect_rec["frame_only"] = True
+        a_frac = 0.48
+        aspect_rec["match"] = a_frac
     findings["elements"]["aspect"] = aspect_rec
     scored.append((25, a_frac))
     # --- portrait position (YuNet on the document image) ---
@@ -406,8 +443,18 @@ def check_classification(image_path, country, kind, ocr_text="", mrz_parsed=None
             aliases = _LABEL_ALIASES.get(lab, (lab,))
             if any(a in up for a in aliases):
                 found.append(lab)
-        findings["elements"]["labels"] = {"expected": labels, "found": found}
-        scored.append((25, len(found) / len(labels)))
+        labels_rec = {"expected": labels, "found": found}
+        labels_frac = len(found) / len(labels)
+        anchor_words = _COUNTRY_ANCHOR_WORDS.get((country or "").upper(), ())
+        anchor_labels = [lab for lab in labels
+                         if any(w in lab.upper() for w in anchor_words)]
+        if anchor_labels and not any(lab in found for lab in anchor_labels):
+            # The claim's own country anchor is absent: generic shared
+            # words cannot carry the element (see _COUNTRY_ANCHOR_WORDS).
+            labels_frac = min(labels_frac, 0.34)
+            labels_rec["anchor_missing"] = anchor_labels
+        findings["elements"]["labels"] = labels_rec
+        scored.append((25, labels_frac))
     # --- document-number zone read ---
     zone = tpl.get("number_zone")
     if zone:
