@@ -45,6 +45,18 @@ module changes what they see).
 import io, os, re, shutil, subprocess, tempfile
 from datetime import date
 
+
+def _tess_env():
+    """Environment for tesseract subprocesses. OMP_THREAD_LIMIT=1
+    is MEASURED 3x faster on this host (a plain TSV pass: 3.38s
+    default vs 1.07s limited, 2026-10-27) — tesseract's OpenMP
+    defaults oversubscribe the 2-core box and thrash, serially and
+    in parallel. Every tesseract invocation in the server runs
+    under this env."""
+    env = dict(os.environ)
+    env["OMP_THREAD_LIMIT"] = "1"
+    return env
+
 try:
     from PIL import Image
 except Exception:
@@ -69,7 +81,7 @@ def _tesseract_tsv(exe, img_path, psm="3"):
     Lines are reconstructed from block/par/line groups so the MRZ
     finder still sees real lines. Raises on hard failure."""
     out = subprocess.run([exe, img_path, "stdout", "--psm", psm, "tsv"],
-                         capture_output=True, text=True, timeout=60)
+                         capture_output=True, text=True, timeout=60, env=_tess_env())
     rows = (out.stdout or "").splitlines()
     if not rows:
         return "", -1.0
@@ -104,7 +116,19 @@ def _prep_variants(path):
     if Image is None:
         return variants
     im = Image.open(path).convert("L")
-    im2 = im.resize((im.width * 2, im.height * 2), Image.LANCZOS)
+    # Upscale for OCR, capped: tesseract's accuracy plateaus once
+    # the print is ~300dpi-equivalent, and pass COST grows with
+    # pixels — a 2560px-long slip photo at 2x made each pass ~20s
+    # (measured 2026-10-27 on the owner's real upload; the read-back
+    # then outlived the tunnel timeout and the page reported a
+    # failure for a read that had actually succeeded). Cap the
+    # rendition's long side at 3600px; small images still get 2x.
+    _long = max(im.width, im.height)
+    _factor = 2.0 if 2 * _long <= 3600 else max(1.0, 3600 / _long)
+    if _factor != 1.0:
+        im2 = im.resize((max(1, int(im.width * _factor)), max(1, int(im.height * _factor))), Image.LANCZOS)
+    else:
+        im2 = im
     fd, tmp = tempfile.mkstemp(suffix=".png"); os.close(fd)
     im2.save(tmp, format="PNG")
     variants.append(("plain", tmp))
@@ -146,7 +170,7 @@ def _mrz_band_text(path, exe):
             fd, tmp = tempfile.mkstemp(suffix=".png"); os.close(fd)
             band.save(tmp, format="PNG")
             out = subprocess.run([exe, tmp, "stdout", "--psm", "6"],
-                                 capture_output=True, text=True, timeout=60)
+                                 capture_output=True, text=True, timeout=60, env=_tess_env())
             last = (out.stdout or "").strip()
         except Exception:
             last = ""
@@ -299,7 +323,7 @@ def normalize_orientation_bytes(data, expected_aspect_range=None, portrait_expec
         small0.save(tmp, format="PNG")
         try:
             out_osd = subprocess.run([exe, tmp, "stdout", "--psm", "0"],
-                                     capture_output=True, text=True, timeout=60)
+                                     capture_output=True, text=True, timeout=60, env=_tess_env())
             fields = {}
             for line in (out_osd.stdout or "").splitlines():
                 if ":" in line:
@@ -383,7 +407,32 @@ def _quick_token_yield(img_path):
             except Exception: pass
 
 
+_READING_PATH_CACHE = {}
+
+
 def _reading_path(path):
+    """Memoised _reading_path_uncached: one verification reads the
+    same file through read_document_text, ocr_words, classification
+    and extraction, and each used to re-run the full framing
+    analysis + warp + yield probes (measured as a major share of
+    the multi-minute read, 2026-10-27). Keyed by file version;
+    a cached warp that no longer exists is recomputed."""
+    try:
+        st = os.stat(path)
+        key = (path, st.st_mtime_ns, st.st_size)
+        hit = _READING_PATH_CACHE.get(key)
+        if hit is not None and os.path.exists(hit[0]):
+            return hit
+        result = _reading_path_uncached(path)
+        if len(_READING_PATH_CACHE) >= 6:
+            _READING_PATH_CACHE.clear()
+        _READING_PATH_CACHE[key] = result
+        return result
+    except Exception:
+        return _reading_path_uncached(path)
+
+
+def _reading_path_uncached(path):
     """The image OCR should READ: the perspective-warped rendition
     when framing finds a document quad in the capture, else the
     original. Returns (effective_path, warp_findings_or_None).
@@ -442,24 +491,25 @@ def read_document_text(path, expect_mrz=True):
         variants = [("raw", path)]
     passes = []
     try:
-        for name, vpath in variants:
+        # The passes are independent tesseract subprocess runs —
+        # execute them CONCURRENTLY (the serial loop cost 44s for
+        # two passes on the owner's real slip, 2026-10-27; the
+        # machine has 2 cores, so 2 workers). Pass ORDER and the
+        # winner logic below are unchanged.
+        def _run_pass(_nv):
+            _name, _vpath = _nv
             try:
-                text, conf = _tesseract_tsv(exe, vpath)
+                _text, _conf = _tesseract_tsv(exe, _vpath)
             except Exception:
-                # Fall back to the plain-text run for this pass.
-                out = subprocess.run([exe, vpath, "stdout", "--psm", "3"],
-                                     capture_output=True, text=True, timeout=60)
-                text, conf = (out.stdout or "").strip(), -1.0
-            parsed = C.parse_mrz(text)
-            passes.append({"name": name, "text": text, "confidence": round(conf, 1),
-                           "chars": len(text), "mrz_valid": bool(parsed and parsed.get("valid"))})
-            # Early exit (2026-10-26 perf fix): a check-digit-VALID MRZ
-            # with substantial text is mathematically verified — later
-            # passes cannot improve on it, and on noisy photos each
-            # extra tesseract run costs seconds. Non-MRZ documents are
-            # unaffected: all passes still run for field extraction.
-            if parsed and parsed.get("valid") and len(text) >= 40:
-                break
+                out = subprocess.run([exe, _vpath, "stdout", "--psm", "3"],
+                                     capture_output=True, text=True, timeout=60, env=_tess_env())
+                _text, _conf = (out.stdout or "").strip(), -1.0
+            _parsed = C.parse_mrz(_text)
+            return {"name": _name, "text": _text, "confidence": round(_conf, 1),
+                    "chars": len(_text), "mrz_valid": bool(_parsed and _parsed.get("valid"))}
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=2) as _pool:
+            passes = list(_pool.map(_run_pass, variants))
     finally:
         for name, vpath in variants:
             if vpath != path:
@@ -559,7 +609,7 @@ def _ocr_words_uncached(path, force_tiles=False):
         with Image.open(vpath) as vim:
             vw, vh = vim.size
         out = subprocess.run([exe, vpath, "stdout", "--psm", "3", "tsv"],
-                             capture_output=True, text=True, timeout=60)
+                             capture_output=True, text=True, timeout=60, env=_tess_env())
         words = []
         for row in (out.stdout or "").splitlines()[1:]:
             parts = row.split("\t")
@@ -669,7 +719,7 @@ def _ocr_words_uncached(path, force_tiles=False):
                             _touts = []
                             for _psm in ("3", "6"):
                                 _tout = subprocess.run([exe, _ttmp, "stdout", "--psm", _psm, "tsv"],
-                                                       capture_output=True, text=True, timeout=60)
+                                                       capture_output=True, text=True, timeout=60, env=_tess_env())
                                 _touts.append(_tout.stdout or "")
                         finally:
                             try: os.unlink(_ttmp)
