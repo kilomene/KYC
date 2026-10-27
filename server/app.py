@@ -1296,17 +1296,23 @@ def make_handler(db: DB, data_dir: str):
                 # requires it) and are never touched.
                 entry0 = DOCREG.get_document(country, kind) or {}
                 rng = FRAMING.expected_range_from_entry(entry0)
+                tpl0, _lvl0 = TEMPLATES.get_template(country, kind)
+                portrait_expected0 = bool(tpl0 and tpl0.get("portrait_expected"))
                 orient_front = orient_back = None
                 if method_front == "file_upload":
-                    new_data, orient_front = VISION.normalize_orientation_bytes(front["data"], rng)
+                    new_data, orient_front = VISION.normalize_orientation_bytes(front["data"], rng, portrait_expected=portrait_expected0)
                     if orient_front.get("applied"):
-                        front = {**front, "data": new_data, "content_type": "image/jpeg",
-                                 "filename": (front["filename"] or "front") + ".jpg"}
+                        is_png = new_data[:4] == b"\x89PNG"
+                        front = {**front, "data": new_data,
+                                 "content_type": "image/png" if is_png else "image/jpeg",
+                                 "filename": (front["filename"] or "front") + (".png" if is_png else ".jpg")}
                 if back and back["data"] and method_back == "file_upload":
-                    new_data, orient_back = VISION.normalize_orientation_bytes(back["data"], rng)
+                    new_data, orient_back = VISION.normalize_orientation_bytes(back["data"], rng, portrait_expected=portrait_expected0)
                     if orient_back.get("applied"):
-                        back = {**back, "data": new_data, "content_type": "image/jpeg",
-                                "filename": (back["filename"] or "back") + ".jpg"}
+                        is_png = new_data[:4] == b"\x89PNG"
+                        back = {**back, "data": new_data,
+                                "content_type": "image/png" if is_png else "image/jpeg",
+                                "filename": (back["filename"] or "back") + (".png" if is_png else ".jpg")}
                 def save(part, tag):
                     ext = ".jpg" if "jpeg" in (part["content_type"] or "") or (part["filename"] or "").lower().endswith((".jpg", ".jpeg")) else ".png"
                     rel = os.path.join(rel_dir, f"{did}_{tag}{ext}")
