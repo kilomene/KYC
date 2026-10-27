@@ -156,5 +156,90 @@ class TestFlowScoping(unittest.TestCase):
         self.assertIn("2048", html)
 
 
+class TestOrientationNormalization(unittest.TestCase):
+    """Owner's order 2026-10-26, from his own sideways upload: 'it
+    can be portrait, it can be landscape no matter how.' Uploaded
+    images are stored upright; the reader never has to care how the
+    photo was held."""
+
+    def _normalized(self, data):
+        from server import vision as V
+        out, info = V.normalize_orientation_bytes(data, (1.2, 2.8))
+        return out, info
+
+    def test_sideways_slip_is_stored_upright(self):
+        from PIL import Image
+        raw = _synthetic_slip_bytes()
+        im = Image.open(io.BytesIO(raw))
+        for angle in (90, -90, 180):
+            rot = im.rotate(angle, expand=True)
+            buf = io.BytesIO(); rot.save(buf, format="PNG")
+            out, info = self._normalized(buf.getvalue())
+            self.assertTrue(info["applied"], (angle, info))
+            # the corrected image reads the number cleanly
+            fd, path = __import__("tempfile").mkstemp(suffix=".jpg")
+            os.write(fd, out); os.close(fd)
+            try:
+                from server import fieldtemplates as FT
+                from server import checks as C
+                ocr = C.check_ocr(path, expect_mrz=False)
+                ex = FT.extract_fields(path, "NG", "nin_slip",
+                                       ocr_text=ocr.get("text", ""),
+                                       ocr_texts=ocr.get("pass_texts"))
+                num = ex["findings"]["fields"]["number"]
+                self.assertEqual(num["value"], SLIP_NIN, (angle, ex))
+            finally:
+                os.unlink(path)
+
+    def test_upright_slip_is_never_rotated(self):
+        out, info = self._normalized(_synthetic_slip_bytes())
+        self.assertFalse(info["applied"], info)
+        self.assertEqual(info["angle"], 0, info)
+
+    def test_rotated_upload_tallies_end_to_end(self):
+        from PIL import Image
+        im = Image.open(io.BytesIO(_slip_on_table_bytes()))
+        rot = im.rotate(90, expand=True)
+        buf = io.BytesIO(); rot.save(buf, format="PNG")
+        with Server() as srv:
+            _, key, _ = make_tenant(srv)
+            app, sess, token = _document_session(srv, key, level=1)
+            st, r = _upload(srv, token, buf.getvalue(), "nin_slip", claimed=SLIP_NIN)
+            self.assertEqual(st, 201, r)
+            st, p = call(srv, "POST", "/v1/flow/document/process",
+                         {"document_id": r["document_id"]}, token)
+            self.assertEqual(st, 200, p)
+            self.assertEqual(p["number_tally"]["status"], "pass", p)
+            self.assertTrue(p["number_tally"]["match"], p)
+
+
+class TestNumberZoneRecovery(unittest.TestCase):
+    """The corroborated digit-zone recovery: completes a partial
+    primary read only on a decisive variant vote that agrees with
+    the digits already read; a conflicting partial vetoes it."""
+
+    def _degraded_path(self):
+        from PIL import Image, ImageFilter
+        im = Image.open(io.BytesIO(_synthetic_slip_bytes())).convert("RGB")
+        im = im.resize((560, 280), Image.LANCZOS).filter(ImageFilter.GaussianBlur(1.2))
+        buf = io.BytesIO(); im.save(buf, format="JPEG", quality=45)
+        fd, path = __import__("tempfile").mkstemp(suffix=".jpg")
+        os.write(fd, buf.getvalue()); os.close(fd)
+        self.addCleanup(os.unlink, path)
+        return path
+
+    def test_recovery_completes_a_corroborated_partial(self):
+        from server import fieldtemplates as FT
+        spec = FT.get_field_template("NG", "nin_slip")["fields"]["number"]
+        got = FT._recover_number_zone(self._degraded_path(), spec, SLIP_NIN[:8])
+        self.assertEqual(got, SLIP_NIN)
+
+    def test_recovery_vetoed_by_a_conflicting_partial(self):
+        from server import fieldtemplates as FT
+        spec = FT.get_field_template("NG", "nin_slip")["fields"]["number"]
+        got = FT._recover_number_zone(self._degraded_path(), spec, "99999999")
+        self.assertIsNone(got)
+
+
 if __name__ == "__main__":
     unittest.main()
