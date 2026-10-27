@@ -84,14 +84,35 @@ def derive_document_identity(extracted_fields=None, mrz_parsed=None, uploaded=No
 
     -> {"first_name", "last_name", "dob", "number", "expiry",
         "sources": {field: "mrz"|"extraction"|"upload"|None},
+        "number_format_valid": True|False|None,
+        "name_fields_carried": [field names the read was expected to
+        produce — the extraction template's name fields, or both when
+        a valid MRZ carried the names],
         "any": bool}
     Values are ISO dates / printed-case names, or None when no source
-    read them — nothing is ever invented."""
+    read them — nothing is ever invented.
+
+    The read-back contract (missing_read_fields) judges the identity
+    BY THIS EVIDENCE, not by presence alone: a number the extraction
+    read but whose format FAILED validation is stamped
+    number_format_valid=False here, so presence of a string in
+    "number" can never again masquerade as a successful read (the
+    Session-5 diagnosis: the read-back said 'complete' over a number
+    that was a format-invalid header token)."""
     extracted_fields = extracted_fields or {}
     uploaded = uploaded or {}
     mrz = mrz_parsed if (mrz_parsed and mrz_parsed.get("valid")) else None
     out = {"first_name": None, "last_name": None, "dob": None,
-           "number": None, "expiry": None, "sources": {}}
+           "number": None, "expiry": None, "sources": {},
+           "number_format_valid": None, "name_fields_carried": []}
+    # Which name fields was this read expected to produce? The
+    # extraction findings carry one entry per template field, so their
+    # keys ARE the template's field set; a valid MRZ always encodes
+    # surname + given names.
+    carried = [f for f in ("surname", "given_names") if f in extracted_fields]
+    if mrz and mrz.get("names"):
+        carried = ["surname", "given_names"]
+    out["name_fields_carried"] = carried
 
     # ---- names ----
     if mrz and mrz.get("names"):
@@ -136,12 +157,20 @@ def derive_document_identity(extracted_fields=None, mrz_parsed=None, uploaded=No
     if mrz and mrz.get("document_number"):
         out["number"] = mrz["document_number"]
         out["sources"]["number"] = "mrz"
+        out["number_format_valid"] = True   # check-digit validated by construction
     elif ext_num and num_field.get("format_valid") is True:
         out["number"] = ext_num
         out["sources"]["number"] = "extraction"
+        out["number_format_valid"] = True
     elif ext_num:
+        # Adopted (it is the only read there is) but stamped with the
+        # validation verdict the extraction actually reached — False
+        # when the type's format rejected it, None when the type
+        # defines no format to judge it by. missing_read_fields
+        # treats a False stamp as NOT read.
         out["number"] = ext_num
         out["sources"]["number"] = "extraction"
+        out["number_format_valid"] = num_field.get("format_valid")
     elif uploaded.get("doc_number"):
         out["number"] = uploaded["doc_number"]
         out["sources"]["number"] = "upload"
@@ -165,16 +194,34 @@ def derive_document_identity(extracted_fields=None, mrz_parsed=None, uploaded=No
 
 def missing_read_fields(identity, doc_entry=None):
     """The read-back contract for the hosted flow: which REQUIRED
-    identity fields the document reads did not produce. Name and
-    document number are always required. DOB is required only where
-    the document type carries an MRZ — the MRZ always encodes a DOB,
-    so a missing DOB there means the read failed; paper types that
-    print no DOB (the standard NG NIN slip) must never be faulted
-    for not having one."""
+    identity fields the document reads did not produce.
+
+    Name: when the read was expected to produce BOTH name fields
+    (identity["name_fields_carried"] — the extraction template
+    carries surname AND given_names, or a valid MRZ carried the
+    names), BOTH must be present; one name alone is a partial read
+    and the applicant rescans. Identity dicts without that evidence
+    (hand-built, pre-contract) keep the legacy rule: either name
+    satisfies the name requirement.
+
+    Number: presence is not a read. A number stamped
+    number_format_valid=False (the type HAS a format/validator and
+    the read failed it) is reported missing — the Session-5 defect
+    was this function calling a format-invalid header token a
+    completed read because a string was present.
+
+    DOB is required only where the document type carries an MRZ —
+    the MRZ always encodes a DOB, so a missing DOB there means the
+    read failed; paper types that print no DOB (the standard NG NIN
+    slip) must never be faulted for not having one."""
     missing = []
-    if not (identity.get("first_name") or identity.get("last_name")):
+    carried = set(identity.get("name_fields_carried") or [])
+    if {"surname", "given_names"} <= carried:
+        if not identity.get("last_name") or not identity.get("first_name"):
+            missing.append("name")
+    elif not (identity.get("first_name") or identity.get("last_name")):
         missing.append("name")
-    if not identity.get("number"):
+    if not identity.get("number") or identity.get("number_format_valid") is False:
         missing.append("number")
     if (doc_entry or {}).get("mrz") and not identity.get("dob"):
         missing.append("dob")
