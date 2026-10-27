@@ -622,6 +622,25 @@ def check_document_framing(path=None, data=None, expected_aspect_range=None):
     # will read the document from the warped rendition.
     warped = warp_image(img, quad)
     findings["warp_applied"] = warped is not None
+    # Decision-grade geometry gate (2026-10-26, owner session-5 lesson):
+    # an accepted quad whose aspect sits in the OUTER QUARTILE of the
+    # claimed type's range on WEAK border evidence is not a measured
+    # document — it is a guess the warp will bake in as distortion
+    # (the NIN-slip capture: segmentation aspect 1.401 in range
+    # [1.2, 2.8], border support 0.375, true aspect ~2.20; the
+    # distorted warp then failed classification and hid the portrait).
+    # The honest verdict is a rescan, never a pass. A truly-measured
+    # quad is mid-range or strongly bordered, so genuine captures are
+    # unaffected.
+    if expected_aspect_range is not None and a.get("aspect"):
+        lo, hi = expected_aspect_range
+        if hi > lo:
+            pos = (a["aspect"] - lo) / (hi - lo)
+            findings["aspect_range_position"] = round(pos, 3)
+            if (pos <= 0.25 or pos >= 0.75) and (a.get("border_support") or 0) < 0.5:
+                findings["geometry_grade"] = "weak"
+                return {"status": "unclear", "findings": findings,
+                        "reason_codes": ["document_geometry_weak"]}
     ratio = a["area_ratio"]
     if ratio >= PASS_RATIO:
         findings["fill_rule"] = "area"
