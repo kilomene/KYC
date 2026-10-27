@@ -147,7 +147,13 @@ class TestFlowPageContract(unittest.TestCase):
             cls.html = f.read()
 
     def test_no_file_input_no_shutter(self):
-        self.assertNotIn('type="file"', self.html)
+        # D9 amendment (owner's order 2026-10-26): exactly ONE file
+        # input exists on the page — #nin-file inside the NIN-slip
+        # upload panel, rendered only for nin_slip. Every other
+        # document type remains live-scanner-only, and there is still
+        # no shutter button anywhere.
+        self.assertEqual(self.html.count('type="file"'), 1)
+        self.assertIn('id="nin-file"', self.html)
         self.assertNotIn("capture-btn", self.html)
 
     def test_guidance_map_covers_every_state(self):
