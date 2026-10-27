@@ -1332,23 +1332,46 @@ $('nin-file').addEventListener('change', () => {
   if(f){ $('nin-preview').src = URL.createObjectURL(f); $('nin-preview').style.display = ''; }
   ninReady();
 });
+async function downscaleForUpload(file){
+  // A camera-roll photo is 4-8MB; the tunnel refuses bodies over
+  // ~2.8MB (HTTP 413 — the owner's first upload hit exactly that).
+  // The scanner path never trips it because it captures at maxDim
+  // 2048; the upload path now matches that contract: decode, scale
+  // to 2048 max dimension, re-encode as JPEG (~0.4-0.9MB, and the
+  // resolution the server pipeline is tuned for). Any decode failure
+  // falls back to the original file.
+  try{
+    if(file.size < 2400000 && !/heic|heif/i.test(file.type + ' ' + file.name)) return file;
+    const bmp = await createImageBitmap(file);
+    const scale = Math.min(1, 2048 / Math.max(bmp.width, bmp.height));
+    const w = Math.max(1, Math.round(bmp.width * scale)), h = Math.max(1, Math.round(bmp.height * scale));
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    c.getContext('2d').drawImage(bmp, 0, 0, w, h);
+    const blob = await new Promise(res => c.toBlob(res, 'image/jpeg', 0.88));
+    return blob || file;
+  }catch(e){ return file; }
+}
 $('btn-nin-use').onclick = async () => {
   const f = $('nin-file').files && $('nin-file').files[0];
   if(!f || ninDigits().length !== 11) return;
   $('btn-nin-use').disabled = true;
   try{
-    docState.frontBlob = f; docState.backBlob = null;
+    const up = await downscaleForUpload(f);
+    docState.frontBlob = up; docState.backBlob = null;
     const fd = new FormData();
     fd.append('kind', $('kind').value); fd.append('issuing_country', $('country').value);
     fd.append('claimed_number', ninDigits());
     fd.append('capture_meta', JSON.stringify({front:{method:'file_upload', side:'front'}}));
-    fd.append('front', f, f.name || 'nin-slip.jpg');
+    fd.append('front', up, 'nin-slip.jpg');
     const r = await api('POST', '/v1/flow/document', fd, true, true);
     docState.docId = r.document_id;
     upsertDocInfo({id:r.document_id, kind:r.kind, issuing_country:r.issuing_country, has_front:true, has_back:false});
     msg('Slip uploaded.');
     finishDocStep();
-  }catch(e){ msg(e.message, true); $('btn-nin-use').disabled = false; }
+  }catch(e){
+    if(e.status === 413){ $('nin-note').textContent = 'That photo is too large to send. Pick it again — the page shrinks it automatically — or choose a smaller copy.'; }
+    msg(e.message, true); $('btn-nin-use').disabled = false;
+  }
 };
 $('btn-nin-retype').onclick = async () => {
   const digits = ($('nin-retype-input').value || '').replace(/\D/g, '');
