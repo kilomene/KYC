@@ -1302,7 +1302,9 @@ async function finishDocStep(){
     (r.missing || []).forEach(m => { if(READ_MISSING[m]) parts.push(READ_MISSING[m]); });
     $('doc-read-status').textContent = 'We could not read ' + (parts.length ? parts.map(p => p[0]).join(' and ') : 'that scan') + '.';
     $('doc-read-text').textContent = nm ? ('We did read: ' + nm + (rd.number ? ' · ' + rd.number : '')) : '';
-    $('doc-read-note').textContent = (parts.map(p => p[1]).join(' ') || 'Please rescan.') + ' There is nothing to type — the document is the only source, so a closer, sharper rescan is the fix.';
+    $('doc-read-note').textContent = (parts.map(p => p[1]).join(' ') || 'Please rescan.') + (isNinSlip()
+      ? ' For the slip, the photo itself is everything: choose the ORIGINAL photo of the slip — not a screenshot and not a forwarded copy (those are compressed and lose the fine print) — with the slip filling the frame.'
+      : ' There is nothing to type — the document is the only source, so a closer, sharper rescan is the fix.');
     VOICE.say('doc_read_bad', true);
   }
 }
@@ -1327,10 +1329,24 @@ function ninReady(){
   $('nin-note').textContent = (ninDigits().length && ninDigits().length !== 11) ? 'The NIN is 11 digits.' : '';
 }
 $('nin-number').addEventListener('input', ninReady);
-$('nin-file').addEventListener('change', () => {
+$('nin-file').addEventListener('change', async () => {
   const f = $('nin-file').files && $('nin-file').files[0];
   if(f){ $('nin-preview').src = URL.createObjectURL(f); $('nin-preview').style.display = ''; }
   ninReady();
+  // Resolution advisory (owner's session-10 lesson, 2026-10-26): the
+  // same slip photo reached the server at two different resolutions
+  // on two picks — the phone can hand over a reduced copy — and the
+  // small copy's smallest print falls below what any reader can
+  // recover. Warn BEFORE the wasted round-trip; never block.
+  if(f){
+    try{
+      const bmp = await createImageBitmap(f);
+      const longest = Math.max(bmp.width, bmp.height);
+      if(longest < 1500){
+        $('nin-note').textContent = 'This copy is small (' + bmp.width + '×' + bmp.height + ') — small copies lose the slip\'s fine print and often cannot be read. If you have the original photo, choose that instead.';
+      }
+    }catch(e){ /* advisory only */ }
+  }
 });
 async function downscaleForUpload(file){
   // A camera-roll photo is 4-8MB; the tunnel refuses bodies over
