@@ -27,7 +27,7 @@
 // The tunnel endpoint is /tunnel?secret=<TUNNEL_SECRET>. Everything else is
 // public traffic for the KYC platform origin.
 
-const HEAD_TIMEOUT_MS = 30000;   // wait for a complete reply OR a stream-start
+const HEAD_TIMEOUT_MS = 60000;   // wait for a complete reply OR a stream-start
 const STREAM_IDLE_MS = 90000;    // origin heartbeats every 25s; 90s = dead air
 
 function b64encode(bytes) {
