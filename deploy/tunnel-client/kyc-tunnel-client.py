@@ -50,7 +50,7 @@ DEFAULT_URL = "wss://kyc-tunnel.ayiijumo.workers.dev/tunnel"
 ORIGIN_HOST = "127.0.0.1"
 ORIGIN_PORT = 8790
 PING_EVERY = 25
-ORIGIN_TIMEOUT = 20
+ORIGIN_TIMEOUT = 45
 LOG = os.path.expanduser("~/workspace/KYC/logs/tunnel-client.log")
 
 HOP_BY_HOP = {"connection", "transfer-encoding", "keep-alive", "upgrade",
