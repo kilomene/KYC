@@ -158,7 +158,67 @@ def _mrz_band_text(path, exe):
             return last
     return last
 
-def normalize_orientation_bytes(data, expected_aspect_range=None):
+def _portrait_orientation(im0, expected_aspect_range=None):
+    """Orientation from the document's printed portrait — the third
+    decider, for the case the text deciders cannot see. Tesseract's
+    page segmentation auto-rotates text internally, which can erase
+    the OCR-score evidence entirely (measured on a sideways slip
+    photographed on a table: 27.9k as-is vs 27.8k corrected — a
+    tie), and OSD is blind on noisy photos. A printed face is not
+    ambiguous: YuNet detects faces upright and essentially never
+    sideways or upside-down, and the landmark order (eyes above
+    nose above mouth) confirms the direction. Returns the CW angle
+    whose rotation puts a qualifying face upright, or None when no
+    rotation qualifies decisively."""
+    try:
+        if cv2 is None:
+            return None
+        from . import face as FACE
+        if not FACE.models_present():
+            return None
+        import numpy as _np
+        img = cv2.cvtColor(_np.array(im0), cv2.COLOR_RGB2BGR)
+        try:
+            from . import framing as FRAMING
+            a = FRAMING.analyse_image(img, expected_aspect_range)
+            if a and a.get("quad") is not None:
+                q = _np.array(a["quad"], dtype="float64")
+                H, W = img.shape[:2]
+                x0 = int(max(0, q[:, 0].min())); x1 = int(min(W, q[:, 0].max()))
+                y0 = int(max(0, q[:, 1].min())); y1 = int(min(H, q[:, 1].max()))
+                if x1 - x0 > 80 and y1 - y0 > 80:
+                    img = img[y0:y1, x0:x1]
+        except Exception:
+            pass
+        results = {}
+        for angle in (0, 90, 180, 270):
+            try:
+                rot = img if angle == 0 else _np.rot90(img, k=(4 - angle // 90) % 4)
+                for f in FACE.detect_faces(rot):
+                    score = float(f[14]) if len(f) > 14 else 0.0
+                    if score < 0.75:
+                        continue
+                    eye_y = max(float(f[5]), float(f[7]))
+                    nose_y = float(f[9])
+                    mouth_y = min(float(f[11]), float(f[13]))
+                    fh = float(f[3]) or 1.0
+                    if eye_y < nose_y - 0.02 * fh and nose_y < mouth_y - 0.02 * fh:
+                        if score > results.get(angle, 0.0):
+                            results[angle] = score
+                        break
+            except Exception:
+                continue
+        if not results:
+            return None
+        ranked = sorted(results.items(), key=lambda kv: -kv[1])
+        if len(ranked) > 1 and ranked[0][1] - ranked[1][1] < 0.10:
+            return None  # two orientations claim a face — not decisive
+        return ranked[0][0]
+    except Exception:
+        return None
+
+
+def normalize_orientation_bytes(data, expected_aspect_range=None, portrait_expected=False):
     """Orientation normalization for UPLOADED document images
     (owner's order 2026-10-26, after his own upload proved the gap):
     a slip photographed sideways — portrait photo, landscape document
@@ -170,7 +230,11 @@ def normalize_orientation_bytes(data, expected_aspect_range=None):
     text length on a downscaled pass), with a bonus when framing
     finds the document quad at an aspect inside the type's expected
     range. A rotation is applied ONLY when it beats the as-is read by
-    >= 1.5x — an upright image is never gratuitously rotated. Returns
+    >= 1.5x — an upright image is never gratuitously rotated. When
+    the text deciders (OSD, then this score) cannot decide and the
+    document type carries a printed portrait, the portrait itself
+    decides (_portrait_orientation): a face is only detectable
+    upright, which no amount of text auto-rotation can fake. Returns
     (bytes, info); on any doubt the original bytes come back with
     applied=False. The stored artifact IS the corrected image, so
     every downstream read (framing, OCR, zones, classification,
@@ -253,13 +317,24 @@ def normalize_orientation_bytes(data, expected_aspect_range=None):
         chosen = None
     if chosen is None:
         score, angle, _im = best
-        if angle == 0 or score < 1.5 * max(base, 1.0) or score < 200:
-            return data, info
-        chosen = angle
-        info["via"] = "score"
+        if not (angle == 0 or score < 1.5 * max(base, 1.0) or score < 200):
+            chosen = angle
+            info["via"] = "score"
+    if chosen is None and portrait_expected:
+        face_angle = _portrait_orientation(im0, expected_aspect_range)
+        if face_angle:
+            chosen = face_angle
+            info["via"] = "portrait"
+    if chosen is None:
+        return data, info
     im = im0 if chosen == 0 else im0.rotate(-chosen, expand=True)
     out = io.BytesIO()
-    im.save(out, format="JPEG", quality=92)
+    # PNG, lossless: the source has usually already survived one
+    # lossy encode on its way in (the client's tunnel-cap downscale);
+    # the stored artifact must not bleed a second generation of
+    # detail — at the margin, those pixels are the difference
+    # between a digit that reads and one that does not.
+    im.save(out, format="PNG")
     info.update({"applied": True, "angle": chosen})
     return out.getvalue(), info
 
@@ -397,6 +472,87 @@ def ocr_words(path):
                 continue
             words.append({"text": parts[11], "conf": conf,
                           "box": (left / vw, top / vh, (left + width) / vw, (top + height) / vh)})
+        if len(words) < 60:
+            # Tiled fallback (owner's low-resolution upload,
+            # 2026-10-26): at low source resolution the full-page
+            # pass goes nearly blind — 47 words on his real slip,
+            # with neither the field labels nor the values found —
+            # while the SAME image read in overlapping quadrant
+            # tiles yields the labels and values at high confidence
+            # ('NIN:' 96, 'AYANSIPE' 91, 'ZENAS' 78 measured). Small
+            # print needs the pixels per word that tiling gives it.
+            # Tiles are cut from this same 2x prep image, so tile
+            # boxes map back into reading-image fractions directly;
+            # duplicates in the overlaps are dropped by centre.
+            try:
+                import cv2 as _cv2
+                timg = _cv2.imread(vpath)
+                if timg is not None:
+                    th, tw = timg.shape[:2]
+                    # Dedupe by BOX OVERLAP, not centre+text: the
+                    # full-page pass and a tile often read the same
+                    # printed word twice with slightly different
+                    # boxes AND different text (a degraded token and
+                    # its clean twin — 'AXANSIPE' beside 'AYANSIPE');
+                    # keeping both makes downstream harvests join
+                    # them into one Frankenstein value. When boxes
+                    # overlap substantially, the higher-confidence
+                    # read wins.
+                    def _iou(a, b):
+                        # Overlap coefficient (inter / smaller area),
+                        # not Jaccard: a tight tile box sits INSIDE
+                        # the full-page pass's loose box for the same
+                        # word — Jaccard scores that ~0.3 and misses
+                        # the duplicate; containment scores it 1.0.
+                        ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+                        iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+                        inter = ix * iy
+                        if inter <= 0:
+                            return 0.0
+                        smaller = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]))
+                        return inter / smaller if smaller > 0 else 0.0
+                    seen = [w for w in words]
+                    for qy in (0.0, 0.44):
+                        for qx in (0.0, 0.44):
+                            tx0, ty0 = int(qx * tw), int(qy * th)
+                            tile = timg[ty0:int((qy + 0.56) * th), tx0:int((qx + 0.56) * tw)]
+                            fd, ttmp = tempfile.mkstemp(suffix=".png"); os.close(fd)
+                            try:
+                                _cv2.imwrite(ttmp, tile)
+                                tout = subprocess.run([exe, ttmp, "stdout", "--psm", "3", "tsv"],
+                                                      capture_output=True, text=True, timeout=60)
+                            finally:
+                                try: os.unlink(ttmp)
+                                except Exception: pass
+                            tth, ttw = tile.shape[:2]
+                            for row in (tout.stdout or "").splitlines()[1:]:
+                                parts = row.split("\t")
+                                if len(parts) != 12 or parts[0] != "5" or not parts[11].strip():
+                                    continue
+                                try:
+                                    left, top, width, height = (float(parts[6]), float(parts[7]), float(parts[8]), float(parts[9]))
+                                    conf = float(parts[10])
+                                except Exception:
+                                    continue
+                                gx = (tx0 + left) / tw; gy = (ty0 + top) / th
+                                gx1 = (tx0 + left + width) / tw; gy1 = (ty0 + top + height) / th
+                                nbox = (gx, gy, gx1, gy1)
+                                clash = None
+                                for s in seen:
+                                    if _iou(nbox, s["box"]) > 0.6:
+                                        clash = s
+                                        break
+                                if clash is not None:
+                                    if conf > clash["conf"]:
+                                        clash["text"] = parts[11]
+                                        clash["conf"] = conf
+                                        clash["box"] = nbox
+                                    continue
+                                nw = {"text": parts[11], "conf": conf, "box": nbox}
+                                seen.append(nw)
+                                words.append(nw)
+            except Exception:
+                pass
         return words
     except Exception:
         return []
