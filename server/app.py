@@ -21,6 +21,9 @@ from . import docregistry as DOCREG
 from .engine import decide, required_for, verification_layers, biometric_evidence, document_evidence, face_match_applicable
 from . import webhooks as WH
 from . import face as FACE
+from . import fraud as FRAUD
+from . import registry as REG
+from . import billing as BILLING
 from . import liveness as LV
 from . import authenticity as AUTH
 from . import risk as RISK
@@ -176,6 +179,55 @@ def _json_default(o):
         except Exception:
             pass
     raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")
+
+# In-flight document read-back jobs, keyed by document id:
+# {done: Event, payload: dict|None, error: str|None, started: float}.
+# See the /v1/flow/document/process handler for the contract.
+_READ_JOBS = {}
+
+# Session ids whose decision pipeline is running in THIS process
+# (WS5): the submit reaper re-drives 'processing' claims whose
+# worker is not in this set and whose claim has gone quiet — the
+# restart-recovery half of the submit queue.
+_ACTIVE_SUBMITS = set()
+_ACTIVE_SUBMITS_LOCK = threading.Lock()
+
+# Institutional vocabulary that appears in document HEADERS and
+# never in a person's name. A "name" carrying one of these words
+# is header debris from a bad read, not an identity (measured
+# 2026-10-27: an early fragmentary read adopted 'FEDERAL REPUBLIC
+# IDENTIFICATIOR' as an applicant's surname, and every later
+# correct read then failed name_mismatch against the debris).
+_NAME_NON_NAME_WORDS = {
+    "FEDERAL", "REPUBLIC", "NATIONAL", "IDENTITY", "MANAGEMENT",
+    "COMMISSION", "MINISTRY", "GOVERNMENT", "AUTHORITY", "IMMIGRATION",
+    "ELECTORAL", "INDEPENDENT", "SERVICE", "SERVICES", "DEPARTMENT",
+    "OFFICE", "BUREAU", "LICENCE", "LICENSE", "PASSPORT", "VOTER",
+    "VOTERS", "DRIVER", "DRIVERS", "CARD", "SLIP", "SYSTEM",
+}
+
+
+def _name_plausible(v):
+    """Could this string be a person's name at all? Two debris
+    shapes are rejected: any institutional header word ('FEDERAL
+    REPUBLIC IDENTIFICATIOR'), and a multi-token value whose
+    tokens are ALL fragments of 3 letters or fewer ('MAD AG OF' —
+    header initials strung together). Deliberately conservative
+    otherwise: single short surnames ('NG', 'LI') and any value
+    with a 4+ letter token pass — the screen exists to keep
+    document furniture out of identity records, not to judge
+    real names."""
+    if not v:
+        return False
+    toks = re.findall(r"[A-Za-z]+", str(v).upper())
+    if not toks:
+        return False
+    if any(t in _NAME_NON_NAME_WORDS for t in toks):
+        return False
+    if len(toks) >= 2 and all(len(t) <= 3 for t in toks):
+        return False
+    return True
+
 
 class _SubmitRejected(Exception):
     """A pre-decision rejection raised inside the decision pipeline
@@ -353,6 +405,30 @@ def make_handler(db: DB, data_dir: str):
             if p.startswith("/voice/"): return self._static(p)
             if p.startswith("/public/"): return self._static(p[len("/public/"):])
             if p == "/healthz": return self._send(200, {"ok": True})
+            if p == "/v1/platform/metrics":
+                # WS5 queue/ops visibility for the platform operator
+                # (same fail-closed gate as tenant bootstrap).
+                admin_token = os.environ.get("KYC_PLATFORM_ADMIN_TOKEN", "")
+                presented = self.headers.get("X-Platform-Admin", "")
+                if not admin_token or not secrets.compare_digest(presented, admin_token):
+                    return self._err(403, "platform metrics are restricted to the platform operator", "platform_metrics_restricted")
+                day_ago = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+                by_status = {r["status"]: r["n"] for r in db.all(
+                    "SELECT status, COUNT(*) AS n FROM sessions WHERE created_at>=? GROUP BY status", (day_ago,))}
+                by_outcome = {r["outcome"]: r["n"] for r in db.all(
+                    "SELECT outcome, COUNT(*) AS n FROM decisions WHERE created_at>=? GROUP BY outcome", (day_ago,))}
+                processing = db.one("SELECT COUNT(*) AS n FROM sessions WHERE status='processing'")["n"]
+                dlq = db.one("SELECT COUNT(*) AS n FROM webhook_deliveries WHERE status='dead'")["n"]
+                fraud_rows = db.one("SELECT COUNT(*) AS n FROM fraud_index")["n"] \
+                    if db.one("SELECT name FROM sqlite_master WHERE type='table' AND name='fraud_index'") else 0
+                with _ACTIVE_SUBMITS_LOCK:
+                    active = len(_ACTIVE_SUBMITS)
+                return self._send(200, {"window": "24h", "sessions_by_status": by_status,
+                                        "decisions_by_outcome": by_outcome,
+                                        "queue": {"processing_now": processing,
+                                                  "active_workers_here": active},
+                                        "webhook_dead_letters": dlq,
+                                        "fraud_index_rows": fraud_rows})
             # flow info
             if p == "/v1/flow/session":
                 s = self._flow_session()
@@ -391,6 +467,20 @@ def make_handler(db: DB, data_dir: str):
                 if p == "/v1/keys":
                     rows = db.all("SELECT id,tenant_id,env,key_prefix,created_at,last_used_at,revoked_at FROM api_keys WHERE tenant_id=?", (tid,))
                     return self._send(200, {"keys": [row_to_dict(r) for r in rows]})
+                if p == "/v1/usage":
+                    # WS6: the tenant's own metered usage, current
+                    # month by default (?from=&to= override, ISO).
+                    import urllib.parse as _uparse
+                    qs = _uparse.parse_qs(urlparse(self.path).query)
+                    _now = datetime.now(timezone.utc)
+                    p_from = (qs.get("from") or [_now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()])[0]
+                    p_to = (qs.get("to") or [_now.isoformat()])[0]
+                    return self._send(200, {"period": {"from": p_from, "to": p_to},
+                                            "usage": BILLING.usage_summary(db, tid, env, p_from, p_to)})
+                if p == "/v1/invoices":
+                    rows = db.all("SELECT * FROM invoices WHERE tenant_id=? AND env=? ORDER BY created_at DESC",
+                                  (tid, env)) if db.one("SELECT name FROM sqlite_master WHERE type='table' AND name='invoices'") else []
+                    return self._send(200, {"invoices": [row_to_dict(r) for r in rows]})
                 if p == "/v1/webhooks":
                     rows = db.all("SELECT id,url,events,created_at FROM webhook_endpoints WHERE tenant_id=? AND env=?", (tid, env))
                     return self._send(200, {"endpoints": [row_to_dict(r, ("events",)) for r in rows]})
@@ -696,6 +786,42 @@ def make_handler(db: DB, data_dir: str):
                     out["keys"][env] = {"id": kid, "key": raw, "note": "shown once — store it now"}
                 db.audit("platform", None, tid, "tenant.create", "tenant", tid)
                 return self._send(201, out)
+            if p in ("/v1/platform/prices", "/v1/platform/quotas", "/v1/platform/invoices"):
+                # WS6 operator billing administration (same
+                # fail-closed operator gate as tenant bootstrap).
+                admin_token = os.environ.get("KYC_PLATFORM_ADMIN_TOKEN", "")
+                presented = self.headers.get("X-Platform-Admin", "")
+                if not admin_token or not secrets.compare_digest(presented, admin_token):
+                    return self._err(403, "billing administration is restricted to the platform operator", "billing_admin_restricted")
+                b = self._json()
+                if p == "/v1/platform/prices":
+                    if b.get("level") not in (1, 2, 3): return self._err(422, "level must be 1, 2 or 3")
+                    if b.get("env") not in ("test", "live"): return self._err(422, "env must be test|live")
+                    if not isinstance(b.get("unit_price_cents"), int) or b["unit_price_cents"] < 0:
+                        return self._err(422, "unit_price_cents must be a non-negative integer")
+                    pid = BILLING.set_price(db, new_id, b["level"], b["env"], b["unit_price_cents"], b.get("currency") or "USD")
+                    db.audit("platform", None, b.get("tenant_id"), "billing.price_set", "price", pid,
+                             metadata={"level": b["level"], "env": b["env"], "unit_price_cents": b["unit_price_cents"]})
+                    return self._send(201, {"price_id": pid})
+                if p == "/v1/platform/quotas":
+                    if not b.get("tenant_id") or not isinstance(b.get("monthly_limit"), int):
+                        return self._err(422, "tenant_id and integer monthly_limit required")
+                    BILLING.ensure_schema(db)
+                    db.execute("INSERT INTO tenant_quotas(tenant_id,monthly_limit,updated_at) VALUES(?,?,?) "
+                               "ON CONFLICT(tenant_id) DO UPDATE SET monthly_limit=excluded.monthly_limit, updated_at=excluded.updated_at",
+                               (b["tenant_id"], b["monthly_limit"], now_iso()))
+                    return self._send(200, {"tenant_id": b["tenant_id"], "monthly_limit": b["monthly_limit"]})
+                # /v1/platform/invoices — generate a draft invoice
+                if not b.get("tenant_id") or not b.get("period_start") or not b.get("period_end"):
+                    return self._err(422, "tenant_id, period_start, period_end required")
+                inv, unpriced = BILLING.generate_invoice(db, new_id, b["tenant_id"], b.get("env") or "live",
+                                                         b["period_start"], b["period_end"])
+                if inv is None:
+                    return self._send(200, {"invoice": None, "unpriced_events": unpriced,
+                                            "note": "no priced, uninvoiced usage in the period"})
+                db.audit("platform", None, b["tenant_id"], "billing.invoice_generate", "invoice", inv["id"],
+                         metadata={"total_cents": inv["total_cents"], "events": inv["events"], "unpriced_events": unpriced})
+                return self._send(201, {"invoice": inv, "unpriced_events": unpriced})
             # --- flow endpoints (flow-token auth) ---
             if p.startswith("/v1/flow/"):
                 s = self._flow_session()
@@ -733,6 +859,14 @@ def make_handler(db: DB, data_dir: str):
                 b = self._json()
                 level = b.get("level")
                 if level not in (1, 2, 3): return self._err(422, "level must be 1, 2 or 3")
+                # WS6 quota: an operator-set monthly cap on LIVE
+                # verifications (test env is never capped).
+                try:
+                    _exceeded, _limit, _used = BILLING.quota_exceeded(db, tid, env)
+                except Exception:
+                    _exceeded = False
+                if _exceeded:
+                    return self._err(429, f"monthly verification quota reached ({_used}/{_limit})", "quota_exceeded")
                 credential = b.get("credential")
                 cred_claims = None; cred_id = None
                 if credential is not None:
@@ -943,6 +1077,21 @@ def make_handler(db: DB, data_dir: str):
                 db.execute("UPDATE businesses SET registry_status='document_uploaded', updated_at=? WHERE id=?", (now_iso(), biz["id"]))
                 db.audit("tenant", tid, tid, "business.document_upload", "business", biz["id"])
                 return self._send(201, {"document_id": did, "registry_status": "document_uploaded"})
+            m = re.match(r"^/v1/businesses/([\w-]+)/registry-check$", p)
+            if m:
+                # WS4: consult the AUTHORITATIVE registry for this
+                # business's country (fail-closed adapters). The
+                # outcome is stored alongside — never instead of —
+                # the reviewer's decision fields.
+                biz = db.one("SELECT * FROM businesses WHERE id=? AND tenant_id=? AND env=?", (m.group(1), tid, env))
+                if not biz: return self._err(404, "not found")
+                res = REG.lookup_business(biz["country"], biz["registration_number"], biz["legal_name"])
+                db.execute("UPDATE businesses SET registry_source=?, registry_checked_at=?, "
+                           "registry_lookup_status=?, updated_at=? WHERE id=?",
+                           (res["source"], res["checked_at"], res["status"], now_iso(), biz["id"]))
+                db.audit("tenant", tid, tid, "business.registry_check", "business", biz["id"],
+                         metadata={"source": res["source"], "status": res["status"]})
+                return self._send(200, {"business_id": biz["id"], "registry_lookup": res})
             m = re.match(r"^/v1/businesses/([\w-]+)/registry$", p)
             if m:
                 biz = db.one("SELECT * FROM businesses WHERE id=? AND tenant_id=? AND env=?", (m.group(1), tid, env))
@@ -1153,6 +1302,47 @@ def make_handler(db: DB, data_dir: str):
             return {"status": "fail", "reason_codes": ["nin_number_mismatch"],
                     "findings": {"claimed_provided": True, "extracted_present": True, "match": False}}
 
+        def _read_payload(self, s, doc, tid):
+            """The read-back payload for /v1/flow/document/process —
+            the exact body the synchronous handler used to return,
+            computed on the read job's worker thread."""
+            read = self._read_document(doc, always_read=True)
+            ident = read["identity"]
+            entry = read["entry"]
+            missing = IDENTITY.missing_read_fields(ident, entry)
+            framing_status = read["framing"]["status"]
+            complete = framing_status == "pass" and not missing
+            db.audit("applicant", s["applicant_id"], tid, "document.process", "document", doc["id"],
+                     metadata={"framing": framing_status, "missing": missing,
+                               "identity_sources": ident["sources"]})
+            return {"document_id": doc["id"], "kind": doc["kind"],
+                    "issuing_country": doc["issuing_country"],
+                    "document_label": entry.get("label") or doc["kind"],
+                    "framing": framing_status,
+                    "read": {"first_name": ident["first_name"],
+                             "last_name": ident["last_name"],
+                             "dob": ident["dob"],
+                             "number": ident["number"],
+                             "expiry": ident["expiry"]},
+                    "number_tally": ({"status": read["number_tally"]["status"],
+                                      "match": read["number_tally"]["findings"].get("match")}
+                                     if read.get("number_tally") else None),
+                    "missing": missing, "complete": complete}
+
+        def _read_job_worker(self, s, doc, tid, job):
+            """The ONE background read for a document's read-back
+            job. On any exception the job completes with an error
+            and the handler answers a retryable 500 — the read is
+            side-effect-free apart from the audit row and the
+            persisted doc_* merge, so a later poll may restart it."""
+            try:
+                job["payload"] = self._read_payload(s, doc, tid)
+            except Exception:
+                traceback.print_exc()
+                job["error"] = "read_failed"
+            finally:
+                job["done"].set()
+
         def _read_document(self, doc, always_read=False):
             """The document READING pipeline, shared by the flow
             read-back endpoint and submit: framing + multi-pass OCR +
@@ -1191,12 +1381,23 @@ def make_handler(db: DB, data_dir: str):
                         "extraction": None, "extracted_fields": {},
                         "identity": ident, "number_tally": self._number_tally(doc, ident),
                         "merged_doc_fields": dict(uploaded), "entry": entry}
-            ocr = C.check_ocr(front_path, expect_mrz=bool(entry.get("mrz")))
+            # The text passes and the word stream are independent
+            # reads of the same file — run them concurrently
+            # (2026-10-27 speed programme: serially they cost
+            # ~19s + ~9s on the owner's real slip; overlapped, the
+            # pair costs the slower of the two). Extraction then
+            # consumes both.
+            from concurrent.futures import ThreadPoolExecutor as _TPE
+            with _TPE(max_workers=2) as _pool:
+                _f_ocr = _pool.submit(C.check_ocr, front_path, expect_mrz=bool(entry.get("mrz")))
+                _f_words = _pool.submit(VISION.ocr_words, front_path)
+                ocr = _f_ocr.result()
+                _words = _f_words.result()
             ocr_text = ocr.get("text", "")
             mrz_check = C.check_mrz(ocr_text)
             parsed = mrz_check.get("parsed")
             extraction = FIELDTEMPLATES.extract_fields(front_path, doc["issuing_country"], doc["kind"],
-                                                       ocr_text=ocr_text,
+                                                       ocr_text=ocr_text, words=_words,
                                                        ocr_texts=ocr.get("pass_texts"))
             fields = (extraction.get("findings") or {}).get("fields") or {}
             ident = IDENTITY.derive_document_identity(fields, parsed, uploaded, ocr_text=ocr_text)
@@ -1205,6 +1406,46 @@ def make_handler(db: DB, data_dir: str):
                       "doc_dob": ident["dob"] or doc["doc_dob"],
                       "doc_number": ident["number"] or doc["doc_number"],
                       "doc_expiry": ident["expiry"] or doc["doc_expiry"]}
+            # Payload rescue: the document's own machine-readable
+            # code (back PDF417 / structured QR) is a source in the
+            # trust order (server/identity.py) — it fills identity
+            # slots the printed reads left empty. Decode when a back
+            # image exists or the printed read is incomplete; the
+            # decode cross-checks against the FRONT-ONLY merged
+            # fields above, and its result rides back in the return
+            # dict so submit records it without decoding twice.
+            code_decode = None
+            back_path = self._fs(doc["back_storage_path"]) if doc["back_storage_path"] else None
+            # Gate on the back image: every identity-carrying payload
+            # in the current parser set lives on a document's BACK
+            # (AAMVA PDF417, INEC PVC code, PhilID PCN); the only
+            # front codes are label-only (NIN QR) or already covered
+            # by a stronger read (Aadhaar's Verhoeff number path).
+            # Decoding a code-less single-sided image would run the
+            # full rendition ladder on every read for no evidence.
+            if back_path:
+                try:
+                    code_decode = VISION.decode_codes(front_path, back_path,
+                                                      doc_fields=merged,
+                                                      country=doc["issuing_country"], kind=doc["kind"])
+                except Exception:
+                    code_decode = None
+            if code_decode:
+                _pf = None
+                for _pentry in (code_decode.get("findings") or {}).get("payloads") or []:
+                    _pf_candidate = _pentry.get("fields") or {}
+                    if _pentry.get("validation_depth") != "label_only" and \
+                            any(_pf_candidate.get(k) for k in ("surname", "first_name", "dob", "number")):
+                        _pf = _pf_candidate
+                        break
+                if _pf:
+                    ident = IDENTITY.derive_document_identity(fields, parsed, uploaded,
+                                                              ocr_text=ocr_text, payload_fields=_pf)
+                    merged = {"doc_first_name": ident["first_name"] or doc["doc_first_name"],
+                              "doc_last_name": ident["last_name"] or doc["doc_last_name"],
+                              "doc_dob": ident["dob"] or doc["doc_dob"],
+                              "doc_number": ident["number"] or doc["doc_number"],
+                              "doc_expiry": ident["expiry"] or doc["doc_expiry"]}
             if framing["status"] != "fail":
                 db.execute("UPDATE documents SET ocr_text=?, mrz_raw=?, doc_first_name=?, doc_last_name=?, doc_dob=?, doc_number=?, doc_expiry=? WHERE id=?",
                            (ocr_text[:8000], (parsed or {}).get("line2"),
@@ -1214,6 +1455,7 @@ def make_handler(db: DB, data_dir: str):
                     "mrz_check": mrz_check, "mrz_parsed": parsed,
                     "extraction": extraction, "extracted_fields": fields,
                     "identity": ident, "number_tally": self._number_tally(doc, ident),
+                    "code_decode": code_decode,
                     "merged_doc_fields": merged, "entry": entry}
 
         def _flow_post(self, p, s):
@@ -1463,28 +1705,51 @@ def make_handler(db: DB, data_dir: str):
                 if not doc:
                     doc = db.one("SELECT * FROM documents WHERE session_id=? AND kind!='proof_of_address' ORDER BY created_at DESC LIMIT 1", (s["id"],))
                 if not doc: return self._err(404, "document not found for this session")
-                read = self._read_document(doc, always_read=True)
-                ident = read["identity"]
-                entry = read["entry"]
-                missing = IDENTITY.missing_read_fields(ident, entry)
-                framing_status = read["framing"]["status"]
-                complete = framing_status == "pass" and not missing
-                db.audit("applicant", s["applicant_id"], tid, "document.process", "document", doc["id"],
-                         metadata={"framing": framing_status, "missing": missing,
-                                   "identity_sources": ident["sources"]})
-                return self._send(200, {"document_id": doc["id"], "kind": doc["kind"],
-                                        "issuing_country": doc["issuing_country"],
-                                        "document_label": entry.get("label") or doc["kind"],
-                                        "framing": framing_status,
-                                        "read": {"first_name": ident["first_name"],
-                                                 "last_name": ident["last_name"],
-                                                 "dob": ident["dob"],
-                                                 "number": ident["number"],
-                                                 "expiry": ident["expiry"]},
-                                        "number_tally": ({"status": read["number_tally"]["status"],
-                                                          "match": read["number_tally"]["findings"].get("match")}
-                                                         if read.get("number_tally") else None),
-                                        "missing": missing, "complete": complete})
+                # Async-with-grace (2026-10-27, owner's live test):
+                # the fortified read once took ~3.5 minutes on a real
+                # upload — the tunnel cut the request at ~60s, the
+                # page declared "could not read", and the server's
+                # (correct, complete) answer died on a broken pipe.
+                # The read now runs on ONE background job per
+                # document; this call waits a bounded grace
+                # (KYC_READ_GRACE_SEC, default 40s — inside the
+                # tunnel's envelope) and then answers 202
+                # {"status": "reading"} while the flow polls. A
+                # transport failure is never a verdict again.
+                import time as _time
+                try:
+                    _cm_now = json.loads(doc["capture_meta"] or "{}")
+                except Exception:
+                    _cm_now = {}
+                _claim_fp = str(_cm_now.get("claimed_number") or "")
+                job = _READ_JOBS.get(doc["id"])
+                if job is not None and job.get("claim_fp") != _claim_fp:
+                    # The typed claim changed after this job's read
+                    # (the flow's claim-correction path) — the tally
+                    # in the cached payload is stale by construction.
+                    job = None
+                if job is not None and not job["done"].is_set() and _time.time() - job["started"] > 600:
+                    job = None  # stale worker presumed dead; restart
+                if job is None:
+                    for _k in [k for k, j in _READ_JOBS.items()
+                               if j["done"].is_set() and _time.time() - j["started"] > 600]:
+                        _READ_JOBS.pop(_k, None)
+                    job = {"done": threading.Event(), "payload": None,
+                           "error": None, "started": _time.time(),
+                           "claim_fp": _claim_fp}
+                    _READ_JOBS[doc["id"]] = job
+                    threading.Thread(target=self._read_job_worker,
+                                     args=(s, doc, tid, job), daemon=True,
+                                     name="read-" + doc["id"][:8]).start()
+                try:
+                    grace = float(os.environ.get("KYC_READ_GRACE_SEC") or 40)
+                except ValueError:
+                    grace = 40.0
+                if job["done"].wait(grace):
+                    if job["payload"] is not None:
+                        return self._send(200, job["payload"])
+                    return self._err(500, "the document read failed — please try again")
+                return self._send(202, {"status": "reading", "document_id": doc["id"]})
             if p == "/v1/flow/document/claim":
                 # Correct the typed NIN after an upload (nin_slip ONLY):
                 # a typo must not force a re-upload; the tally at
@@ -1506,6 +1771,9 @@ def make_handler(db: DB, data_dir: str):
                            (json.dumps(cm), doc["id"]))
                 db.audit("applicant", s["applicant_id"], tid, "document.claim_number", "document", doc["id"],
                          metadata={"kind": doc["kind"]})
+                # A corrected claim invalidates any read-back job
+                # computed against the old one (its tally is stale).
+                _READ_JOBS.pop(doc["id"], None)
                 extracted = re.sub(r"\D", "", doc["doc_number"] or "") or None
                 return self._send(200, {"claimed_number": digits, "extracted_number": extracted,
                                         "match": (extracted == digits) if extracted else None})
@@ -1610,6 +1878,8 @@ def make_handler(db: DB, data_dir: str):
             is logged and audited, so a later submit can run again.
             """
             sid = s["id"]
+            with _ACTIVE_SUBMITS_LOCK:
+                _ACTIVE_SUBMITS.add(sid)
             wdb = None
             try:
                 wdb = DB(data_dir)
@@ -1626,6 +1896,8 @@ def make_handler(db: DB, data_dir: str):
                 except Exception:
                     traceback.print_exc()
             finally:
+                with _ACTIVE_SUBMITS_LOCK:
+                    _ACTIVE_SUBMITS.discard(sid)
                 done.set()
 
         def _run_decision_pipeline(self, s, db, req_info=None):
@@ -1683,6 +1955,7 @@ def make_handler(db: DB, data_dir: str):
             # once the document is read below (server/identity.py).
             app_eff = dict(app)
             doc_read = None
+            ws7_face_embedding = None  # set from the face track below
             if doc:
                 # Fresh evidence beats credential inheritance: if a
                 # document was uploaded in this session, its checks run
@@ -1717,6 +1990,14 @@ def make_handler(db: DB, data_dir: str):
                     ocr = doc_read["ocr"]
                     record("ocr", ocr, provider="tesseract")
                     ocr_text = doc_read["ocr_text"]
+                    # Classification judges the printed labels on ALL
+                    # OCR evidence, not only the chosen pass: a header
+                    # can land in a non-chosen pass (measured on a
+                    # genuine CA licence: the chosen pass missed
+                    # "DRIVER LICENSE", the adaptive pass carried it,
+                    # and the check false-failed a genuine card).
+                    classification_text = "\n".join(
+                        t for t in [ocr_text] + list((ocr or {}).get("pass_texts") or []) if t)
                     record("mrz", doc_read["mrz_check"], provider="local-mrz")
                     parsed = doc_read["mrz_parsed"]
                     # The document row AS READ (doc_* merged from the
@@ -1783,7 +2064,12 @@ def make_handler(db: DB, data_dir: str):
                     # structured payload must AGREE with the printed fields.
                     if parsed and parsed.get("valid"):
                         record("mrz_viz_consistency", VISION.cross_check_mrz_viz(ocr_text, parsed), provider="local-vision")
-                    _code = VISION.decode_codes(front_path,
+                    # Reuse the read's decode when it ran (its cross-
+                    # check judged the payload against the FRONT-ONLY
+                    # fields — the honest comparison); decode here only
+                    # when the read did not (e.g. framing-fail fast path).
+                    _code = doc_read.get("code_decode") or VISION.decode_codes(
+                                                front_path,
                                                 self._fs(doc["back_storage_path"]) if doc["back_storage_path"] else None,
                                                 doc_fields=docm,
                                                 country=doc["issuing_country"], kind=doc["kind"])
@@ -1795,7 +2081,7 @@ def make_handler(db: DB, data_dir: str):
                     # zone, MRZ zone — not merely be a rectangle.
                     record("document_classification",
                            TEMPLATES.check_classification(front_path, doc["issuing_country"], doc["kind"],
-                                                          ocr_text=ocr_text,
+                                                          ocr_text=classification_text,
                                                           mrz_parsed=parsed if parsed and parsed.get("valid") else None),
                            provider="local-templates")
                     # Data-consistency matrix (Addition 10A): every data
@@ -1837,6 +2123,7 @@ def make_handler(db: DB, data_dir: str):
                                 pass_threshold=cfg["face_pass_threshold"], margin=cfg["face_margin"])
                             record("face_track", track, provider="yunet-sface-track")
                             agg = track.get("aggregate_embedding")
+                            ws7_face_embedding = agg
                             if not face_match_applicable(doc["issuing_country"], doc["kind"]):
                                 # The document type carries no portrait
                                 # (single source of truth: the full
@@ -1992,13 +2279,39 @@ def make_handler(db: DB, data_dir: str):
                     injection.append({"signal": "selfie_no_camera_exif", "detail": "weak signal only — many pipelines strip EXIF"})
                 if injection:
                     sig_reasons.append("injection_signal_present")
+            # --- WS7 fraud intelligence (2026-10-27): cross-session
+            # duplicate document/face detection (hashed index,
+            # tenant-scoped) + per-IP / per-applicant velocity and
+            # coordinated-abuse signals. Signals only, same
+            # doctrine: they route to review, never auto-reject.
+            ws7_findings, ws7_reasons = {}, []
+            try:
+                _doc_number = None
+                if doc_read and (doc_read.get("identity") or {}).get("number"):
+                    _doc_number = doc_read["identity"]["number"]
+                elif doc and doc["doc_number"]:
+                    _doc_number = doc["doc_number"]
+                _day_ago = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+                ws7_findings, ws7_reasons = FRAUD.evaluate(
+                    db, tid, env, s["id"], app["id"] if app else None, ip,
+                    doc["issuing_country"] if doc else None,
+                    doc["kind"] if doc else None, _doc_number,
+                    ws7_face_embedding, now_iso(), one_hour_ago, _day_ago)
+                sig_reasons.extend(ws7_reasons)
+                FRAUD.index_session(
+                    db, new_id, tid, env, s["id"], app["id"] if app else None,
+                    doc["issuing_country"] if doc else None,
+                    doc["kind"] if doc else None, _doc_number,
+                    ws7_face_embedding, now_iso())
+            except Exception as _ws7_err:
+                ws7_findings = {"ws7_error": type(_ws7_err).__name__}
             record("fraud_signals", {
                 "status": "unclear" if sig_reasons else "pass",
                 "findings": {"ip": mask_ip(ip), "ip_country": ip_country or "unknown_no_geoip_in_local_build",
                              "document_country": doc_country, "ip_document_country_mismatch": mismatch,
                              "user_agent_summary": ua, "device_class": "mobile" if any(k in ua.lower() for k in ("android", "iphone", "mobile")) else "desktop_or_unknown",
                              "tenant_sessions_last_hour": velocity, "velocity_threshold": 20,
-                             "injection_signals": injection,
+                             "injection_signals": injection, **ws7_findings,
                              "note": "signals inform review routing only; never auto-reject"},
                 "reason_codes": sig_reasons}, provider="local-signals")
             # --- Explainable risk + decision (Phases 2/3) ---
@@ -2056,31 +2369,90 @@ def make_handler(db: DB, data_dir: str):
             db.execute("UPDATE sessions SET status=?, decision_id=?, updated_at=? WHERE id=?", (outcome, did, now_iso(), s["id"]))
             db.audit("system", None, tid, "decision.engine", "session", s["id"],
                      metadata={"outcome": outcome, "reasons": reasons, "risk_score": risk["score"], "risk_band": risk["band"], "config_version": cfg_version})
+            # WS6 metering: exactly one usage event per decided
+            # session (priced from the active price, unpriced when
+            # D7 prices are unset, free in the test env). Billing
+            # must never break a decision — failures are swallowed
+            # here and remain reconcilable from the decisions table.
+            try:
+                BILLING.meter(db, new_id, tid, env, s["id"], s["level"])
+            except Exception:
+                pass
             # Identity adoption (document path, owner's order): the
             # identity READ from the document is written to the
-            # applicant record as the verified identity. Only EMPTY
-            # fields are filled from the read — a field the tenant
-            # declared is never overwritten by a read, and when the
-            # declared identity CONTRADICTED the document
-            # (name_mismatch / dob_mismatch decided this session) the
-            # declared record stands untouched: the contradiction is
-            # the finding, not something to silently paper over.
+            # applicant record as the verified identity — under
+            # hygiene rules hardened 2026-10-27 after an early
+            # fragmentary read adopted header debris ('FEDERAL
+            # REPUBLIC IDENTIFICATIOR') as an applicant's surname
+            # and every later CORRECT read failed name_mismatch
+            # against the debris:
+            #   * only a STRONG read writes identity: framing pass,
+            #     the field carried by a structural source (label /
+            #     zone / MRZ / payload / band / zone recovery — not
+            #     a loose text fragment), and a PLAUSIBLE value
+            #     (_name_plausible for names; a sane past date for
+            #     DOB).
+            #   * FILL: an empty field takes the strong read (and,
+            #     as before, never when this session decided a
+            #     name/dob mismatch — a contradiction with a real
+            #     declared value is a finding, not papered over).
+            #   * REPAIR: a stored value that is not plausible as a
+            #     name at all is debris, not a declaration — a
+            #     strong read replaces it even when the mismatch
+            #     was decided against it (the mismatch WAS the
+            #     symptom of the debris).
+            #   * SUPERSEDE: a value this system itself adopted
+            #     (identity_document_id provenance) yields to a
+            #     later strong read; a TENANT-DECLARED value (no
+            #     adoption provenance) is never overwritten.
             if doc_read and (app["identity_source"] if "identity_source" in app.keys() else "declared") == "document":
                 _ident = doc_read["identity"]
-                if _ident.get("any") and not ({"name_mismatch", "dob_mismatch"} & set(reasons)):
-                    _updates = {}
-                    for _col, _val in (("first_name", _ident["first_name"]),
-                                       ("last_name", _ident["last_name"]),
-                                       ("dob", _ident["dob"])):
-                        if _val and not app[_col]:
-                            _updates[_col] = _val
+                _framing_ok = (doc_read.get("framing") or {}).get("status") == "pass"
+                _fields = doc_read.get("extracted_fields") or {}
+                _STRONG = {"label", "zone", "mrz", "payload", "band_reread", "zone_recovery"}
+                _adopted = bool(app["identity_document_id"]) if "identity_document_id" in app.keys() else False
+                _mismatch = bool({"name_mismatch", "dob_mismatch"} & set(reasons))
+
+                def _strong_val(col, field_key, extract_key):
+                    v = _ident.get(field_key)
+                    if not v or not _framing_ok:
+                        return None
+                    src = ((_fields.get(extract_key) or {}).get("source")) or _ident["sources"].get(field_key)
+                    if src not in _STRONG:
+                        return None
+                    if col in ("first_name", "last_name"):
+                        return v if _name_plausible(v) else None
+                    try:
+                        _d = datetime.fromisoformat(str(v)[:10]).date()
+                        _today = datetime.now(timezone.utc).date()
+                        return v if datetime(1900, 1, 1).date() <= _d <= _today else None
+                    except Exception:
+                        return None
+
+                if _ident.get("any"):
+                    _updates, _modes = {}, {}
+                    for _col, _fk, _ek in (("first_name", "first_name", "given_names"),
+                                           ("last_name", "last_name", "surname"),
+                                           ("dob", "dob", "dob")):
+                        _val = _strong_val(_col, _fk, _ek)
+                        if not _val:
+                            continue
+                        _cur = app[_col]
+                        if not _cur:
+                            if not _mismatch:
+                                _updates[_col] = _val; _modes[_col] = "fill"
+                        elif _col in ("first_name", "last_name") and not _name_plausible(_cur):
+                            _updates[_col] = _val; _modes[_col] = "repair"
+                        elif _adopted and _cur != _val and not _mismatch:
+                            _updates[_col] = _val; _modes[_col] = "supersede"
                     if _updates:
                         _sets = ", ".join(f"{k}=?" for k in _updates)
                         db.execute(f"UPDATE applicants SET {_sets}, identity_document_id=?, updated_at=? WHERE id=?",
                                    (*_updates.values(), doc["id"], now_iso(), app["id"]))
                         db.audit("system", None, tid, "identity.adopt", "applicant", app["id"],
                                  metadata={"document_id": doc["id"], "session_id": s["id"],
-                                           "fields": sorted(_updates), "sources": _ident["sources"]})
+                                           "fields": sorted(_updates), "modes": _modes,
+                                           "sources": _ident["sources"]})
             cred = None
             if outcome == "approved":
                 srow = db.one("SELECT * FROM sessions WHERE id=?", (s["id"],))
@@ -2121,6 +2493,45 @@ def serve(port=8765, data_dir="data"):
             except Exception:
                 pass  # a failed sweep must never kill the server; next sweep retries
     threading.Thread(target=_sweeper, daemon=True, name="webhook-sweeper").start()
+    # Submit reaper (WS5): a decision claim is durable in the
+    # sessions table, but if THIS process dies mid-pipeline the
+    # claim would otherwise sit until a manual re-submit after
+    # the 10-minute staleness window. The reaper re-drives any
+    # 'processing' session whose claim has been quiet for 3+
+    # minutes and whose worker is not running in this process.
+    try:
+        reaper_sec = float(os.environ.get("KYC_REAPER_SEC") or 60)
+    except ValueError:
+        reaper_sec = 60.0
+    def _reaper():
+        while True:
+            _time.sleep(max(5.0, reaper_sec))
+            try:
+                stale = (datetime.now(timezone.utc) - timedelta(minutes=3)).isoformat()
+                rows = db.all("SELECT * FROM sessions WHERE status='processing' "
+                              "AND processing_started_at IS NOT NULL AND processing_started_at<?",
+                              (stale,))
+                for srow in rows or []:
+                    sid = srow["id"]
+                    with _ACTIVE_SUBMITS_LOCK:
+                        if sid in _ACTIVE_SUBMITS:
+                            continue
+                        _ACTIVE_SUBMITS.add(sid)
+                    db.execute("UPDATE sessions SET processing_started_at=?, updated_at=? "
+                               "WHERE id=? AND status='processing'",
+                               (now_iso(), now_iso(), sid))
+                    db.audit("system", None, srow["tenant_id"], "decision.reaped",
+                             "session", sid,
+                             metadata={"note": "stale processing claim re-driven by the WS5 reaper"})
+                    inst = handler.__new__(handler)
+                    req_info = {"user_agent": "kyc-reaper",
+                                "ip": srow["client_ip"] if "client_ip" in srow.keys() else None}
+                    threading.Thread(target=inst._submit_worker,
+                                     args=(srow, req_info, threading.Event(), {}),
+                                     daemon=True, name="submit-reaper-" + sid[:8]).start()
+            except Exception:
+                pass  # a failed sweep must never kill the server
+    threading.Thread(target=_reaper, daemon=True, name="submit-reaper").start()
     enc = "enabled" if STORAGE.encryption_enabled() else "DISABLED (no KYC_MASTER_KEY — legacy plaintext storage)"
     print(f"KYC service on http://127.0.0.1:{port}  (data: {data_dir})  media encryption at rest: {enc}")
     srv.serve_forever()
