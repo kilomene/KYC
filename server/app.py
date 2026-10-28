@@ -1832,6 +1832,20 @@ def make_handler(db: DB, data_dir: str):
                 except Exception:
                     _face = None
                 if _face is None:
+                    # YuNet sees nothing. If the architecturally
+                    # different fallback detector DOES see a face-like
+                    # region, a face is there but not measurable —
+                    # the classic steep-angle / backlight case (owner
+                    # session 14: a full liveness performance the
+                    # production detector could not measure). Coach
+                    # the actual fix instead of "no face".
+                    try:
+                        _any = FACE.detect_face_box_any(_arr)
+                    except Exception:
+                        _any = None
+                    if _any is not None:
+                        return self._send(200, {"face_present": False, "guidance": "angle_or_light",
+                                                "detail": "face present but not measurable at this angle or light"})
                     return self._send(200, {"face_present": False, "guidance": "no_face_seen",
                                             "detail": "no face detected in the frame"})
                 _fx, _fy, _fw, _fh = [float(v) for v in _face[:4]]
@@ -2386,19 +2400,50 @@ def make_handler(db: DB, data_dir: str):
                                 else:
                                     sim = FACE.cosine_similarity(doc_feat, agg)
                                     mstatus, mreasons = FACE.similarity_decision(sim, cfg["face_pass_threshold"], cfg["face_margin"])
+                                    findings = {"similarity": round(float(sim), 4), "method": "document_vs_track_median_embedding",
+                                                "portrait_source": portrait_source,
+                                                "track_frames": track["findings"].get("frames_with_face")}
+                                    # Reference-quality gate (2026-10-28,
+                                    # owner sessions 13-14): when the
+                                    # document's printed portrait is too
+                                    # small to embed faithfully, a FAIL
+                                    # says more about the reference than
+                                    # the holder — record it unclear
+                                    # (weak reference), never mismatch.
+                                    # A pass on a weak reference stands:
+                                    # a match still identifies.
+                                    stats = FACE.face_box_stats(portrait_path)
+                                    if stats:
+                                        findings["portrait_width_px"] = round(stats[0], 1)
+                                        findings["portrait_share"] = round(stats[1], 3)
+                                        findings["portrait_score"] = round(stats[2], 3)
+                                        if mstatus == "fail" and stats[0] < FACE.WEAK_REFERENCE_MAX_PX:
+                                            findings["reference_quality"] = "weak"
+                                            mstatus, mreasons = "unclear", ["document_portrait_weak_reference"]
                                     record("face_match", {"status": mstatus,
-                                                          "findings": {"similarity": round(float(sim), 4), "method": "document_vs_track_median_embedding",
-                                                                       "portrait_source": portrait_source,
-                                                                       "track_frames": track["findings"].get("frames_with_face")},
+                                                          "findings": findings,
                                                           "reason_codes": mreasons}, provider="yunet-sface")
                             else:
                                 # No track could be built (e.g. no video):
                                 # fall back to the still-vs-still comparison,
                                 # still against the warped portrait source.
                                 portrait_path = FRAMING.warped_rendition(front_path) or front_path
-                                record("face_match", FACE.check_face_match(portrait_path, selfie_path,
-                                                                           pass_threshold=cfg["face_pass_threshold"], margin=cfg["face_margin"]),
-                                       provider="yunet-sface")
+                                fm = FACE.check_face_match(portrait_path, selfie_path,
+                                                           pass_threshold=cfg["face_pass_threshold"], margin=cfg["face_margin"])
+                                # Same weak-reference gate as the track
+                                # path: a fail against a sub-80px printed
+                                # portrait is unclear, not a mismatch.
+                                if fm.get("status") == "fail":
+                                    stats = FACE.face_box_stats(portrait_path)
+                                    if stats and stats[0] < FACE.WEAK_REFERENCE_MAX_PX:
+                                        fm = {"status": "unclear",
+                                              "findings": {**fm.get("findings", {}),
+                                                           "reference_quality": "weak",
+                                                           "portrait_width_px": round(stats[0], 1),
+                                                           "portrait_share": round(stats[1], 3),
+                                                           "portrait_score": round(stats[2], 3)},
+                                              "reason_codes": ["document_portrait_weak_reference"]}
+                                record("face_match", fm, provider="yunet-sface")
             # Liveness (Phase 2): active challenge video. Never inherited
             # from a credential — a past verification is not a live human.
             if "liveness" in required:
