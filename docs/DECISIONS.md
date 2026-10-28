@@ -632,3 +632,65 @@ Owner asked whether the API and SDK were fully documented — including how a de
 - **Website publication (public/developer.html; routes /docs and /developers).** White theme, Nova logo, animated slide-in drawer with grouped developer links + live health, quickstart, website/mobile/agent integration cards, plainly stated support boundaries, webhook section, documentation library, and a live API explorer rendered from /openapi.json (search, tag filters, expandable operations with auth/parameters/request/responses). Homepage navigation, drawer, developer section and footer now link the portal and OpenAPI. Static serving returns correct `application/json` and `application/yaml` content types.
 - **Existing docs corrected.** docs/API.md now names the OpenAPI file as canonical, lists the implemented media/case/key/flow operations and operator endpoints, corrects the config body to `{level, config}`, corrects the webhook event set + envelope/header, corrects KYB people roles to director|ubo, separates registry-check from the reviewer registry decision, replaces the obsolete decision sample with the real session-view shape, and states idempotency as not currently honoured. docs/INTEGRATION.md was rewritten as an accurate quickstart pointing to the full guide and spec. README's blueprint order now leads developers to DEVELOPER.md and the OpenAPI files.
 - **Verification.** tests/test_openapi_docs.py (9 tests) pins the exact 69-operation inventory, generated-copy equality, operation metadata, explicit security models, reference resolution, path-parameter coherence, retired/invented-contract absence, developer-guide coverage and SDK method-map truth, and serves /docs + /openapi routes in-process with content-type checks. Browser QA on the production service (read-only): /docs renders 69/69 operations, search “webhook” narrows to 7, KYB filter shows 8, operation expansion works, drawer opens/closes, homepage /docs links load, all local destinations return 200, zero console/page errors and zero ≥400 responses, no desktop/mobile horizontal overflow; a mobile header wrap found in the first screenshot pass was fixed and re-shot clean. Final certifying suite (single run, idle machine): 453 tests (444 + the 9 new documentation tests) in 1411s, exactly ONE failure — the standing German-labels environmental fixture (this VM's tesseract build misreads the synthetic DE fixture), which predates this work. Production was restarted onto the new routes and serves /docs, /openapi.json and /openapi.yaml publicly (all 200 with correct content types; /healthz green).
+### 2026-10-28 — Session-14 incident fixes: video sampling, presence honesty, transport resilience
+
+Owner's final test (session 14) surfaced four defects; the session
+itself had processed end-to-end and been DECLINED on biometric
+grounds, but the phone showed HTTP 413, HTTP 502 and a stuck process.
+Root causes, all proven against the session's own stored media:
+
+1. **WebM frame-count metadata is garbage.** MediaRecorder WebM
+   reports an implausible CAP_PROP_FRAME_COUNT, and both liveness
+   and face-track sampling fell back to the FIRST N frames — a 9 s
+   performance was judged on its first second. `face.video_frames`
+   now counts frames for real when the metadata is implausible,
+   samples evenly across the full duration in a single decode pass,
+   and applies ONE clip-level rotation voted from the first sampled
+   frames (a phone rotated mid-clip no longer poisons analysis).
+   On the owner's real clip: identity consistency rose from 0.15 to
+   0.77 minimum cosine (one person throughout — the "identity break"
+   was an artifact of the sampling), and the track verdict moved
+   from fail to unclear (low presence).
+2. **Presence vs measurability.** At a steep low angle against
+   bright sky, YuNet finds no face at the production threshold
+   (0.6) at any rotation or scale, but the face IS present at
+   0.31–0.38. Liveness presence — never identity — may now count
+   relaxed-threshold (0.35) sightings ONLY when anchored to a strict
+   sighting through an unbroken chain of sightings; challenge
+   movement is judged on strict sightings alone, and with too few
+   strict frames the verdict is unclear
+   (liveness_challenge_incomplete), never a pass and never
+   "absent" when a face was seen. The presence endpoint gained an
+   `angle_or_light` guidance so the flow coaches eye-level,
+   face-the-light DURING capture, and the liveness recorder now
+   watches presence mid-recording: two consecutive no-face probes
+   abort the take and coach before anything is uploaded.
+   Honest limit, measured: the session-14 clip itself still fails
+   presence — its geometry is outside the detector's envelope; the
+   fix prevents the wasted take, it does not rescue that recording.
+3. **Weak printed references.** A face-match FAIL against a
+   document portrait under 80 px wide (work-space) is a weak
+   reference, not a mismatch: the check records unclear
+   (document_portrait_weak_reference), the risk engine charges it
+   as an unclear, and the engine's standard-path rule decides the
+   session (inconclusive → declined with rescan coaching). Passes
+   against weak references stand. Calibration is measured, not
+   guessed: genuine weak references cluster at 12–75 px (owner's
+   NIN slip 56 px) and strong ones at 122–230 px; the 80 px gate
+   sits in the empty gap.
+4. **Transport.** The decision pass can outlast the tunnel client's
+   request budget (was 45 s; a ~99 s pass produced the phone's
+   502). The server already decided asynchronously; the flow's
+   submit handler now treats any transport failure (network error,
+   502/503/504) as "processing" and polls the session view to the
+   decision, instead of stranding the applicant on an error. The
+   tunnel client's ORIGIN_TIMEOUT rises to 120 s as defence in
+   depth. The 413: the liveness recorder ran at 2.5 Mbps (~2.7 MB
+   per clip, at the tunnel's ~2.8 MB body cap); it now records at
+   1.2 Mbps (~1.35 MB) and refuses oversize takes in-page with a
+   retake prompt instead of uploading into a 413.
+
+Tests: tests/test_video_sampling.py (12) pins the sampler's spread,
+the weak-presence/movement semantics, the anchoring chains, and the
+weak-reference gate end-to-end. Thresholds unchanged: face match
+0.363, identity min-cosine, PASS_SCORE 70.
