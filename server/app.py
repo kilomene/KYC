@@ -34,6 +34,7 @@ from . import assist as ASSIST
 from . import monitoring as MON
 from . import vpncheck as VPN
 from . import vision as VISION
+from . import ocr2 as OCR2
 from . import deepfake as DEEPFAKE
 from . import facetrack as FACETRACK
 from . import templates as TEMPLATES
@@ -1448,6 +1449,8 @@ def make_handler(db: DB, data_dir: str):
                                       "match": read["number_tally"]["findings"].get("match")}
                                      if read.get("number_tally") else None),
                     "portrait": read.get("portrait"),
+                    "cross_engine": read.get("cross_engine"),
+                    "quality": read.get("quality"),
                     "missing": missing, "complete": complete}
 
         def _read_job_worker(self, s, doc, tid, job):
@@ -1492,6 +1495,13 @@ def make_handler(db: DB, data_dir: str):
                 framing_back = FRAMING.check_document_framing(
                     path=self._fs(doc["back_storage_path"]), expected_aspect_range=FRAMING.expected_range_from_entry(entry))
             framing = FRAMING.combine_framing(framing_front, framing_back)
+            # Capture quality NOW, on the freshly materialised
+            # plaintext: the per-request temp copies are deleted by
+            # the starting request's finally block while async read
+            # jobs still run, so a late read of front_path can find
+            # the file gone (measured 2026-10-28: deployed read
+            # returned an all-null quality block).
+            _quality = VISION.quality_report(front_path)
             uploaded = {"doc_first_name": doc["doc_first_name"], "doc_last_name": doc["doc_last_name"],
                         "doc_dob": doc["doc_dob"], "doc_number": doc["doc_number"],
                         "doc_expiry": doc["doc_expiry"]}
@@ -1509,18 +1519,58 @@ def make_handler(db: DB, data_dir: str):
             # pair costs the slower of the two). Extraction then
             # consumes both.
             from concurrent.futures import ThreadPoolExecutor as _TPE
-            with _TPE(max_workers=2) as _pool:
+            with _TPE(max_workers=3) as _pool:
                 _f_ocr = _pool.submit(C.check_ocr, front_path, expect_mrz=bool(entry.get("mrz")))
                 _f_words = _pool.submit(VISION.ocr_words, front_path)
+                # Second engine (PaddleOCR) reads in parallel — the
+                # unified dual-engine family (owner's order,
+                # 2026-10-28). read_words returns None on ANY
+                # failure/unavailability and the pipeline then runs
+                # exactly as the single-engine build did.
+                _f_paddle = _pool.submit(OCR2.read_words, front_path)
                 ocr = _f_ocr.result()
                 _words = _f_words.result()
+                _paddle = _f_paddle.result()
             ocr_text = ocr.get("text", "")
             mrz_check = C.check_mrz(ocr_text)
             parsed = mrz_check.get("parsed")
+            # UNIFIED READ: the extraction brain consumes the
+            # MERGED stream — both engines' words in one stream —
+            # and Paddle's text joins the pass texts the classifier
+            # and label logic corroborate across.
+            _pwords, _ptext = _paddle if _paddle else (None, None)
+            _xwords = VISION.merge_word_streams(_words, _pwords) if _pwords else _words
+            _xtexts = list(ocr.get("pass_texts") or [])
+            if _ptext:
+                _xtexts = _xtexts + [_ptext]
             extraction = FIELDTEMPLATES.extract_fields(front_path, doc["issuing_country"], doc["kind"],
-                                                       ocr_text=ocr_text, words=_words,
-                                                       ocr_texts=ocr.get("pass_texts"))
+                                                       ocr_text=ocr_text, words=_xwords,
+                                                       ocr_texts=_xtexts)
             fields = (extraction.get("findings") or {}).get("fields") or {}
+            # Cross-engine arbitration: when the unified read leaves
+            # the identity triad incomplete, consult each engine's
+            # own extraction as witnesses and adopt what the family
+            # proved (ocr2.arbitrate) — disagreements are recorded,
+            # never silently resolved.
+            cross_engine = {"engines": ["tesseract", "paddle"] if _paddle else ["tesseract"],
+                            "disagreements": [], "adopted": {}}
+            if _paddle and not OCR2.triad_complete(OCR2.extraction_fields(extraction)):
+                try:
+                    _t_ext = FIELDTEMPLATES.extract_fields(
+                        front_path, doc["issuing_country"], doc["kind"],
+                        ocr_text=ocr_text, words=_words, ocr_texts=ocr.get("pass_texts"))
+                    _p_ext = FIELDTEMPLATES.extract_fields(
+                        front_path, doc["issuing_country"], doc["kind"],
+                        ocr_text=_ptext, words=_pwords, ocr_texts=[_ptext])
+                    _adopted, _dis = OCR2.arbitrate(OCR2.extraction_fields(extraction),
+                                                    OCR2.extraction_fields(_t_ext),
+                                                    OCR2.extraction_fields(_p_ext))
+                    for _fname, (_fval, _fprov) in _adopted.items():
+                        fields[_fname] = {"value": _fval, "source": _fprov}
+                    cross_engine["disagreements"] = _dis
+                    cross_engine["adopted"] = {k: v[1] for k, v in _adopted.items()}
+                except Exception:
+                    pass
             ident = IDENTITY.derive_document_identity(fields, parsed, uploaded, ocr_text=ocr_text)
             merged = {"doc_first_name": ident["first_name"] or doc["doc_first_name"],
                       "doc_last_name": ident["last_name"] or doc["doc_last_name"],
@@ -1583,7 +1633,7 @@ def make_handler(db: DB, data_dir: str):
                 _rp = VISION._reading_path(front_path)
                 _rimg = VISION.cv2.imread(_rp[0] if isinstance(_rp, tuple) else _rp)
                 if _rimg is not None:
-                    _pf2 = FACE.largest_face(_rimg)
+                    _pf2 = FACE.detect_face_box_any(_rimg)
                     if _pf2 is not None:
                         portrait = {"found": True,
                                     "size_frac": round(float(_pf2[2]) / _rimg.shape[1], 3)}
@@ -1592,6 +1642,8 @@ def make_handler(db: DB, data_dir: str):
             return {"framing": framing, "ocr": ocr, "ocr_text": ocr_text,
                     "mrz_check": mrz_check, "mrz_parsed": parsed,
                     "extraction": extraction, "extracted_fields": fields,
+                    "cross_engine": cross_engine,
+                    "quality": _quality,
                     "identity": ident, "number_tally": self._number_tally(doc, ident),
                     "code_decode": code_decode, "portrait": portrait,
                     "merged_doc_fields": merged, "entry": entry}
