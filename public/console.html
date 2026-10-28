@@ -3,6 +3,14 @@
 <title>Review console — KYC (Nova Inc)</title>
 <style>body{font-family:system-ui,sans-serif;max-width:900px;margin:1rem auto;padding:0 1rem;line-height:1.5}input,button,select{font-size:1rem;padding:.5rem}button{background:#0b5fff;color:#fff;border:0;border-radius:8px;cursor:pointer}.card{border:1px solid #ddd;border-radius:10px;padding:1rem;margin:.8rem 0}img{max-width:100%;border:1px solid #ccc;border-radius:8px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem}@media(max-width:600px){.grid{grid-template-columns:1fr}}pre{background:#f6f6f6;padding:.6rem;overflow:auto;font-size:.8rem}table{border-collapse:collapse}td,th{border-bottom:1px solid #eee;padding:.35rem .6rem;text-align:left}.warn{background:#fff7e6;border-color:#e6a23c}.sla-over{color:#b3261e;font-weight:bold}</style></head>
 <body>
+<div style="background:#ffffff;border-bottom:1px solid #e3e9f2;padding:9px 16px;font-size:14px;margin:-8px -8px 16px">
+  <a href="/" style="color:#0c1425;font-weight:800;text-decoration:none"><img src="/public/img/nova-logo.jpg" alt="Nova Inc logo" style="width:24px;height:24px;border-radius:6px;vertical-align:-6px;margin-right:8px">Nova KYC</a>
+  <span style="float:right">
+    <a href="/" style="color:#52637c;text-decoration:none;margin-left:16px">Home</a>
+    <a href="/dashboard" style="color:#52637c;text-decoration:none;margin-left:16px">Tenant dashboard</a>
+    <a href="https://github.com/kilomene/KYC/blob/main/docs/INTEGRATION.md" style="color:#52637c;text-decoration:none;margin-left:16px">Documentation</a>
+  </span>
+</div>
 <h1>Review console</h1>
 <p>Paste a tenant API key (test or live). Cases in that environment only. Your reviewer token (optional) identifies you for four-eyes decisions — ask your tenant admin to create one via <code>POST /v1/users</code>.</p>
 <input id="key" placeholder="kyc_test_… or kyc_live_…" style="width:55%">
