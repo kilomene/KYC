@@ -32,7 +32,12 @@ class ClassificationUnits(unittest.TestCase):
         import tempfile
         self.dir = tempfile.mkdtemp()
         self.idp = os.path.join(self.dir, "id.png")
-        open(self.idp, "wb").write(id_image_bytes())
+        # The unit claims below are NG/passport (and a US licence
+        # mismatch): the drawn passport must be Nigerian-issued, or
+        # the country-anchor guard correctly refuses the NG claim
+        # for a foreign-issued document (the helper's default issuer
+        # is the ICAO specimen state UTO).
+        open(self.idp, "wb").write(id_image_bytes(issuer="NGA"))
         buf = io.BytesIO(); jpeg_roundtrip(structured_photo(), 90).save(buf, "JPEG")
         self.roomp = os.path.join(self.dir, "room.jpg")
         open(self.roomp, "wb").write(buf.getvalue())
@@ -115,7 +120,8 @@ class ClassificationSessions(unittest.TestCase):
     def test_clean_l1_records_classification_pass(self):
         with Server() as srv:
             _, key, _ = make_tenant(srv)
-            ctx = drive_flow(srv, key, level=1)
+            ctx = drive_flow(srv, key, level=1,
+                             doc_bytes=id_image_bytes(issuer="NGA"))
             view = _submit(srv, ctx)
             self.assertEqual(view["status"], "approved", view)
             self.assertEqual(view["checks_summary"].get("document_classification"), "pass")
