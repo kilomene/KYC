@@ -601,3 +601,17 @@ Owner's orders, in sequence: "We can use both" (Tesseract + PaddleOCR); "build t
 - Capability battery complete: benchmarks/OCR-DUAL-EVAL.md. Headline: UNIFIED 31/43 applicable fields vs TESS 25/43 and PADDLE 26/43 across the 11-case labelled set; unified never below the best single engine on any case. No-gain findings recorded honestly in the eval: the OpenCV barcode arms decoded nothing zxing missed (CA back PDF417 still undecodable at that photo's resolution across all three decoder families), and the ResNet-10 portrait fallback added zero saves on this set (both detectors miss the same three small portraits). Both stay wired as zero-cost redundancy with NO capability claimed.
 - Deployed proof (production, owner-test tenant, synthetic passport): read payload reports cross_engine.engines ["tesseract","paddle"], complete read. The first deployed proof exposed a race: _fs materialises per-request decrypted temp copies that the starting request's finally block deletes while the async read job still runs — the quality block, computed at the end of _read_document, intermittently found the file gone (all-null quality). Fix: quality is captured immediately after framing, on the fresh materialisation. Re-proof: quality populated.
 - Full suite at this gate: 426 tests — the German-labels fixture (standing environmental baseline) plus one adoption-repair test that failed under full-suite CPU contention and passes solo (23s); no other failures.
+
+## Stage 4 fake-ID battery (2026-10-28) — CLOSED
+The owner sent the fake California ID card as a file, plus a second
+California licence (same name, different DOB/number/address). Battery
+(benchmarks/FAKE-BATTERY.md): the fake PASSED classification (85.6 —
+visually faithful; the template layer cannot separate it from the
+genuine control) and was CAUGHT by the authenticity layer: status
+fail, suspected_recapture_or_edit + altered_text_suspect. The second
+card was stopped on its own evidence: classification mismatch 57.8
+(< 70) + authenticity unclear. The genuine control passed
+classification and was NOT rejected, but altered_text_suspect ALSO
+fired on it — the ELA altered-text signal false-positives on genuine
+phone photos; it stays a soft signal (unclear, never a hard fail) at
+current precision. Framing failed all three (full-scene photos).
