@@ -93,11 +93,29 @@ class TestEngineFailClosed(unittest.TestCase):
         c = dict(self.BASE); c["ocr"] = {"status": "error", "reason_codes": ["ocr_unavailable"]}
         out, _ = decide(1, c); self.assertEqual(out, "needs_review")
     def test_unclear_never_approves(self):
-        # Auto-decision doctrine (2026-10-26): an unclear REQUIRED check
-        # in the standard path auto-REJECTS (the applicant re-does the
-        # verification); it no longer parks the case with a human.
+        # Doctrine refined 2026-10-28 (owner session 15): an unclear
+        # REQUIRED check still never APPROVES — but inconclusive
+        # evidence (the platform measured and could not conclude)
+        # routes to a human instead of auto-rejecting a genuine
+        # applicant; only missing/not-run work and the rescan classes
+        # (framing, face_match) still auto-reject.
         c = dict(self.BASE); c["consistency"] = {"status": "unclear", "reason_codes": ["name_partial_match"]}
-        out, _ = decide(1, c); self.assertEqual(out, "rejected")
+        out, reasons = decide(1, c)
+        self.assertEqual(out, "needs_review")
+        self.assertIn("consistency_inconclusive", reasons)
+    def test_face_match_unclear_rejects_for_rescan(self):
+        # The rescan class: a weak/undetected document portrait is the
+        # applicant's to fix with a closer capture — rejected with the
+        # rescan reasons, not parked for review.
+        c = dict(self.BASE)
+        c["mrz"] = {"status": "pass", "reason_codes": []}
+        for t in ("document_classification", "data_consistency", "authenticity",
+                  "face_track", "liveness", "deepfake"):
+            c[t] = {"status": "pass", "reason_codes": []}
+        c["face_match"] = {"status": "unclear", "reason_codes": ["document_portrait_weak_reference"]}
+        out, reasons = decide(2, c)
+        self.assertEqual(out, "rejected")
+        self.assertIn("face_match_not_pass", reasons)
     def test_not_run_biometric_blocks_level2(self):
         # Same doctrine: biometrics that never ran auto-reject at L2.
         c = dict(self.BASE); c["mrz"] = {"status": "pass", "reason_codes": []}
