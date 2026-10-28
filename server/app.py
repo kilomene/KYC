@@ -403,6 +403,7 @@ def make_handler(db: DB, data_dir: str):
             if p == "/console": return self._static("console.html")
             if p == "/dashboard": return self._static("dashboard.html")
             if p.startswith("/flow/"): return self._static("flow.html")
+            if p.startswith("/img/"): return self._static(p)
             if p.startswith("/voice/"): return self._static(p)
             if p.startswith("/public/"): return self._static(p[len("/public/"):])
             if p == "/healthz":
@@ -574,11 +575,17 @@ def make_handler(db: DB, data_dir: str):
             return self._err(404, "not found")
 
         def _static(self, name):
+            raw_path = self.path.split("?")[0]
             name = os.path.basename(name)
-            # Voice clips live one level down (public/voice/<key>.mp3);
-            # they are the only subdirectory files served.
-            if self.path.split("?")[0].startswith("/voice/") and name.endswith(".mp3"):
+            # Voice clips live one level down (public/voice/<key>.mp3).
+            # Site images live in public/img/ (landing-page artwork,
+            # 2026-10-27) — the only two subdirectories served, both
+            # basename-sanitised so no traversal is possible.
+            if raw_path.startswith("/voice/") and name.endswith(".mp3"):
                 fp = os.path.join(PUBLIC_DIR, "voice", name)
+            elif (raw_path.startswith("/img/") or raw_path.startswith("/public/img/")) and \
+                    name.rsplit(".", 1)[-1].lower() in ("webp", "png", "jpg", "jpeg", "svg", "gif"):
+                fp = os.path.join(PUBLIC_DIR, "img", name)
             else:
                 fp = os.path.join(PUBLIC_DIR, name)
             if not os.path.isfile(fp): return self._err(404, "not found")
@@ -586,6 +593,10 @@ def make_handler(db: DB, data_dir: str):
             if name.endswith(".js"): ctype = "application/javascript"
             if name.endswith(".css"): ctype = "text/css"
             if name.endswith(".mp3"): ctype = "audio/mpeg"
+            _ext = name.rsplit(".", 1)[-1].lower()
+            if _ext in ("webp", "png", "jpg", "jpeg", "svg", "gif"):
+                ctype = {"webp": "image/webp", "png": "image/png", "jpg": "image/jpeg",
+                         "jpeg": "image/jpeg", "svg": "image/svg+xml", "gif": "image/gif"}[_ext]
             with open(fp, "rb") as f: data = f.read()
             # HTML pages are never cached: the hosted flow must always run
             # the exact page version that matches the server's endpoints
@@ -593,7 +604,7 @@ def make_handler(db: DB, data_dir: str):
             # server did not have yet, mid-ship — owner's live test hit it).
             # Voice clips are immutable per key and cache hard.
             hdrs = {"Cache-Control": "no-store"} if ctype == "text/html" else \
-                   {"Cache-Control": "public, max-age=86400"} if ctype == "audio/mpeg" else None
+                   {"Cache-Control": "public, max-age=86400"} if ctype in ("audio/mpeg",) or ctype.startswith("image/") else None
             self._send(200, data, ctype, headers=hdrs)
 
         def _session_view(self, s):
