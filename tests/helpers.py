@@ -89,11 +89,11 @@ def make_tenant(srv, name="Test Tenant"):
     assert st == 201, r
     return r["tenant"]["id"], r["keys"]["test"]["key"], r["keys"]["live"]["key"]
 
-def _mrz_line1(first, last):
+def _mrz_line1(first, last, issuer="UTO"):
     surname = last.upper().replace(" ", "<"); given = first.upper().replace(" ", "<")
-    return ("P<UTO" + surname + "<<" + given).ljust(44, "<")[:44]
+    return ("P<" + issuer + surname + "<<" + given).ljust(44, "<")[:44]
 
-def _mrz_line2(dob, expiry, corrupt=False, docnum="L898902C3"):
+def _mrz_line2(dob, expiry, corrupt=False, docnum="L898902C3", issuer="UTO"):
     """A SELF-CONSISTENT TD3 line 2: check digits computed with the
     server's own ICAO function, expiry/DOB taken from the same values
     the visual zone prints — so MRZ<->VIZ cross-validation can agree.
@@ -102,14 +102,20 @@ def _mrz_line2(dob, expiry, corrupt=False, docnum="L898902C3"):
     from server.checks import mrz_check_digit
     yy = lambda iso: iso[2:4] + iso[5:7] + iso[8:10]
     dob6, exp6 = yy(dob), yy(expiry)
-    l2 = (docnum + mrz_check_digit(docnum) + "UTO" + dob6 + mrz_check_digit(dob6) + "F"
+    l2 = (docnum + mrz_check_digit(docnum) + issuer + dob6 + mrz_check_digit(dob6) + "F"
           + exp6 + mrz_check_digit(exp6) + "<" * 14 + "<" + "0")
     l2 = l2[:43] + mrz_check_digit(l2[0:10] + l2[13:20] + l2[21:43])
     if corrupt:
         l2 = l2[:19] + ("0" if l2[19] != "0" else "1") + l2[20:]
     return l2
 
-def id_image_bytes(first="ANNA", last="ERIKSSON", dob="1974-08-12", expiry="2032-04-15", blur=False, size=(1240, 800), corrupt_mrz=False, number="L898902C3"):
+def id_image_bytes(first="ANNA", last="ERIKSSON", dob="1974-08-12", expiry="2032-04-15", blur=False, size=(1240, 800), corrupt_mrz=False, number="L898902C3", issuer="NGA"):
+    # Default issuer is NGA on purpose: the helper tenants are NG, and
+    # since the 2026-10-28 country-anchor guard a passport whose MRZ
+    # issuing state differs from the claimed country is capped below
+    # the classification pass line — an NG tenant presenting a UTO
+    # (ICAO specimen) passport SHOULD fail. Pass issuer="UTO"
+    # explicitly for specimen/parser fixtures.
     im = Image.new("RGB", size, "white")
     d = ImageDraw.Draw(im)
     d.rectangle([20, 20, size[0]-20, size[1]-20], outline="black", width=4)
@@ -118,8 +124,8 @@ def id_image_bytes(first="ANNA", last="ERIKSSON", dob="1974-08-12", expiry="2032
     d.text((760, 150), number, fill="black", font=_font(36))
     d.text((60, 230), f"DOB {dob}", fill="black", font=_font(36))
     d.text((60, 300), f"EXPIRY {expiry}", fill="black", font=_font(36))
-    d.text((60, 400), _mrz_line1(first, last), fill="black", font=_font(30, mono=True))
-    d.text((60, 460), _mrz_line2(dob, expiry, corrupt=corrupt_mrz, docnum=number), fill="black", font=_font(30, mono=True))
+    d.text((60, 400), _mrz_line1(first, last, issuer=issuer), fill="black", font=_font(30, mono=True))
+    d.text((60, 460), _mrz_line2(dob, expiry, corrupt=corrupt_mrz, docnum=number, issuer=issuer), fill="black", font=_font(30, mono=True))
     # add high-frequency detail so sharpness score is meaningfully high
     for x in range(60, size[0]-60, 18):
         d.line([(x, 560), (x+9, 640)], fill="black", width=2)
