@@ -9,8 +9,31 @@ set -e
 # tesseract OCR fails closed, and without cryptography + the master key
 # the storage layer fails closed (503 on media reads).
 if ! command -v tesseract >/dev/null; then
-  echo "tesseract missing — reinstalling (apt can be slow)..."
-  sudo apt-get update -qq && sudo apt-get install -y tesseract-ocr || \
+  echo "tesseract missing — reinstalling..."
+  # Bounded apt attempt first. apt on this VM can wedge or 407
+  # through the egress proxy (mirror-dependent; measured
+  # 2026-10-27: a full lists crawl took ~25 min and some mirrors
+  # refuse proxy auth for package fetches while the SAME proxy
+  # serves curl fine). The fallback fetches the exact noble .deb
+  # set from archive.ubuntu.com with curl and installs via dpkg —
+  # 8 MB, seconds, proven in production on 2026-10-27.
+  timeout 240 sudo apt-get install -y tesseract-ocr 2>/dev/null || true
+  if ! command -v tesseract >/dev/null; then
+    echo "apt path failed — curl .deb fallback..."
+    _debdir=$(mktemp -d)
+    for _u in \
+      "pool/main/g/giflib/libgif7_5.2.2-1ubuntu1.2_amd64.deb" \
+      "pool/universe/l/leptonlib/liblept5_1.82.0-3build4_amd64.deb" \
+      "pool/universe/t/tesseract-lang/tesseract-ocr-eng_4.1.0-2_all.deb" \
+      "pool/universe/t/tesseract-lang/tesseract-ocr-osd_4.1.0-2_all.deb" \
+      "pool/universe/t/tesseract/libtesseract5_5.3.4-1build5_amd64.deb" \
+      "pool/universe/t/tesseract/tesseract-ocr_5.3.4-1build5_amd64.deb"; do
+      curl -s -O --max-time 120 --output-dir "$_debdir" "https://archive.ubuntu.com/ubuntu/$_u" || true
+    done
+    sudo dpkg -i "$_debdir"/*.deb 2>/dev/null || true
+    rm -rf "$_debdir"
+  fi
+  command -v tesseract >/dev/null || \
     echo "WARNING: tesseract install failed — OCR fails closed (error) until installed"
 fi
 if ! HOME=/home/hatch python3 -c "import cryptography" 2>/dev/null; then
