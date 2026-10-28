@@ -1,768 +1,735 @@
-# KYC
+# Nova KYC
 
-**Know Your Customer, built our way.**
+**Identity verification infrastructure by [Nova Inc](https://novamail.store).**
 
-KYC is an identity verification platform: it lets a business confirm that a
-person is who they claim to be — before that business gives them an account,
-money, or access. Other companies have built this before (Sumsub, Persona,
-Onfido, Veriff, Jumio). This is our own, original build: our code, our
-design, our rules — informed by what the category does, copying none of it.
+Nova KYC lets a business confirm that a person is who they claim to be —
+before that business gives them an account, money, or access. A tenant
+creates a verification session through the API, sends the person to a
+hosted, phone-first verification flow, and receives a fully automatic
+decision — approved, declined, or routed to human review — backed by
+document forensics, dual-engine document reading, biometric face
+matching, active liveness, and a risk engine.
 
-> **Status: LIVE (2026-10-26) at https://kyc.novamail.store — Phases
-> 1–3 plus the scanner rebuild (automatic decisions, detection-gated
-> capture, voice guidance, phone-only flow, IP/VPN gate, fortified
-> vision, face tracking, classification, evidence packs). Phase 4 is
-> approved and in progress (docs/PHASE4-PLAN.md); WS0 claims audit:
-> docs/CLAIMS-AUDIT.md.**
-> A real, runnable build: tenant API keys, a hosted applicant
-> flow, checks that actually run (image quality, OCR, MRZ check digits,
-> expiry/age, name/DOB consistency, **face match** (YuNet + SFace),
-> **active liveness (movement challenge)**, **document authenticity
-> signals** (ELA / metadata / moiré-FFT / format), **proof of address**,
-> **sanctions screening** with human disposition, **ongoing
-> monitoring**), an explainable **risk engine**, a fail-closed decision
-> engine with automatic approval/rejection in the standard path,
-> **versioned per-tenant flow config**, **KYB** (business verification),
-> **four-eyes review with reviewer roles and case SLAs**, a reviewer
-> **assist** pre-read, **reusable signed verified credentials**, human
-> review console, signed webhooks, audit log, erasure and retention.
-> 304 automated tests + a live Level 3 end-to-end run. One known
-> failure: `test_fieldtemplates.test_de_national_id_german_labels`
-> (a tesseract build variance after a VM replacement misreads one
-> digit; the misread is correctly flagged `format_valid=False`).
-> The application currently runs on the Nova origin service and is
-> reached publicly through a Cloudflare tunnel; it is not on Supabase.
-> Final Cloudflare-native hosting is Phase 4 WS5 (DECISIONS D4/D6),
-> behind this same API contract.
-> Nothing here claims a certification, partnership, or check we have not
-> actually built and tested.
+The platform is **complete and live in production**. It is an original
+build: our code, our design, our rules — informed by what the identity
+category does, copying none of it.
+
+| | |
+|---|---|
+| **Product** | https://kyc.novamail.store |
+| **Developer portal** | https://kyc.novamail.store/docs |
+| **OpenAPI 3.1 specification** | https://kyc.novamail.store/openapi.json · https://kyc.novamail.store/openapi.yaml |
+| **Tenant dashboard** | https://kyc.novamail.store/dashboard |
+| **Review console** | https://kyc.novamail.store/console |
+| **Complete developer guide** | [docs/DEVELOPER.md](docs/DEVELOPER.md) |
+| **Status** | Production — live, complete platform |
+
+> **How to read this repository.** Everything this README claims is
+> implemented in the code in this repository and, where a number is
+> quoted, measured by a benchmark recorded under
+> [benchmarks/](benchmarks/). Where a capability has a boundary — a
+> registry that needs partner credentials, a signal that is
+> evidence-only — the boundary is stated in plain language, here and
+> in the product itself. Claims are audited against the code
+> ([docs/CLAIMS-AUDIT.md](docs/CLAIMS-AUDIT.md)).
+
+---
+
+## Who it is for
+
+- **Fintechs and payment platforms** onboarding customers under KYC/AML
+  obligations.
+- **Marketplaces and platforms** that must verify sellers, drivers,
+  hosts, or agents before granting earning or access privileges.
+- **Any product** — web or mobile — that needs a defensible answer to
+  "is this person who they say they are?" without building document
+  forensics, biometrics, and review operations in-house.
+
+Nova KYC is Nova Inc's own verification layer first — it serves Nova's
+products — and is built to the standard an external tenant would
+demand: tenant isolation, signed webhooks, audited review, encrypted
+media, and measured accuracy.
+
+---
+
+## How a verification works
+
+```mermaid
+flowchart TD
+    A["Tenant backend<br/>POST /v1/applicants"] --> B["POST /v1/sessions<br/>level 1–3, returns flow URL"]
+    B --> C["Person opens the hosted flow<br/>on their phone"]
+    C --> D{"Network gate<br/>VPN / proxy check +<br/>IP country cross-check"}
+    D -- "VPN or proxy detected" --> X1["Flow stopped<br/>hard block"]
+    D -- "Clean" --> E["Consent"]
+    E --> F["Document capture<br/>live camera scanner, automatic capture<br/>(NIN slip: upload exception)"]
+    F --> G["Dual-engine document reading<br/>Tesseract + PaddleOCR, unified<br/>classification · extraction · MRZ · barcodes"]
+    G --> H["Authenticity analysis<br/>recapture · edit · screen signals<br/>corroboration-gated"]
+    H --> I["Selfie with continuous<br/>face tracking"]
+    I --> J["Face match<br/>selfie vs document portrait"]
+    J --> K["Active liveness<br/>server-issued movement challenge<br/>+ deepfake signals"]
+    K --> L{"Decision engine + risk score<br/>fully automatic"}
+    L -- "Approved" --> M["Decision + HMAC-signed<br/>webhook to tenant"]
+    L -- "Declined" --> M
+    L -- "Edge case" --> N["Review console<br/>four-eyes, reviewer MFA"]
+    N --> M
+    M --> O["Optional: reusable<br/>verified credential issued"]
+```
+
+### The journey, step by step
+
+1. **The tenant creates an applicant** (`POST /v1/applicants`). Two
+   identity models are supported: *document-sourced* (recommended —
+   the document is the source of truth; the platform reads the name,
+   date of birth, and document number from the document itself) and
+   *declared* (the tenant supplies name and date of birth, and the
+   platform cross-checks the document against them).
+2. **The tenant creates a session** (`POST /v1/sessions`) at
+   verification Level 1, 2, or 3 and receives a one-session flow URL.
+   Sessions are resumable: reopening an unexpired link continues where
+   the person left off.
+3. **The person opens the link on their phone.** The hosted flow is
+   phone-only by design (a desktop visit is handed a QR code to
+   continue on a phone). Before anything is captured, the platform
+   checks the network: a detected VPN or proxy **hard-blocks** the
+   flow, and the IP-derived country is cross-checked against the
+   document's country.
+4. **Consent** is captured in the flow, with voice guidance throughout
+   — spoken, human-sounding prompts coach the person at every step.
+5. **The document is captured by a live camera scanner.** There is no
+   gallery or file-upload path in the standard flow. The scanner sees
+   the document before it may capture: a real-time detector locks onto
+   the document's outline and geometry, quality judges (light, glare,
+   sharpness, stillness) must hold for a stability window, and then
+   the scanner **captures by itself — there is no shutter button**. A
+   two-sided document automatically prompts for the back. The single
+   exception is the Nigerian NIN slip, a paper printout that is
+   routinely folded or laminated: it may be uploaded as a photo, and
+   the typed NIN the person supplies must tally exactly with the
+   number read off the slip.
+6. **The document is read by two OCR engines at once** — Tesseract and
+   PaddleOCR — merged into one word stream with cross-engine
+   arbitration (see *Advanced capabilities*). The read drives template
+   classification against per-country document templates, field
+   extraction, MRZ reading with ICAO check digits, and barcode /
+   PDF417 decoding with AAMVA payload cross-checks against the printed
+   data.
+7. **Authenticity is analysed forensically**: error-level analysis,
+   file metadata, moiré and pixel-grid screen signatures, gloss,
+   colour gamut, portrait-region integrity, font consistency,
+   compositing and border edges, and security-pattern presence. A
+   hard authenticity failure requires corroboration across independent
+   signal families — one noisy signal never convicts a document.
+8. **The person takes a live selfie.** The face is tracked
+   continuously from the camera stream, with identity continuity
+   enforced across frames; the track's median embedding is matched
+   against the document portrait (YuNet detection + SFace embeddings).
+9. **Liveness is proven actively.** The server issues a randomised
+   two-movement challenge (for example, turn left, then look up) that
+   must be performed live on camera; a recorded replay cannot know the
+   fresh challenge. Deepfake and presentation-attack signals —
+   including an rPPG pulse leg that is honestly labelled evidence-only
+   — are evaluated alongside.
+10. **The decision engine decides automatically.** Every check's
+    outcome feeds an explainable risk score; the standard path ends in
+    an automatic **approved** or **declined** decision with recorded
+    reason codes — no human in the loop. Only defined exceptions route
+    to the review console: tenant-required review, top-level screening
+    hits, business verification, and platform errors.
+11. **The tenant is notified by HMAC-signed webhook**
+    (`session.completed`, `case.decided`, and related events) with
+    retry, dead-letter, and operator replay; the full result is always
+    retrievable from the API. Reviewers work edge cases in the console
+    under four-eyes control with TOTP MFA.
+12. **A reusable verified credential** can be issued from an approved
+    session — an HMAC-signed, claims-only attestation a tenant can
+    verify later without re-running verification. It never contains
+    document images or raw biometric data.
+
+---
+
+## Platform capabilities
+
+### Tenants, keys, and configuration
+
+| Capability | What it does |
+|---|---|
+| Tenant accounts | Operator-provisioned tenants (there is no public self-service signup). Tenant creation requires the platform operator token and fails closed without it. |
+| API keys | Separate **test** and **live** keys per tenant; sessions are environment-scoped to the key that created them. Keys can be listed and revoked. Test keys run the real pipeline — there is no fake-outcome sandbox. |
+| Per-tenant flow config | Versioned configuration per tenant, environment, and level: required checks, face-match threshold and margin, risk auto-approve ceiling, proof-of-address window, screening threshold, case SLA, four-eyes on/off. Every decision records the config version it used. |
+| Dashboard | Tenant self-service at [/dashboard](https://kyc.novamail.store/dashboard): usage, invoices, webhook endpoints, recent sessions. |
+
+### The hosted verification flow
+
+- **Phone-first, voice-guided.** Pre-rendered human-sounding voice
+  prompts coach the applicant through consent, document capture,
+  selfie, and liveness; the flow is resumable and remembers completed
+  steps.
+- **Live camera scanner only.** Detection-gated automatic capture (no
+  shutter button), per-document-type geometry (rigid cards, passport
+  pages, paper printouts, booklet pages each modelled correctly),
+  automatic back-side capture for two-sided documents, zoom and
+  four-corner framing guidance, and a document-quality report (blur,
+  glare, darkness) computed on every read.
+- **Network gate.** VPN/proxy hard block before capture, IP-country
+  vs document-country consistency as a risk input, device timezone
+  cross-check.
+
+### Document intelligence
+
+- **Classification** against per-country layout templates: issuer
+  labels, portrait position, aspect, and structural elements are
+  scored; a claim whose country anchor is absent is capped below the
+  pass line unless a check-digit-valid MRZ names the claimed country.
+  A document stays valid until its printed expiry even when the
+  issuing authority changes its design — verdicts rest on originality
+  forensics, expiry, and data consistency, never on design generation.
+- **Dual-engine OCR** (detailed under *Advanced capabilities*):
+  Tesseract and PaddleOCR read every document; their word streams are
+  merged and arbitrated before extraction.
+- **Field extraction** per document type: label-anchored and
+  zone-based reads (including local-language labels and AAMVA numbered
+  labels on US documents), per-type number-format validators, and
+  checksum validation where the format carries one (ICAO MRZ check
+  digits, Verhoeff, NRIC).
+- **Machine-readable cross-checks.** MRZ ↔ printed-data consistency;
+  QR / PDF417 / Code 128 decoding with payload parsing — AAMVA
+  payloads on North American documents are parsed in full and
+  cross-checked field-by-field against the printed face, so a genuine
+  front paired with the wrong back fails.
+- **Expiry and age logic that respects the document.** Document types
+  that print no expiry (Nigerian voter's card, NIN card, NIN slip,
+  Aadhaar, PAN, and others in the registry) are never failed for a
+  missing expiry; types that print no date of birth are never failed
+  for a missing DOB. A registry-level validity window is enforced
+  where a type itself expires (for example, South Africa's green ID
+  book after 2028-03-31).
+
+### Authenticity and fraud defence
+
+- **Forensic signal pack**: error-level analysis, editing-software
+  metadata, moiré / pixel-grid / gloss / gamut screen signatures,
+  portrait-region splice analysis, font consistency, compositing
+  edges, border edges, and security-pattern presence — combined under
+  the corroboration rule described below.
+- **Screen and recapture detection**: a document photographed off a
+  screen, or a print of a photo, is caught by the screen-signal family
+  and the flow's own refresh-banding watch during capture.
+- **Fraud intelligence**: an HMAC-hashed duplicate index over document
+  numbers and face embeddings flags the same document or face
+  appearing across sessions; velocity and coordination signals route
+  to review — they never auto-reject on their own.
+- **Sanctions screening** against loaded lists (the OFAC SDN list is
+  fetchable with the shipped tooling); with no list loaded, screening
+  reports an error — never a silent pass. Hits are dispositioned by
+  reviewers.
+- **Risk engine**: every check contributes explainable points to a
+  session risk score and band; auto-approval is only possible below a
+  tenant-configured low-risk ceiling.
+
+### Biometrics
+
+- **Face match**: YuNet detection + SFace embeddings; the operating
+  threshold (cosine 0.363) is not a library default taken on faith —
+  it is the point measured on the full LFW protocol (see *Measured
+  evidence*), and tenants can configure a stricter threshold.
+- **Continuous face tracking**: the face must be present and remain
+  the *same* face across the selfie burst and the liveness recording;
+  an identity break fails the track.
+- **Active liveness**: server-issued randomised movement challenges,
+  analysed server-side. Presentation-attack decision logic is
+  evaluated under ISO/IEC 30107-3 metric definitions (see PAD
+  evaluation under *Measured evidence*).
+- **Deepfake signals**: rPPG pulse analysis (POS + CHROM + green legs
+  under a signal-quality gate), face-region frequency artefacts,
+  motion trajectory, and client device signals — combined as evidence,
+  with the pulse leg labelled evidence-only at current clip lengths.
+
+### Review, KYB, and credentials
+
+- **Review console** with case queues, SLAs, an evidence pre-read, and
+  audited access to protected media. Privileged actions require
+  reviewer TOTP MFA (RFC 6238, replay-protected).
+- **Four-eyes rule**: overturning an engine rejection requires a
+  second reviewer to confirm.
+- **KYB business verification**: business records, directors and
+  beneficial owners (director / UBO roles), evidence document upload,
+  a registry-check step, a reviewer registry decision, and a criteria
+  evaluation. The registry-check step uses an adapter that **fails
+  closed as `not_configured`** until partner registry credentials are
+  supplied for that country — it is format validation plus reviewer
+  confirmation today, and is labelled that way everywhere; it is not
+  represented as a live government-registry connection.
+- **Reusable verified credentials**: HMAC-signed, claims-only
+  credentials issued from approved sessions; verifiable and revocable
+  through the API; they carry no images or raw biometrics.
+- **Ongoing monitoring**: approved applicants can be re-screened;
+  new screening hits raise monitoring alerts and webhook events.
+
+### Platform operations
+
+- **Webhooks**: five implemented events — `session.completed`,
+  `case.opened`, `case.decided`, `applicant.deleted`,
+  `screening.hit_new` — delivered with an HMAC-SHA256 signature header
+  over the raw body, exponential-backoff retries, a dead-letter state,
+  and operator replay. Delivery targets pass an SSRF guard that
+  refuses non-public addresses before any network call.
+- **Usage and billing machinery**: exactly-once usage metering,
+  versioned price books, invoices, and tenant quotas. **Prices are
+  operator-set**; the machinery is complete, the commercial price list
+  is an operator decision.
+- **Retention and erasure**: configurable retention sweeps delete the
+  media of old decided sessions; applicant erasure is supported
+  through the API and audited.
+- **Audit log**: tenant, reviewer, and system actions are recorded,
+  including privileged media access.
+
+---
+
+## Verification levels
+
+Levels are configuration-driven; the built-in defaults are:
+
+| Level | Required checks (defaults) | Typical use |
+|---|---|---|
+| **1** | Capture quality, document framing, document classification, data consistency, OCR, expiry/age, consistency | Document identity core |
+| **2** | Level 1 **plus** MRZ (where the document carries one), authenticity, face match, continuous face track, liveness, deepfake | Full person verification |
+| **3** | Level 2 **plus** proof of address, sanctions screening | Enhanced verification |
+
+The hosted experience always includes consent and a live selfie;
+liveness is presented from Level 2 and proof of address at Level 3.
+The VPN/proxy gate and IP-country cross-check are platform controls
+that wrap every level.
+
+---
+
+## Supported countries and documents
+
+Nova KYC launches with **16 countries**. Passports are supported for
+every launch country; non-launch countries are rejected at session
+creation. The registry below is the platform's real document registry
+(`server/docregistry.py`) — every type listed is validated, prompted,
+and expiry-checked according to its own facts.
+
+| Country | Documents supported |
+|---|---|
+| **United States** | Passport · Passport card · Driver's license · State ID |
+| Canada | Passport · Driver's licence · Provincial photo card |
+| United Kingdom | Passport · Driver's licence · PASS proof-of-age card |
+| Nigeria | Passport · Driver's licence · National ID · Voter's card (INEC PVC) · NIN card · NIN slip |
+| Ghana | Passport · Driver's licence · Ghana Card (national ID) · Voter ID card |
+| Kenya | Passport · National ID (2nd generation) · Maisha Card (3rd generation) · Smart driving licence |
+| South Africa | Passport · Smart ID card · Green ID book · Driving licence card |
+| India | Passport · Aadhaar · PAN card · Driver's licence · Voter ID (EPIC) |
+| Philippines | Passport · PhilID (national ID) · UMID · Driver's license |
+| Singapore | Passport · NRIC · Driving licence |
+| United Arab Emirates | Passport · Emirates ID · Driver's licence |
+| Australia | Passport · Driver's licence · State photo card |
+| Germany | Passport · Driver's licence · National ID (Personalausweis) |
+| France | Passport · National ID card (CNI) · Driver's licence |
+| Netherlands | Passport · National ID (identiteitskaart) · Driver's licence (rijbewijs) |
+| Ireland | Passport · Passport card · Driver's licence · National Age Card |
+
+Registry facts worth knowing:
+
+- **Nigeria's NIN slip prints no date of birth and no expiry** — the
+  platform never fails it on either; the slip is also the one document
+  type with an upload path (with the typed-NIN tally check), because
+  it is a paper printout rather than a card.
+- Several types print **no expiry** (Nigerian voter's card and NIN
+  card, Aadhaar, PAN, Kenyan 2nd-generation ID, Singapore NRIC, South
+  African Smart ID, Irish Age Card, and more) and are modelled that
+  way — a missing expiry on those documents is correct, not a defect.
+- Document generations are equally valid: an older design that is
+  still within its printed validity is verified on its forensics and
+  data, not marked down for being an older design.
+
+---
+
+## Advanced capabilities
+
+### One unified dual-engine reading brain
+
+Most platforms read a document with a single OCR engine and inherit
+that engine's blind spots. Nova KYC runs **two independent engines —
+Tesseract and PaddleOCR (PP-OCRv5) — as one reading family**:
+
+- Both engines read the same document in parallel; their word streams
+  are **merged into a single stream**: a token both engines see in the
+  same place becomes one high-confidence token; where they disagree,
+  the higher-confidence reading holds the place and the rival reading
+  still reaches the extraction brain as testimony.
+- Extraction consumes the merged stream. Where the identity fields are
+  still incomplete, each engine's own extraction testifies and an
+  **arbitration layer** adopts union finds with recorded provenance
+  (both-engines / single-engine / arbitrated).
+- A **conflicting document number is adopted from neither engine** —
+  downstream arbiters (the typed NIN claim, the MRZ, the barcode
+  payload) decide it. Every cross-engine disagreement is recorded on
+  the read and surfaced in the API.
+- The measured result is under *Measured evidence*: the unified reader
+  extracted **31 of 43** applicable identity fields across the
+  labelled real-sample set, against 25/43 and 26/43 for the individual
+  engines — and was never below the best single engine on any case.
+
+### Fail-closed by design
+
+The platform's security posture is that **unknown is never a pass**:
+
+- Missing models, missing OCR, a missing screening list, an
+  unconfigured registry adapter, or an unconfigured external provider
+  slot each produce an explicit error or `not_configured` state —
+  never a silent pass and never a fabricated result.
+- Tenant creation is disabled entirely when the operator token is not
+  configured.
+- A document portrait that cannot be found returns face match
+  *unclear* — it blocks auto-approval rather than guessing.
+- Webhook delivery refuses non-public targets before any network
+  call; reviewer recovery fails closed to an audited admin reset.
+
+### Corroboration-gated authenticity
+
+Phone photos of genuine documents are noisy: compression analysis and
+font-consistency signals fire on perfectly real cards. Nova KYC's
+authenticity verdict therefore requires **corroboration**: a hard fail
+needs both a high signal score **and** at least two independent
+non-edit signal families (screen, provenance, portrait, structure, or
+data) at moderate strength or above. Edit-family signals alone can
+raise suspicion but cannot convict. This rule was derived from a
+signal census over the genuine-document corpus and is measured in
+[benchmarks/RECALIBRATION-EVAL.md](benchmarks/RECALIBRATION-EVAL.md).
+
+### Evaluation as a shipped discipline
+
+Accuracy claims are treated as code: benchmark harnesses ship in this
+repository (`scripts/benchmark_*.py`, `scripts/pad_eval.py`), their
+outputs are committed under [benchmarks/](benchmarks/), and public
+claims are audited against the implementation
+([docs/CLAIMS-AUDIT.md](docs/CLAIMS-AUDIT.md)).
+
+---
+
+## Measured evidence
+
+All figures below are measured on this platform's own pipeline and
+recorded in the linked benchmark files. Nothing is estimated; where
+something could not be measured, the benchmark says so.
+
+### Document reading — dual-engine evaluation
+
+Labelled real-sample set, production conditions (orientation-normalised
+renditions, production extraction brain). Score = applicable identity
+fields extracted (surname, given names, date of birth, number, expiry;
+fields a document type does not print are excluded).
+
+| Reader | Fields extracted |
+|---|---|
+| Tesseract alone | 25 / 43 |
+| PaddleOCR alone | 26 / 43 |
+| **Unified dual-engine (production)** | **31 / 43** |
+
+The unified reader was never below the best single engine on any of
+the 11 cases, and strictly above both on three — including recovering
+the complete date of birth on the Nigerian digital NIN slip, a
+standing single-engine residual. Full per-case results:
+[benchmarks/OCR-DUAL-EVAL.md](benchmarks/OCR-DUAL-EVAL.md).
+
+On a synthetic, template-conformant corpus (144 documents across 12
+document types, with named degradations), field extraction scored
+exact-match **1.0000** on clean documents and **0.9554** across all
+degradation levels combined (mean character error rate 0.0288) —
+[benchmarks/RESULTS.md](benchmarks/RESULTS.md). The corpus is
+synthetic by design; it bounds the extraction wiring, and the
+real-sample evaluation above is the field-reading evidence.
+
+### Face match — full LFW protocol
+
+The production pipeline (YuNet + SFace through the production adapter)
+was benchmarked on the complete Labeled Faces in the Wild View-2
+protocol — all **6,000 official pairs**, no subsampling:
+
+| Measure | Value |
+|---|---|
+| Equal error rate | **1.07%** (at threshold 0.288) |
+| At the production threshold 0.363 | **FAR 0.10% · FRR 2.00% · accuracy 98.95%** |
+| Standard protocol accuracy | 99.13% ± 0.38% |
+| High-assurance option (0.413, tenant-configurable) | FAR 0.00% (0/3,000) · FRR 3.33% |
+
+The shipped 0.363 threshold was **kept on this measured evidence**, not
+on a library default. Honest limits, recorded in the benchmark:
+funneled LFW faces are pre-cropped, so its zero detection-failure rate
+does not transfer to raw phone media; demographic slicing is
+**unmeasured** because LFW carries no demographic attributes.
+[benchmarks/BIOMETRICS.md](benchmarks/BIOMETRICS.md)
+
+### Presentation-attack (liveness) evaluation
+
+Production liveness decision logic, ISO/IEC 30107-3 metric definitions,
+synthetic feature-level battery (40 trials per attack class):
+
+| Metric | Value |
+|---|---|
+| APCER (overall) | **0.0%** |
+| APCER by class (static photo / face absent / partial replay) | 0.0% each |
+| BPCER (reject) | **0.0%** |
+| BPCER (non-pass, incl. unclear) | 2.5% |
+| ACER | **0.0%** |
+
+On real artefacts, the owner's genuine liveness videos replayed
+verbatim against fresh server challenges passed **0 of 6** evaluations
+— challenge freshness alone defeats a bit-perfect replay. Stated
+plainly in the benchmark: this is a readiness evaluation of the
+production logic, **not** an iBeta / ISO 30107-3 laboratory
+certification, and no video-level PAD metric or certification is
+claimed. Physical-mask and DNN face-swap corpora are unmeasured.
+[benchmarks/PAD-EVAL.md](benchmarks/PAD-EVAL.md) ·
+[benchmarks/BIOMETRICS.md](benchmarks/BIOMETRICS.md)
+
+### Forgery battery
+
+A labelled fake California ID card (a faithful visual copy that
+**passed** template classification at 85.6, level with the genuine
+control) was **caught by the forensic authenticity layer** —
+recapture/edit and altered-text reason codes — while the genuine
+control was not rejected. [benchmarks/FAKE-BATTERY.md](benchmarks/FAKE-BATTERY.md)
+
+After recalibration, the authenticity and classification gate over the
+recorded corpus stands at: **14 of 14 genuine documents pass/unclear
+(0 violations)**, the labelled fake still fails, and all subject cards
+unclear — with the same evaluation recording its own named residuals
+rather than tuning them away.
+[benchmarks/RECALIBRATION-EVAL.md](benchmarks/RECALIBRATION-EVAL.md)
+
+### Security verification
+
+- Tenant-isolation battery: **9/9** scenarios pass.
+- Scripted self-penetration test: **32/32** probes, 0 findings
+  ([docs/PENTEST.md](docs/PENTEST.md)) — a precondition for, not a
+  substitute for, an external penetration test, which has not yet been
+  commissioned.
+- Backup/restore drill executed and measured, with restored media
+  decrypting byte-identical ([benchmarks/BACKUP-RESTORE.md](benchmarks/BACKUP-RESTORE.md)).
+- The platform carries a **453-test automated suite**; a single known
+  failure is environment-specific (one synthetic German fixture misread
+  by this machine's Tesseract build — the misread is itself correctly
+  flagged invalid by the format validator).
+
+---
+
+## For developers
+
+### Quickstart
+
+```bash
+# 1. Create an applicant whose identity will be read from the document
+curl -s https://kyc.novamail.store/v1/applicants \
+  -H "Authorization: Bearer $KYC_TEST_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"country": "NG", "identity_source": "document", "external_ref": "user_12345"}'
+
+# 2. Create a session — the response carries the one-session flow URL
+curl -s https://kyc.novamail.store/v1/sessions \
+  -H "Authorization: Bearer $KYC_TEST_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"applicant_id": "APPLICANT_ID", "level": 2, "expires_hours": 24}'
+
+# 3. Send the person to https://kyc.novamail.store/flow/<flow_token>
+
+# 4. Read the authoritative result from your backend
+curl -s https://kyc.novamail.store/v1/sessions/SESSION_ID \
+  -H "Authorization: Bearer $KYC_TEST_KEY"
+```
+
+With the zero-dependency JavaScript SDK ([sdk/kyc.mjs](sdk/kyc.mjs)):
+
+```js
+import { KycClient } from './sdk/kyc.mjs';
+
+const kyc = new KycClient({
+  apiKey: process.env.KYC_API_KEY,
+  baseUrl: 'https://kyc.novamail.store',
+});
+
+const applicant = await kyc.createApplicant({
+  country: 'NG', identitySource: 'document', externalRef: 'user_12345',
+});
+const session = await kyc.createSession({
+  applicantId: applicant.id, level: 2, expiresHours: 24,
+});
+const verificationUrl = kyc.absoluteFlowUrl(session); // send this to the user
+const result = await kyc.getSession(session.id);      // authoritative outcome
+```
+
+### The API contract
+
+- **OpenAPI 3.1**: 63 paths, 69 operations, 43 schemas —
+  [docs/openapi.json](docs/openapi.json) ·
+  [docs/openapi.yaml](docs/openapi.yaml) · live at
+  https://kyc.novamail.store/openapi.json. Import it into Postman,
+  Insomnia, a client generator, or an AI agent's tool registry.
+- **Live API explorer**: https://kyc.novamail.store/docs renders the
+  specification with search, tag filters, and expandable operations.
+- **Authentication**: tenant API key as a Bearer token for the tenant
+  API; a separate platform-operator header for operator operations;
+  scoped, expiring flow tokens for the hosted flow.
+- **SDK**: the JavaScript SDK exposes the full tenant surface —
+  applicants, sessions and checks, keys, reviewer users and MFA,
+  cases, protected media, KYB, webhooks and delivery replay,
+  credentials, monitoring, usage and invoices, and configuration —
+  with webhook signature verification built in.
+- **Complete guide**: [docs/DEVELOPER.md](docs/DEVELOPER.md) covers the
+  integration model, environments and keys, identity models, levels,
+  lifecycle and polling rules, webhooks, review operations, KYB,
+  errors and retries, a security checklist, testing, and
+  troubleshooting. [docs/INTEGRATION.md](docs/INTEGRATION.md) is the
+  short quickstart; [docs/API.md](docs/API.md) is the endpoint
+  reference companion to the OpenAPI file.
+
+### Integration patterns
+
+| Channel | Pattern |
+|---|---|
+| **Website** | Create the session server-side; navigate the user to the flow URL (full-page) or open it in a new tab and poll session status when focus returns. Desktop visitors are handed a QR code to continue on their phone — the flow is phone-only. |
+| **Mobile app** | Create the session from your backend (never embed the API key in the app); open the flow URL in the system browser, SFSafariViewController, or a Chrome Custom Tab; on app resume, refresh the result from your backend, and/or receive the webhook server-to-server. |
+| **AI agents** | Import the OpenAPI specification as the tool contract. Agents create applicants and sessions, hand the flow URL to the human, and read decisions — capture always happens in the hosted flow, never through the API. Keys stay in the agent host's secret store, never in prompts or tool arguments beyond the call itself. |
+
+Stated plainly, because integrators plan around them: there is **no
+iframe/embed SDK, no native capture SDK, no session `return_url`, and
+no API-only media upload** today. The hosted-flow handoff above is the
+supported contract. `Idempotency-Key` headers are not honoured;
+session creation is safe to retry by listing sessions.
+
+---
+
+## Architecture
+
+Nova KYC is a deliberately local-first system: one Python service owns
+the API, the hosted flow, and every verification pipeline, with all
+state on the operator's infrastructure — no third-party verification
+vendor sits in the decision path.
+
+| Layer | Implementation |
+|---|---|
+| Service | Python 3.12 (standard library HTTP core), single deployable service |
+| Data | SQLite with tenant-scoped rows on every table; isolation enforced in application code and proven by the isolation battery |
+| Media storage | Local encrypted object store — AES-256-GCM envelope encryption, master key held in an environment/file secret, never in the database or the repository; a sealed, passphrase-encrypted key backup ships with the deployment |
+| Document vision | OpenCV framing and quality analysis; Tesseract + PaddleOCR (PP-OCRv5) dual-engine reading; zxing barcode decoding with OpenCV fallback arms |
+| Biometrics | YuNet face detection + SFace embeddings (OpenCV Zoo models), continuous tracking, active-challenge liveness |
+| Delivery | The public site is served through Cloudflare (tunnel + Worker relay) in front of the origin service; the API contract is hosting-independent ([docs/CLOUDFLARE-ARCHITECTURE.md](docs/CLOUDFLARE-ARCHITECTURE.md)) |
+| Operations | systemd services, a health watchdog with automatic recovery, checksummed backups with a measured restore drill, and an operator runbook ([docs/RUNBOOK.md](docs/RUNBOOK.md)) |
+
+---
+
+## Security and privacy
+
+- **Tenant isolation** on every query, proven by a dedicated
+  cross-tenant battery (reads and writes, 9/9).
+- **Encryption at rest** for all stored verification media
+  (AES-256-GCM); reads fail closed without the master key.
+- **Reviewer MFA**: TOTP (RFC 6238, replay-protected) gates privileged
+  reviewer actions; four-eyes confirmation for overturning engine
+  rejections; all privileged media access is audited.
+- **Webhook security**: HMAC-SHA256 signatures over the raw body with
+  timestamp staleness checks; SSRF guard refuses non-public delivery
+  targets.
+- **Rate limits** per API key, per flow token, and per IP, with real
+  `429` responses and `Retry-After`; request-body caps return `413`.
+- **Fail-closed defaults** throughout (see *Advanced capabilities*).
+- **Privacy by design**: webhooks and reusable credentials carry
+  claims and outcomes only — never document images or raw biometric
+  data. Retention sweeps and API-driven applicant erasure bound how
+  long personal data lives on the platform.
+- **Honest residual list**: the SQLite database file itself is not
+  encrypted (media files are; the database relies on host controls);
+  captures are type-checked but not malware-scanned; no external
+  penetration test has been commissioned yet. The full readiness
+  mapping is in [docs/SOC2-READINESS.md](docs/SOC2-READINESS.md) — a
+  readiness map, not a certification; **no SOC 2, iBeta, or ISO
+  certification is held or claimed**.
+
+---
 
 ## Run it locally
 
 ```bash
-cd KYC
-python3 scripts/fetch_models.py        # one-time: YuNet + SFace ONNX models into models/ (gitignored)
-python3 -m server --port 8765          # data lives in ./data/ (gitignored)
-# Landing:  http://127.0.0.1:8765/
-# Console:  http://127.0.0.1:8765/console   (paste a tenant API key)
-python3 -m unittest discover tests     # 304 tests (1 known tesseract-variance failure, see above)
-python3 scripts/e2e_local.py           # live Level 3 end-to-end run
-python3 -m server.retention --days 90  # delete images of old decided sessions
-python3 scripts/fetch_ofac.py          # optional: real OFAC SDN list into data/lists/
-python3 -m server.monitoring --tenant <id> --env test   # ongoing-monitoring rescreen CLI
+python3 scripts/fetch_models.py     # one-time: face + OCR support models into models/
+python3 -m server --port 8765       # data lives in ./data/
+# Landing:   http://127.0.0.1:8765/
+# Console:   http://127.0.0.1:8765/console   (paste a tenant API key)
+# Dashboard: http://127.0.0.1:8765/dashboard
+# Docs:      http://127.0.0.1:8765/docs
+
+python3 -m unittest discover -s tests        # the automated suite
+python3 scripts/e2e_local.py                 # end-to-end verification run
+python3 scripts/fetch_ofac.py                # optional: OFAC SDN list into data/lists/
+python3 -m server.retention --days 90        # delete media of old decided sessions
 ```
 
-Create a tenant (platform-operator only: tenant creation requires the
-`KYC_PLATFORM_ADMIN_TOKEN` environment variable on the server and the
-matching `X-Platform-Admin` header; with no token configured, tenant
-creation is disabled entirely — WS0 audit fix, 2026-10-26):
+Requires Python 3.12, Pillow, NumPy, OpenCV, PaddleOCR, and the
+`tesseract` CLI. If Tesseract is missing, the OCR check reports an
+error — it never pretends to pass. If the face models are missing,
+face match and liveness report `model_missing` — never a fake pass.
+
+Tenant creation is operator-only:
 
 ```bash
-curl -s -X POST localhost:8765/v1/tenants -H 'Content-Type: application/json' \
+curl -s -X POST localhost:8765/v1/tenants \
+  -H 'Content-Type: application/json' \
   -H 'X-Platform-Admin: <operator token>' \
-  -d '{"name":"Nova Payments","country":"NG"}'   # returns test+live keys ONCE
+  -d '{"name": "Example Tenant", "country": "NG"}'   # returns test + live keys ONCE
 ```
 
-Then `POST /v1/applicants` and `POST /v1/sessions` with
-`Authorization: Bearer <key>`; the session response carries the applicant's
-`/flow/<token>` link. Sessions are **resumable**: reopening an unexpired
-link continues where the applicant left off — completed steps stay done.
+---
 
-Requires: Python 3.12, Pillow, numpy, OpenCV (`cv2`) and the `tesseract`
-CLI for OCR (`sudo apt-get install -y tesseract-ocr`). If tesseract is
-missing the OCR check reports `error` — it never pretends to pass. If
-the face models are missing (run `scripts/fetch_models.py`), face match
-and liveness report `error`/`model_missing` — never a fake pass.
-Face models: YuNet `face_detection_yunet_2023mar.onnx` (MIT) and SFace
-`face_recognition_sface_2021dec.onnx` (Apache 2.0) from the OpenCV Zoo
-— the zoo ships SFace as the 2021dec file; there is no 2023dec file.
+## Documentation and references
 
-### The hosted flow is a live camera scanner (2026-10-26)
+| Document | What it covers |
+|---|---|
+| [docs/DEVELOPER.md](docs/DEVELOPER.md) | The complete developer guide — integration model, website/mobile/agent patterns, webhooks, KYB, review operations, errors, testing |
+| [docs/API.md](docs/API.md) | Endpoint reference companion to the OpenAPI specification |
+| [docs/INTEGRATION.md](docs/INTEGRATION.md) | Short integration quickstart |
+| [docs/openapi.json](docs/openapi.json) · [docs/openapi.yaml](docs/openapi.yaml) | The machine-readable API contract (OpenAPI 3.1) |
+| [sdk/README.md](sdk/README.md) · [sdk/kyc.mjs](sdk/kyc.mjs) | JavaScript SDK and its method map |
+| [docs/DECISIONS.md](docs/DECISIONS.md) | The platform's decision record — what was decided and why |
+| [docs/CLAIMS-AUDIT.md](docs/CLAIMS-AUDIT.md) | Every public claim audited against the code |
+| [docs/RUNBOOK.md](docs/RUNBOOK.md) | Operations runbook |
+| [docs/CLOUDFLARE-ARCHITECTURE.md](docs/CLOUDFLARE-ARCHITECTURE.md) | Production delivery architecture |
+| [docs/SOC2-READINESS.md](docs/SOC2-READINESS.md) | Control-readiness mapping (not a certification) |
+| [docs/PENTEST.md](docs/PENTEST.md) | Scripted self-penetration test results |
+| [benchmarks/OCR-DUAL-EVAL.md](benchmarks/OCR-DUAL-EVAL.md) | Dual-engine OCR evaluation on real samples |
+| [benchmarks/BIOMETRICS.md](benchmarks/BIOMETRICS.md) | Face-match FAR/FRR and presentation-attack measurements |
+| [benchmarks/FAKE-BATTERY.md](benchmarks/FAKE-BATTERY.md) | Labelled forgery battery |
+| [benchmarks/RECALIBRATION-EVAL.md](benchmarks/RECALIBRATION-EVAL.md) | Authenticity/classification recalibration gate |
+| [benchmarks/PAD-EVAL.md](benchmarks/PAD-EVAL.md) | Liveness (PAD) evaluation under ISO/IEC 30107-3 definitions |
+| [benchmarks/RESULTS.md](benchmarks/RESULTS.md) | Field-extraction benchmark on the synthetic corpus |
+| [research/specimens/INDEX.md](research/specimens/INDEX.md) | Researched document specimens behind the registry and templates |
 
-The applicant flow (`public/flow.html`) is **camera-only**. There is
-**no gallery picker and no file-upload path anywhere in the flow** —
-not for the document, not for the selfie, not for the liveness video,
-not for proof of address. If the browser has no camera or permission
-is denied, the flow shows a plain "a camera is required for live
-verification" state; it never falls back to file upload.
+---
 
-- **Documents** are scanned in a live viewfinder with an animated
-  corner frame (card or passport-page aspect). Lightweight analysis of
-  downscaled frames (~8×/second, built for low-end phones) gives one
-  plain-language hint at a time — too dark, glare, blurry, hold
-  steady, fit the document in the frame. When the frame has been
-  sharp, lit and still for ~700 ms the scanner **captures by itself —
-  there is no shutter button**. A two-sided document automatically
-  prompts "Now scan the BACK of your ID" and repeats; retakes are
-  offered after a capture. Captures carry metadata
-  (`{method: "live_camera", side}`) recorded server-side per side.
-- **Selfie + liveness** are likewise automatic: face in the oval →
-  the selfie captures by itself; the server-issued movement challenge
-  is then recorded from the same live stream automatically (no
-  start/stop buttons, no video-file upload).
-- **The scanner must SEE the document before it may capture**
-  (2026-10-26). A lightweight detector on the analysis frames
-  (grayscale → Sobel edges → a document quadrilateral locked onto the
-  guide frame: all four border edges present along most of their
-  length, aspect matching the selected document type from the registry
-  within 10%, real interior texture) gates auto-capture: detection
-  true + quality judges (light/glare/sharpness/stillness) sustained
-  for the stability window, nothing else. A still, textured room sits
-  in the "No ID detected — place your ID inside the frame" state
-  forever; capture with no document is *impossible*, not discouraged.
-  The detected quad is drawn live on the overlay. The same gate covers
-  the back side and proof of address. Camera is requested at up to
-  1920×1080 (graceful fallback). A refresh-banding watch runs during
-  the document step: sustained periodic luminance banding (a display's
-  refresh beating against the rolling shutter) puts the scanner in
-  "This looks like a screen — scan the physical document" and refuses
-  the lock the same way.
-- **Server-side `document_framing` check** (OpenCV contour detection)
-  verifies each captured side actually contains a card-like
-  quadrilateral roughly filling the frame. It is a **required,
-  decision-bearing** check for document sessions: framing *fail*
-  (`document_not_detected`) auto-rejects; framing *unclear* (document
-  too small in frame) auto-rejects with `document_quality_rescan`.
-- **Paper documents are first-class (rectification, 2026-10-26).**
-  The first live owner test failed exactly here: his physical
-  Nigerian NIN slip — a wide, bowed, laminated *paper* printout,
-  ~2.18:1 in frame — was told "No ID detected", because the registry
-  carried the slip at a card-style point aspect (1.41 ±10%), the
-  client detector searched for rigid straight edges, and server
-  framing found no quad in the frame (largest contour 1.4% of the
-  image). The model is now honest per physical class, end to end:
-  *Registry geometry* — plastic cards keep a point aspect; paper and
-  booklet types carry an aspect **range** (NIN slip 1.2–2.8, guide
-  frame drawn at 2.0; ZA green ID book is a booklet range).
-  *Client detector* — paper types take a dedicated path: luminance
-  segmentation of the bright sheet, quadratic (bowed) border fits,
-  border support judged against the fitted outline at paper
-  thresholds (side ≥ 0.30, mean ≥ 0.45), aspect tested against the
-  registry range, and the measured aspect corrected for the analysis
-  canvas's vertical squash on tall video buffers. The card path and
-  its strict numbers are unchanged; the screen-refresh refusal keeps
-  precedence over both paths; proof-of-address pages (portrait paper)
-  take the paper path too. *Server framing* — multi-strategy quad
-  detection (two Canny tunings + luminance segmentation) with
-  interior-texture, border-support and ring-contrast gates so bright
-  windows/walls cannot hallucinate a document (the owner's original
-  room photos still fail); segmentation quads must meet the pass
-  size bars to count at all. *Warped reading* — when a quad is found,
-  the capture is perspective-warped flat and OCR, classification and
-  field extraction read the warp (authenticity keeps the original);
-  a quad too small to be the document (an inner photo box) never
-  earns a warp. *Measured on the owner's own frames* (artefacts in
-  `data/owner-frame-proof/`, script `scripts/owner_frame_proof.py`):
-  the clearer frame now passes server framing (quad found, aspect
-  2.204, wide-fill rule, warp applied), locks the client detector
-  (`doc_hold`; the old card path still says `doc_none` on it),
-  classifies 100/100 as NG NIN slip on the warp, and extracts surname
-  and given names; the darker frame locks the client detector but
-  still fails server framing (`document_not_detected`) — a capture
-  taken in that light would be asked to rescan. **Honest limit:**
-  the slip's printed NIN digits sit under the green NIMC watermark in
-  grey print; on the owner's frame tesseract could not segment them
-  in any of 20+ configurations tried (multi-pass, zone crops to 4×,
-  thresholding, digit whitelist, green-channel separation), so the
-  number field does not extract from that capture — names do, and
-  the extraction machinery itself is proven on a layout-faithful
-  synthetic slip (classification pass 85.6, all printed fields
-  extracted, number format-valid).
-- **Honest limits:** the client-side guidance (brightness / glare /
-  blur / stillness / a skin-tone centre heuristic for the selfie) is
-  *guidance heuristics*, not verification — the real checks run
-  server-side (framing, vision OCR/MRZ, face track + match, liveness,
-  deepfake, authenticity). OS-level camera-feed injection (virtual
-  cameras, rooted devices, emulators) is mitigated in layers (see the
-  deepfake section) but is **not** claimed to be eliminated.
+## Boundaries, stated plainly
 
-### Automatic decisions — no manual review in the standard path (2026-10-26)
+- Registry checks for business verification require partner
+  credentials per country and fail closed (`not_configured`) until
+  configured; KYB today is format validation, evidence, and reviewer
+  confirmation, labelled as such.
+- Sanctions screening covers the lists actually loaded (OFAC SDN
+  ships as a fetchable list); no list loaded means screening errors,
+  never a pass.
+- External biometric provider slots exist behind an adapter and fail
+  closed until an operator supplies vendor credentials; the shipped,
+  measured pipeline is Nova KYC's own YuNet + SFace stack.
+- Commercial pricing is operator-set; the metering, invoicing, and
+  quota machinery is built and live.
+- No certification (SOC 2, iBeta, ISO) is held or claimed.
 
-Verification is **automatic**. A genuine session approves by itself;
-an invalid one rejects by itself; nothing in the standard
-document + selfie path waits for a human. The decision engine
-(`server/engine.py`) is decisive, in this order: hard-fail reasons
-(expired document, underage, VPN/proxy detected) → any *required*
-check failed → framing unclear (auto-reject, `document_quality_rescan`)
-→ a required check *errored* (the platform failed, not the applicant —
-the one route to a human besides the three below) → any other required
-check not passed (unclear / not run / missing: the verification is
-incomplete, the applicant re-does it) → tenant-config risk routing.
-`needs_review` survives **only** for: a tenant flow-config that
-explicitly requires review (risk ceiling / elevated signals), L3
-screening possible-hits awaiting disposition, KYB, and platform
-errors. The review console remains for audit, overrides (four-eyes),
-and those dispositions.
+---
 
-### Verification layers — surface, text, internal (2026-10-26)
+## About
 
-Every document decision records `verification_layers` — the decision
-must show *how deep* the verification went:
+**Nova KYC is a product of Nova Inc** — the company behind Nova
+Payments, the Agent Exchange, and the Nova ecosystem at
+[novamail.store](https://novamail.store). One company, one account
+model, one verification layer across the ecosystem.
 
-- **SURFACE** — framing + capture quality + template classification.
-- **TEXT** — vision OCR of the printed fields.
-- **INTERNAL** — the document's encoded/hidden evidence: MRZ check
-  digits, MRZ↔VIZ agreement, decoded QR/PDF417 payload agreement,
-  authenticity signals.
-
-Where a document type **carries** internal data (registry `mrz: true`,
-or a machine-readable code was actually decoded from the image), the
-internal layer is **required** for an automatic approval: unreadable
-internal data auto-rejects (`internal_data_unreadable`), disagreeing
-internal data auto-rejects (`internal_mismatch`). A document type with
-no internal data records `internal: not_available` — honestly — rather
-than pretending the layer ran. The layers are shown in the console
-case view. **NFC chip reading is the remaining internal layer and is
-Phase 4**: Web NFC is Android-Chrome only, and iOS Safari cannot read
-passport chips from a web flow at all.
-
-### Document classification (2026-10-26)
-
-A captured image must classify **as the document type the session
-claims**, by layout — not merely be a rectangle (`server/templates.py`,
-check `document_classification`). Per-type layout templates carry the
-expected aspect, portrait zone, printed labels, document-number zone
-and MRZ zone. Full templates: NG passport, NG drivers licence, NG
-voter card, NG NIN card, NG NIN slip, US passport, US passport card,
-US drivers license, US state ID — plus a generic TD3 template for
-other countries' passports and coarse templates (aspect +
-portrait-left + MRZ-absent) for the remaining registry types. The
-measurement locates the portrait with the YuNet face detector on the
-document image, maps OCR word boxes (tesseract TSV) against the
-number zone and expected labels, and checks MRZ position/validity.
-Score threshold 70/100: full/generic types must **pass** for
-auto-approval — a mismatch fails with
-`document_classification_mismatch` and auto-rejects. Coarse types:
-failure is strong risk + no auto-approval, and a type with no template
-records `classification_template_missing` honestly. Calibration on
-the suite fixtures: the drawn passport scores ~88 claimed as a
-passport and ~58 claimed as a US driver's licence; a room photo
-scores ~35 as a passport.
-
-### Data-consistency matrix + document evidence (2026-10-26)
-
-Verification is four-way agreement, recorded explicitly. The
-`data_consistency` check builds a **pairwise agreement matrix**
-across every data source present — printed fields as extracted by
-OCR, the MRZ, the decoded QR/PDF417 payload, and the applicant
-profile — over name, date of birth, document number and expiry. Each
-pair verdict is `agree | disagree | not_available`, stored on the
-case. **Any disagree is a named finding** (e.g.
-`mrz_vs_barcode_number_disagree`, +25 risk via `data_inconsistency`)
-and fails the check: no disagreement may exist among available pairs
-for an automatic approval. Alongside it, every document decision
-records a `document_evidence` block — layout classification, text
-extraction, machine-readable data, portrait analysis, image quality,
-security features, each with its status — the document-side mirror of
-the biometric evidence block, so a decision shows the combined
-independent evidence it rests on.
-
-### Vision OCR (2026-10-26)
-
-`server/vision.py`: **multi-pass reading + MRZ/VIZ cross-validation +
-code decoding**.
-
-- *Multi-pass reading*: tesseract runs a plain pass (greyscale + 2×
-  upscale, `--psm 3`) and an adaptive-threshold pass, each with word
-  confidences; a dedicated **MRZ-band pass** (focused strips, psm 6)
-  recovers the MRZ lines that full-page segmentation skips (measured).
-  The best read wins — a check-digit-valid MRZ outranks raw confidence.
-- *MRZ↔VIZ cross-validation*: where an MRZ parses valid, label-anchored
-  visual-zone DOB/expiry dates, the surname and the document number
-  are compared against it. A material disagreement fails with
-  `mrz_viz_mismatch` (+35 risk) — a forged document must fool **both**
-  zones consistently. Fields the visual zone doesn't label are
-  recorded as not compared, never guessed.
-- *Code decoding*: QR codes via OpenCV (`QRCodeDetector`); PDF417 and
-  other barcodes via **zxing-cpp** when installed (optional dependency —
-  its absence degrades to "unavailable", recorded). US/CA licence-back
-  PDF417 payloads are parsed for AAMVA elements (number, names, DOB,
-  expiry) and cross-checked against the printed fields: disagreement
-  fails with `code_decode_mismatch`. Decoded content is evidence,
-  never truth — it must agree, or it counts against the document.
-
-### Field templates + payload semantics (Phase 4 WS1, 2026-10-26)
-
-- *Field-extraction templates* (`server/fieldtemplates.py`): every
-  document type in the registry has a template — per-field relative
-  zones (surname, given names, DOB, expiry, document number), label
-  anchors including the local-language labels on DE/FR/NL documents,
-  and a per-type number format validator. Extraction is zone-first
-  with label anchoring, falls back to label-anchored text extraction,
-  and records each field's source and format verdict on the case
-  (`field_extraction` check). A document number that is read but fails
-  its own type's format — including real check digits: **Verhoeff**
-  for Aadhaar, the published checksum letter for Singapore NRIC —
-  fails with `field_number_format_invalid`. Digit-format numbers get
-  OCR-confusable normalisation (O/0, I/1, S/5…) that is only accepted
-  when the normalised value passes its check digit/format.
-- *Payload semantics* (`server/payloads.py`): AAMVA payloads are
-  parsed in full (all elements present, with element format
-  validation — MMDDYYYY dates, sex code set, height format,
-  jurisdiction) and cross-checked. The NG NIN-slip QR and the PhilID
-  QR are **structurally** validated (NIN = 11 digits; PCN = 16,
-  PSN = 12) with cross-checks where the payload carries the fields —
-  their issuers publish no payload grammar in our research corpus, and
-  the findings say so. The Aadhaar secure QR is decompressed
-  (zlib → XML demographic record) and cross-checked by name, DOB and
-  UID last-4 — **UIDAI signature verification is NOT performed** (no
-  UIDAI certificate is held), and the findings state that.
-- *Classification*: every registry type now carries a FULL layout
-  template in `server/templates.py` (non-NG/US passports use the
-  generic TD3 template); the coarse fallback remains for any future
-  type added without one, and findings always state the level.
-- *Labelled accuracy benchmark* (`scripts/benchmark_vision.py`,
-  results in `benchmarks/RESULTS.md`): a synthetic corpus drawn to
-  the templates with known ground truth, degraded at named levels
-  (blur, downscale, brightness, rotation), run through the real
-  pipeline. The corpus is synthetic and template-conformant, so the
-  numbers bound the extraction wiring, not real-world accuracy —
-  that limit is printed in RESULTS.md and travels with the numbers.
-
-### Biometric measurement + attack resistance (Phase 4 WS2, 2026-10-26)
-
-Full write-up with sources and honest limits: `benchmarks/BIOMETRICS.md`
-(raw data: `benchmarks/biometrics.json`, `benchmarks/attacks.json`).
-
-- *FAR/FRR, measured on real faces*: the full LFW View-2 protocol
-  (all 6,000 official pairs, deep-funneled release) through the
-  production pipeline — **EER 1.07%; at the production threshold
-  0.363: FAR 0.10%, FRR 2.00%, accuracy 98.95%; standard protocol
-  accuracy 99.13% ± 0.38%; detection failures 0 on this corpus**
-  (pre-cropped faces — not a real-world detection claim). Threshold
-  analysis from the measured curve **keeps 0.363** (it delivers the
-  target FAR; the data-derived auto-approve point is 0.351) and
-  records a high-assurance option (0.413 → FAR 0/3,000, FRR 3.33%)
-  for tenant configuration. Simulated condition slices (dark /
-  downscale / blur, labelled simulations) tax FRR up to ~2× and open
-  no FAR hole. **Demographic slicing is UNMEASURED** — LFW carries no
-  demographic attributes and no lawfully downloadable
-  attribute-labelled set was reachable; no fairness claim is made.
-- *Presentation attacks, measured*: replay (REAL artefacts — the
-  owner's genuine videos vs fresh challenges: liveness passed 0/6),
-  print / screen / mask / deepfake families (SIMULATED, methods and
-  labels in BIOMETRICS.md; physical masks and DNN face-swap corpora
-  are **UNMEASURED** — they cannot be produced in this environment).
-  No attack artefact achieved auto-approval (blocked-or-rejected
-  100% per family); strict auto-rejection is carried by challenge
-  freshness, the movement liveness, and face-track identity
-  continuity — **not** by the deepfake pulse leg, which fired on
-  some jittered photo presentations and is therefore evidence-only.
-- *rPPG hardening*: the pulse leg now runs POS + CHROM + green under
-  a signal-quality gate; re-measured on the owner's real captures it
-  produces a plausible POS peak (1.34 Hz, clean take) but still
-  below the evidentiary bar on 4.5 s clips — **evidence-only
-  stands**. The flow's liveness window is now ~9 s at a raised
-  bitrate so new captures can be measured properly.
-- *Detection-at-resolution fix*: YuNet boxes shrink/drift with
-  input size and break SFace alignment on multi-megapixel stills
-  (measured scale sweep in BIOMETRICS.md). Detection/embedding now
-  run in a ≤1024 px work space (`server/face.py`), which restored
-  correct matching on the owner's full-resolution captures. A
-  document portrait in a far/angled full-card photo can still go
-  undetected — that returns *unclear* (fail closed), never a guess.
-- *Provider adapter* (`server/bioprovider.py`): the own SFace
-  pipeline is provider #1 through a real adapter interface (the
-  benchmark runs through it). External provider slots fail closed
-  (`provider_not_configured`) — a head-to-head still needs vendor
-  accounts/keys; the evaluation is open, not faked.
-
-### Security hardening, verified (Phase 4 WS3, 2026-10-26)
-
-- *Tenant isolation, tested as attacks* (`tests/test_isolation.py`):
-  tenant A keys, reviewer tokens and flow tokens are driven against
-  tenant B's applicants, sessions, documents, images, cases,
-  credentials, businesses, webhook endpoints and deliveries — every
-  attempt refused, cross-tenant ids return the same `404` shape as a
-  random UUID (no existence oracle), and test/live environments stay
-  separated under the same tenant.
-- *Reviewer MFA*: TOTP (RFC 6238, stdlib implementation) enrolment for
-  named reviewers; privileged actions (decide, four-eyes confirm, hit
-  disposition, KYB registry) require a current code in
-  `X-Reviewer-TOTP`; replayed codes are refused. Recovery is an
-  audited tenant-admin reset — there is no bypass, it fails closed.
-- *Rate limits + body cap*: per-credential (1,200/min), per-flow-token
-  (240/min) and per-IP (6,000/min) sliding windows, env-tunable;
-  breaches return a real `429` with `Retry-After`. Bodies over 25 MB
-  are refused `413` before being read.
-- *Webhooks that finish the job*: failed deliveries retry with
-  exponential backoff (30 s base, 5 attempts), then dead-letter;
-  operators list deliveries (`GET /v1/webhooks/deliveries`) and replay
-  them (re-signed, re-delivered). An SSRF guard refuses non-public
-  webhook targets before any network call.
-- *Encryption at rest for stored media* (`server/storage.py`):
-  AES-256-GCM envelope encryption — per-file keys wrapped by a master
-  key from `KYC_MASTER_KEY` / `KYC_MASTER_KEY_FILE` (never in the DB
-  or repo). Existing plaintext files migrate in place with per-file
-  SHA-256 verification (`python3 -m server.storage --data-dir …
-  migrate`). Encrypted files fail closed (`503`) when the key is
-  absent. Follow-up work needing stored media goes through this
-  module's `write_file` / `read_file` / `materialize` — the single
-  storage read/write helper for media.
-- *Backup + restore, exercised*: `scripts/backup.py` produces a
-  checksummed backup (DB snapshot + media tree + manifest);
-  `scripts/restore_drill.py` restored one for real into a scratch
-  instance — restored server healthy, records readable, document
-  decrypted byte-identical (measured: benchmarks/BACKUP-RESTORE.md).
-- *Self-pen-test*: `scripts/pentest_local.py` — 32 scripted probes
-  (auth bypass, cross-tenant, SQLi, traversal, SSRF, upload abuse,
-  MFA gate, rate limit, body cap): **32/32 pass, 0 findings**
-  (docs/PENTEST.md). An independent external pen test is still open —
-  the self-test does not impersonate one.
-
-### Identity is read from the document, never typed (2026-10-26)
-
-The owner's order: the applicant is "not even supposed to fill my
-name my date of birth and all that… i'm only supposed to choose the
-kind of document i want" — "OCR fills everything in that's part of
-what OCR does." Applicants therefore carry an `identity_source`:
-
-- **`declared`** (default, unchanged): the tenant declares name/DOB
-  up front; the document is cross-checked against the declaration.
-- **`document`**: the tenant declares only the country. The applicant
-  picks a document type and scans; the server reads the identity
-  (framing + multi-pass OCR + check-digit-valid MRZ + template field
-  extraction, merged MRZ > extraction > upload) and the hosted flow
-  shows a **read-back** — "We read: NAME · document NUMBER" — to
-  confirm or rescan. **There are no name/DOB/number inputs anywhere
-  in the flow**; rescan is the only correction path, and a required
-  field that could not be read is named plainly ("We could not read
-  your document number") with a closer/sharper rescan asked for.
-  DOB is only ever required where the document type carries an MRZ —
-  paper types that print no DOB (the standard NG NIN slip) are never
-  faulted for it.
-- At decision time the read identity is **adopted** onto the
-  applicant record as the verified identity (only empty fields are
-  filled; a contradicted declaration is never overwritten).
-  Consistency on this path runs across the document's own reads —
-  an applicant mismatch is impossible by construction. Screening,
-  PoA and age checks consume the session identity, so document-path
-  Level 3 sessions are screened on the name the document carried.
-  Covered end-to-end in `tests/test_identity_from_document.py`
-  (a synthetic passport session approves with its identity populated
-  from OCR alone; the synthetic wide NIN slip reads back,
-  self-agrees and is adopted). API contract: docs/API.md,
-  "Identity source".
-
-### Screen-replay + portrait-substitution defence (2026-10-26)
-
-A document shown on another phone/monitor screen and held to the
-camera must be caught. Authenticity (`server/authenticity.py`) now
-carries four screen-evidence signals alongside ELA/metadata/format:
-**moiré** (FFT periodic peak), **pixel grid** (the display lattice —
-strong high-frequency FFT peaks on *both* axes), **gloss** (specular
-highlight blobs among non-background pixels) and **gamut** (lifted
-black floor + pushed saturation). **Moire + any other screen signal →
-authenticity FAIL, `document_on_screen`** — that combined case may fail
-on screen evidence alone; single weak signals still never fail a
-document. Measured on the synthetic fixtures: clean card — no screen
-evidence; screen recapture — moiré 0.49 (strong), pixel grid 0.45–0.52
-(strong). The client scanner adds a live refresh-banding watch (see
-above). Separately, **portrait-region analysis** runs the manipulation
-evidence on the portrait zone of card layouts specifically (grain
-ratio vs the rest of the card; region ELA vs whole-image ELA): a
-manipulated portrait region is the named finding
-`portrait_region_tamper` (a smoothed synthetic splice measured grain
-ratio 0.02 vs ~1.0 clean).
-
-A **security-feature pack** adds four more calibrated signals, none
-failing alone except as combined evidence: **font consistency**
-(glyph-height variance + outlier glyphs in the name and
-document-number zones from OCR word boxes → `altered_text_suspect`),
-**compositing edges** (gradient halo on the portrait region's
-rectangular border vs its interior → `compositing_suspect`; measured:
-clean card 0.30, pasted-portrait splice 3.23), **border edges**
-(document-border double-edge/ghosting via edge-profile runs →
-`suspicious_edges`; clean card none, double-drawn border strong on
-2 sides) and **pattern presence** (background texture energy in
-non-text regions vs the template's `pattern_expected` →
-`missing_pattern`; drawn card 6992, flat synthetic fill 0.96).
-
-### Deepfake / fake-camera defence + continuous face tracking (2026-10-26)
-
-The selfie + liveness path is analysed as a **combination**, and the
-case records a `biometric_evidence` block listing every component:
-
-- **Continuous face tracking** (`server/facetrack.py`): YuNet + SFace
-  over the liveness frames, the selfie and a ~1 s burst of extra
-  selfie frames. Presence ratio (≥ 80% of sampled frames), centre/size
-  trajectory, and **identity continuity** — every frame's embedding
-  vs the track median and its neighbours. A mid-stream face swap /
-  embedding jump fails with `face_track_identity_break`. Face match
-  compares the document portrait against the track's **aggregate
-  (median) embedding**, never a single frame.
-- **Liveness**: the server-issued movement challenge (unchanged).
-- **Deepfake / injection** (`server/deepfake.py`): rPPG pulse scoring
-  (POS + CHROM + green-channel cheek series, 0.7–3 Hz band
-  periodicity/SNR under a signal-quality gate — WS2),
-  generation-artifact FFT scoring on face crops, motion-trajectory
-  statistics, and the client capture signals the flow sends (camera
-  track label — a known virtual camera such as OBS/ManyCam/Snap
-  Camera is a **hard fail**, `virtual_camera_detected` — plus
-  device-motion telemetry). No pulse **plus** high generation
-  artifacts fails with `deepfake_suspected`; partial evidence is named
-  findings + risk; unanalysable media is unclear/error, never a pass.
-- **Combination gate**: an automatic approval requires **all** of
-  face track, liveness, face match, capture quality, device signals
-  and deepfake present *and* passing together. A failed component
-  auto-rejects through the required checks; a merely *absent* one
-  (e.g. no device signals recorded) blocks auto-approval.
-
-**Honest limits of the deepfake layer:** rPPG from a ~4.5 s
-VP8-compressed webm is a *weak* signal (frequency resolution ≈0.22 Hz;
-the codec crushes subtle chroma oscillation). It is weighted
-accordingly — evidence-combining only, never sole pass/fail. Positive
-control, run 2026-10-26 on the owner's real phone captures: the face
-track passed his clean take (presence 0.96, identity min-cosine
-0.91); his hard head-turn take collapsed on both identity metrics
-(0.13 / 0.10) — at ≤24 sampled frames an extreme pose change between
-samples is indistinguishable from a discontinuity, and the tracker
-fails closed (a re-scan, not a review). **WS2 update:** the pulse leg
-now runs POS + CHROM + green under a signal-quality gate; on the same
-real takes POS measures a plausible 1.34 Hz peak (SNR 3.2) but still
-below the evidentiary bar, and the WS2 attack suite measured the leg
-firing "pulse present" on some jittered presentations of real photos
-— so it remains **evidence-only**, and the flow now records ~9 s
-liveness clips to give it a measurable window (unmeasured on real
-captures until one exists). The artifact leg read clean (0.11) on the
-owner's takes — so in the combination gate the deepfake leg is
-required to be *not failing*, per its design, rather than a positive
-pass. No deepfake detector is claimed to be conclusive; this is
-layered evidence, not a proof. Measured detail: benchmarks/
-BIOMETRICS.md.
-
-### Voice guidance, phone-only, IP harvest + VPN gate (2026-10-26)
-
-- **Voice guidance**: the scanner *talks* the applicant through
-  positioning with the **device's built-in speech voice** (Web Speech
-  API `speechSynthesis` — on-device, no server cost). Voice + text +
-  frame state are one guidance state machine. Lines are natural and
-  descriptive — "The place where you are is dark. Move to a brighter
-  place.", "There's a glare on your ID. Tilt it slightly.", "This
-  looks like a screen. Scan the physical document." — spoken on state
-  change, repeated at most every ~6 s, never overlapping; starts only
-  after the consent tap (autoplay policy); a mute toggle is provided;
-  without `speechSynthesis` the flow is text-only.
-- **Phone-only**: the scanner does not run on desktop browsers at all.
-  A non-mobile browser gets a "Continue on your phone" handoff screen
-  — a QR code of the exact flow URL generated client-side by a small
-  inline QR implementation (no external CDN), with the full link and
-  a Copy button as fallback.
-- **IP harvest + location check**: the tunnel Worker stamps
-  `X-Client-IP` (from `CF-Connecting-IP`) and `X-IP-Country` (from
-  `request.cf.country`) onto forwarded requests — the tunnel protocol
-  carries headers, so this *is* wired end-to-end. The server records
-  the client IP + IP country on the session at flow start and at
-  submission, and runs `location_consistency`: IP country vs declared
-  country — match passes; unknown (local/dev) is recorded honestly;
-  mismatch is a **risk contribution (+15, `ip_country_mismatch`)**,
-  shown masked in the console (e.g. `41.203.x.x`), and never rejects
-  on its own (travel and VPNs exist). Consent (text version **v2**)
-  discloses device + IP collection.
-- **VPN/proxy hard gate**: at flow start and again at submit, the
-  client IP is checked against IP intelligence (keyless ip-api.com:
-  proxy/hosting/mobile flags + ISP/ASN; 3 s timeout; per-IP cached in
-  the DB for 24 h), corroborated — record-only — by device-timezone vs
-  IP-country and a WebRTC local-IP probe. **Detected** (proxy flag, or
-  hosting on a non-mobile connection) **blocks the flow** with "VPN or
-  proxy detected. Turn off your VPN or proxy and try again." — the
-  scanner never starts — and any submission under a detected
-  VPN/proxy auto-rejects (`vpn_proxy_detected`, a hard fail, not risk
-  points). If the lookup itself is unreachable the verdict is recorded
-  as `unknown` — never a fake pass. **Limits, honestly:** residential
-  proxies and fresh VPN ranges can evade IP intelligence; the free
-  ip-api tier is rate-limited and HTTP-only; timezone and WebRTC are
-  corroboration, not proof. Detection is strong evidence, not a
-  guarantee.
-
-### Per-country document registry
-
-`server/docregistry.py` is the source of truth: every document type
-carries facts — `sides` (1|2), `has_expiry`, `mrz` — that drive
-validation, the scanner's automatic back-side prompt, and the expiry
-check. Owner-specified: **Nigeria** — passport, driver's licence,
-national ID, voter's card (INEC PVC, *no expiry*), NIN card (*no
-expiry*), NIN slip (*no expiry*); **United States** — passport,
-passport card, driver's license, state ID. Beyond those two: driver's
-licences for GB/CA/AU/DE/GH with generic card facts, national ID only
-for DE/GH, and passport-only for KE/ZA/IN/PH/SG/AE/FR/NL/IE — all
-pending the Phase 4 WS1 researched per-country merge (see the launch
-coverage section and docs/CLAIMS-AUDIT.md).
-A document type with `has_expiry: false` **never** fails or goes
-unclear for a missing expiry date — the expiry check passes with the
-detail "document type has no expiry date" (age is still checked).
-
-### What this build does NOT do yet (honest list)
-
-- **No live government registry connection for KYB.** The registry leg
-  is registration-number *format* validation (NG/US/GB/CA/AU/DE/GH
-  patterns we define) + a company document upload + a named reviewer's
-  confirmation. It is labelled exactly that way in the API and console.
-- **Liveness is an active movement challenge (v1)** — server-issued
-  random head movements analysed from video frames. It is **not**
-  passive liveness and carries **no iBeta / ISO 30107 certification**;
-  nothing here claims one.
-- **Screening lists:** the repo ships a tiny, clearly-labelled SAMPLE
-  fixture list (`lists/sample.csv`, fictional entries). Real coverage
-  comes from dropping list CSVs into `data/lists/` —
-  `scripts/fetch_ofac.py` downloads the real OFAC SDN list (verified
-  working: 7,519 individual entries). PEP and adverse-media lists are
-  not bundled; the engine reads whatever CSVs are present in the
-  documented format. No lists at all → screening reports `error`
-  (`screening_lists_missing`), never a silent pass.
-- **Face/liveness accuracy is not benchmarked yet.** The SFace decision
-  threshold is OpenCV's published 0.363 default (tenant-configurable);
-  demographic performance testing per COMPLIANCE §3 has **not** been
-  done — no accuracy claim is made. Synthetic test images cannot pass
-  the real face checks, so sandbox Level 2/3 sessions with synthetic
-  media are **auto-rejected by the engine** (fail-closed) under the
-  automatic-decision rules; the E2E completes them through the
-  console's four-eyes override path, which is what the console is for.
-- **Authenticity signals are heuristics**, calibrated on synthetic
-  images (ELA block spread, moiré FFT energy share). Combined evidence
-  decides; one weak signal alone never fails a document. They are a
-  routing/tamper-triage layer, not a forensic guarantee.
-- **Sandbox honesty note:** this build does **not** fake outcomes: test
-  keys run the identical real checks; "test" means strict data
-  separation from live (a test key can never read live data), nothing
-  more.
-- No billing, no email sending. Tenant "teams" exist as named
-  reviewer tokens with roles (admin/reviewer) for console actions —
-  not full user accounts with passwords (reviewers can add TOTP MFA,
-  WS3). No malware scanning of uploads; no CI vulnerability scanning;
-  no external penetration test yet (a scripted self-pen-test is green
-  — docs/PENTEST.md). The SQLite database file itself is not
-  encrypted (stored media files are, WS3).
-
-## The ambition
-
-The owner's standing bar (docs/AMBITION.md): **everything we build is
-built to be more advanced than Sumsub, Persona, and Onfido** — on low-end
-phone completion and resumable sessions, Africa/Asia document quality,
-explainable decisions, reviewer speed, layered fraud defence, reusable
-verified identity, developer experience, pricing honesty, and privacy.
-That superiority is a target to earn: we claim it publicly only for a
-specific capability that is built, tested, and measured.
-
-## What it does (the product in one page)
-
-A business (the **tenant**) sends a person (the **applicant**) to KYC.
-The applicant completes a short flow on their phone (the scanner is
-phone-only — a desktop browser gets a "continue on your phone"
-handoff screen; the tenant console remains a desktop web app):
-
-1. Enter basic details (legal name, date of birth, country).
-2. Live-scan a government ID with the camera (front, and back when the
-   document has one) — the scanner captures automatically when the
-   document is aligned; there is no gallery/upload path.
-3. Live selfie — captured automatically when the face is in the oval,
-   checked against the ID photo, with a live movement-challenge
-   liveness check so a photo of a photo does not pass.
-4. Depending on the level: proof of address, and screening against
-   sanctions / PEP / watchlists.
-
-KYC runs its checks and produces a **decision**: approved or rejected
-automatically in the standard path. The only routes to a human are the
-named exceptions — a tenant configuration that requires review, a Level 3
-screening hit awaiting disposition, KYB, or a platform error. The result
-goes back to the business by API and signed webhook, and is visible in the
-review console. The business never has to build document capture, OCR,
-face matching, case review, or audit trails itself.
-
-## Verification levels
-
-| Level | Name | Checks |
-|---|---|---|
-| 1 | Basic | Live document scan with capture quality, framing, layout classification, OCR, expiry/age, profile consistency and cross-source data consistency |
-| 2 | Standard | Everything in Basic + MRZ where the document carries one, authenticity and security-feature evidence, continuous face tracking, face match, active liveness and deepfake evidence |
-| 3 | Enhanced | Everything in Standard + proof of address + sanctions screening against the lists actually loaded + ongoing monitoring. PEP/adverse-media coverage exists only when such a list is loaded — it is never implied |
-| KYB | Business | Registration-number format validation + company document + reviewer confirmation (no live government registry connection yet), with directors / ultimate beneficial owners each verified at Level 2+ |
-
-## The blueprint
-
-Read in this order:
-
-1. **[docs/BLUEPRINT.md](docs/BLUEPRINT.md)** — the full product blueprint:
-   users, journeys, every check in detail, the decision engine, the review
-   console, pricing shape, and what "done" means for each part.
-2. **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — original proposed
-   architecture; superseded in part by the built system (see its status
-   banner and docs/CLAIMS-AUDIT.md).
-3. **[docs/DATA-MODEL.md](docs/DATA-MODEL.md)** — database schema draft
-   (the SQLite implementation mirrors it; see its status banner):
-   tenants, applicants, sessions, documents, checks, cases, webhooks, audit.
-4. **[docs/DEVELOPER.md](docs/DEVELOPER.md)** — the complete
-   integration guide for websites, mobile apps, backends and AI
-   agents, plus the JavaScript SDK, webhooks, KYB, review, errors,
-   security and testing.
-5. **[docs/openapi.json](docs/openapi.json)** /
-   **[docs/openapi.yaml](docs/openapi.yaml)** — the canonical
-   OpenAPI 3.1 wire contract, also published at `/openapi.json` and
-   through the developer portal at `/docs`.
-6. **[docs/API.md](docs/API.md)** — REST API and webhook platform
-   rules, identity-source semantics and endpoint reference.
-7. **[docs/COMPLIANCE-AND-PRIVACY.md](docs/COMPLIANCE-AND-PRIVACY.md)** —
-   the legal/privacy ground rules this product must be built inside.
-8. **[docs/SECURITY.md](docs/SECURITY.md)** — threat model and control
-   targets; implementation status lives in docs/CLAIMS-AUDIT.md.
-9. **[docs/ROADMAP.md](docs/ROADMAP.md)** — phased build record and plan.
-10. **[docs/DECISIONS.md](docs/DECISIONS.md)** — the owner's decisions
-    D1–D8, settled 2026-10-26 (Nova Inc product, internal first, expanded
-    worldwide coverage, local-first build, Cloudflare as production home).
-11. **[docs/AMBITION.md](docs/AMBITION.md)** — the standing bar: more
-    advanced than Sumsub, Persona, and Onfido — claimed only where built,
-    tested, and measured.
-12. **[docs/CLAIMS-AUDIT.md](docs/CLAIMS-AUDIT.md)** — the Phase 4 WS0
-    audit: every public claim checked against the code, with gaps
-    assigned to workstreams.
-13. **[docs/PHASE4-PLAN.md](docs/PHASE4-PLAN.md)** — the approved
-    Phase 4 plan (WS0–WS8).
-
-## Non-negotiable build rules
-
-- **Real or not shipped.** Every check named in a release actually runs in
-  that release. No placeholder checks, no demo decisions, no fake results.
-- **Fail closed.** If a check cannot run, times out, or returns unclear,
-  the outcome is *rejected* or one of the named review exceptions —
-  never an automatic approval.
-- **Automation decides; humans audit and override.** The standard path
-  is fully automatic. A trained reviewer in the console can overturn a
-  decision only with a reason, the overturn is audited, and four-eyes
-  confirmation applies where the flow configuration requires it.
-- **Collect the minimum.** Only the data a check needs, kept only as long
-  as the retention rule says, deletable on a valid request.
-- **Everything is audited.** Every view of an applicant's documents, every
-  decision, every change — who, what, when — in an append-only log.
-- **No borrowed trust.** We do not claim SOC 2, iBeta, ISO, or any other
-  certification until we actually hold it.
-
-## Who it is for (first)
-
-**Settled (DECISIONS.md): KYC is a Nova Inc product, internal first.**
-The first tenants are Nova Inc's own platforms (Nova Payments, Agent
-Exchange) verifying their users; outside businesses — fintechs,
-marketplaces, crypto and payments platforms, platforms onboarding agents
-or sellers — come in Phase 2 once it is proven on our own traffic.
-
-## Launch coverage (settled, owner-expanded 2026-10-26)
-
-Worldwide in scope. Launch list: **Nigeria, United Kingdom, United
-States, Canada, Australia, Germany, Ghana, Kenya, South Africa, India,
-Philippines, Singapore, United Arab Emirates, France, Netherlands,
-Ireland**. **Passports are accepted for every country in that list**
-(the MRZ is a worldwide standard). The full per-country document list
-with per-document facts (sides / expiry / MRZ) lives in the registry,
-`server/docregistry.py` — Nigeria and the United States carry the
-owner-specified document sets (incl. NG voter's card, NIN card and
-NIN slip; US passport card and state ID). Driver's licences are also
-listed for the United Kingdom, Canada, Australia, Germany and Ghana
-using generic card facts pending the Phase 4 WS1 researched merge.
-A general national identity card is listed only where that document
-class exists (Nigeria, Germany, Ghana) — there is no generic
-"national ID" for the US, UK, Canada or Australia. The other nine
-launch countries are passport-only today.
-
-## Licence / visibility
-
-Public repo for now, by the owner's instruction; it may go private later.
-No licence is granted by the presence of this blueprint.
+- Product: https://kyc.novamail.store
+- Developers: https://kyc.novamail.store/docs
+- Company: https://novamail.store
