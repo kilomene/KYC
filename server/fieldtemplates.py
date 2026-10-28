@@ -620,6 +620,35 @@ def _band_items_for_zones(image_path, zones):
                           "box": (bx[0] / bw, bx[1] / bh, bx[2] / bw, bx[3] / bh),
                           "cx": ((bx[0] + bx[2]) / 2.0) / bw,
                           "cy": ((bx[1] + bx[3]) / 2.0) / bh})
+        # Dual-engine band read (unified reader, 2026-10-28): the
+        # name band is ALSO read by PaddleOCR and its items merged
+        # in — same fractional schema; a token the Tesseract band
+        # read missed can now seed a band candidate, and candidates
+        # still face _band_verify's corroboration before adoption.
+        # Any engine failure leaves the Tesseract items untouched.
+        try:
+            from . import ocr2 as _OCR2
+            _pitems = _OCR2.read_words_for_image_file(tmp)
+            if _pitems:
+                def _iou(a, b):
+                    ix0, iy0 = max(a[0], b[0]), max(a[1], b[1])
+                    ix1, iy1 = min(a[2], b[2]), min(a[3], b[3])
+                    inter = max(0.0, ix1 - ix0) * max(0.0, iy1 - iy0)
+                    ua = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+                    return inter / ua if ua > 0 else 0.0
+                for _pi in _pitems:
+                    _pn = "".join(c for c in _pi["text"].upper() if c.isalnum())
+                    _hit = None
+                    for _it in items:
+                        if _iou(_it["box"], _pi["box"]) >= 0.4:
+                            _hit = _it
+                            break
+                    if _hit is None:
+                        items.append(_pi)
+                    elif "".join(c for c in _hit["text"].upper() if c.isalnum()) == _pn:
+                        _hit["conf"] = max(_hit["conf"], _pi["conf"])
+        except Exception:
+            pass
         if len(_BAND_WORDS_CACHE) >= 4:
             _BAND_WORDS_CACHE.clear()
         _BAND_WORDS_CACHE[key] = (tmp, items)
