@@ -138,6 +138,11 @@ def decide(level, check_results, config=None, risk_score=None):
         # this type, so it can neither reject nor block.
         if t == "face_match" and status(t) == "not_applicable":
             return False
+        # Same for mrz on document types that carry none (registry
+        # fact — licences, ID cards, NIN slips): the check does not
+        # exist for the type, so it can neither reject nor block.
+        if t == "mrz" and status(t) == "not_applicable":
+            return False
         return True
 
     # 2. Any required check that FAILED is decisive: automatic rejection
@@ -164,16 +169,37 @@ def decide(level, check_results, config=None, risk_score=None):
     if errored:
         out = set(reasons) | {f"{t}_error" for t in errored}
         return "needs_review", sorted(out)
-    # 6. Anything else not passed (unclear / not_run / missing) in the
-    #    standard path -> automatic rejection: the verification is
-    #    incomplete or inconclusive; the applicant re-does it. This
-    #    precedes risk routing deliberately: a risk score inflated BY
-    #    the missing checks themselves must not park the case with a
-    #    human — incomplete is rejected, not reviewed.
-    not_pass = [t for t in required if applicable(t) and status(t) != "pass"]
-    if not_pass:
-        out = set(reasons) | {f"{t}_not_pass" for t in not_pass}
+    # 6. Anything else not passed splits by WHY (2026-10-28, owner
+    #    session 15 — a genuine applicant accumulated five inconclusive
+    #    legs and the old single rule could only ever reject him):
+    #    a. NOT RUN / MISSING required checks -> automatic rejection,
+    #       unchanged: the verification is incomplete, and a risk
+    #       score inflated BY the missing checks themselves must not
+    #       park the case with a human — incomplete is rejected, not
+    #       reviewed.
+    #    b. face_match UNCLEAR -> automatic rejection with the rescan
+    #       reasons: the document portrait was too weak or not
+    #       detected, the flow coaches a closer re-scan, and the
+    #       applicant CAN fix it by re-doing the capture. (Framing
+    #       unclear is the other rescan class — rule 3 above.)
+    #    c. Any OTHER required check UNCLEAR -> needs_review: the
+    #       platform measured real evidence and could not conclude
+    #       (a challenge movement half-made, a pulse a short clip
+    #       could not carry, authenticity signals under the
+    #       corroboration gate, an MRZ a document type does not
+    #       print). Inconclusive evidence is a human's call — never
+    #       an automatic rejection, never an automatic approval.
+    missing = [t for t in required if applicable(t) and status(t) in (None, "not_run")]
+    unclear = [t for t in required if applicable(t) and status(t) == "unclear"]
+    if missing:
+        out = set(reasons) | {f"{t}_not_pass" for t in missing + unclear}
         return "rejected", sorted(out)
+    if unclear:
+        if all(t == "face_match" for t in unclear):
+            out = set(reasons) | {f"{t}_not_pass" for t in unclear}
+            return "rejected", sorted(out)
+        out = set(reasons) | {f"{t}_inconclusive" for t in unclear}
+        return "needs_review", sorted(out)
     # 7. Tenant-config routing (all required checks passed): risk above
     #    the configured ceiling, or an elevated fraud signal, routes to
     #    a human. This is the config-requires-review path; signals never
