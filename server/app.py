@@ -1327,6 +1327,7 @@ def make_handler(db: DB, data_dir: str):
                     "number_tally": ({"status": read["number_tally"]["status"],
                                       "match": read["number_tally"]["findings"].get("match")}
                                      if read.get("number_tally") else None),
+                    "portrait": read.get("portrait"),
                     "missing": missing, "complete": complete}
 
         def _read_job_worker(self, s, doc, tid, job):
@@ -1451,11 +1452,28 @@ def make_handler(db: DB, data_dir: str):
                            (ocr_text[:8000], (parsed or {}).get("line2"),
                             merged["doc_first_name"], merged["doc_last_name"], merged["doc_dob"],
                             merged["doc_number"], merged["doc_expiry"], doc["id"]))
+            # Document-portrait stats for capture coaching
+            # (2026-10-27): a tiny printed portrait is the weak
+            # reference behind face_mismatch on slip-class
+            # documents — the read-back tells the flow so the
+            # applicant can be coached to scan closer BEFORE the
+            # selfie is matched against it.
+            portrait = {"found": False, "size_frac": None}
+            try:
+                _rp = VISION._reading_path(front_path)
+                _rimg = VISION.cv2.imread(_rp[0] if isinstance(_rp, tuple) else _rp)
+                if _rimg is not None:
+                    _pf2 = FACE.largest_face(_rimg)
+                    if _pf2 is not None:
+                        portrait = {"found": True,
+                                    "size_frac": round(float(_pf2[2]) / _rimg.shape[1], 3)}
+            except Exception:
+                pass
             return {"framing": framing, "ocr": ocr, "ocr_text": ocr_text,
                     "mrz_check": mrz_check, "mrz_parsed": parsed,
                     "extraction": extraction, "extracted_fields": fields,
                     "identity": ident, "number_tally": self._number_tally(doc, ident),
-                    "code_decode": code_decode,
+                    "code_decode": code_decode, "portrait": portrait,
                     "merged_doc_fields": merged, "entry": entry}
 
         def _flow_post(self, p, s):
@@ -1612,6 +1630,46 @@ def make_handler(db: DB, data_dir: str):
                 db.audit("applicant", s["applicant_id"], tid, "document.back_upload", "document", doc["id"],
                          metadata={"capture": capture_meta.get("back")})
                 return self._send(201, {"document_id": doc["id"], "back_uploaded": True})
+            if p == "/v1/flow/presence":
+                # Live face-presence coaching (2026-10-27): the flow
+                # sends a single live frame; the PRODUCTION detector
+                # answers whether a usable face is in it. Nothing is
+                # stored — the frame is decoded in memory and dropped.
+                # This exists because capture quality, not fraud, is
+                # the top genuine-user failure (session-13 lesson):
+                # coach BEFORE the selfie/liveness is recorded.
+                if not s["consent_at"]: return self._err(422, "consent required before upload")
+                body = self._body(); parts = parse_multipart(body, self.headers.get("Content-Type", ""))
+                f = parts.get("frame") or parts.get("selfie") or parts.get("front")
+                if not f or not f["data"]: return self._err(422, "frame image required")
+                try:
+                    import numpy as _np
+                    _arr = VISION.cv2.imdecode(_np.frombuffer(f["data"], dtype=_np.uint8), VISION.cv2.IMREAD_COLOR)
+                except Exception:
+                    _arr = None
+                if _arr is None:
+                    return self._send(200, {"face_present": False, "guidance": "frame_unreadable"})
+                _h, _w = _arr.shape[:2]
+                try:
+                    _face = FACE.largest_face(_arr)
+                except Exception:
+                    _face = None
+                if _face is None:
+                    return self._send(200, {"face_present": False, "guidance": "no_face_seen",
+                                            "detail": "no face detected in the frame"})
+                _fx, _fy, _fw, _fh = [float(v) for v in _face[:4]]
+                _cx = (_fx + _fw / 2) / _w if _w else 0.0
+                _cy = (_fy + _fh / 2) / _h if _h else 0.0
+                _size = _fw / _w if _w else 0.0
+                _centred = 0.2 <= _cx <= 0.8 and 0.15 <= _cy <= 0.85
+                if _size < 0.18:
+                    _g = "move_closer"
+                elif not _centred:
+                    _g = "centre_your_face"
+                else:
+                    _g = "ok"
+                return self._send(200, {"face_present": True, "size_frac": round(_size, 3),
+                                        "centred": _centred, "guidance": _g})
             if p == "/v1/flow/selfie":
                 if not s["consent_at"]: return self._err(422, "consent required before upload")
                 body = self._body(); parts = parse_multipart(body, self.headers.get("Content-Type", ""))
