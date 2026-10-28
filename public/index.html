@@ -84,6 +84,8 @@
   .phone-stage{position:relative;display:flex;justify-content:center}
   .phone{position:relative;width:min(320px,84vw);aspect-ratio:320/545;border:11px solid #10131a;border-radius:44px;overflow:hidden;background:#fff;box-shadow:0 34px 80px rgba(12,20,37,.22);z-index:2}
   .phone img{width:100%;height:100%;object-fit:cover;object-position:top}
+  .phone video{width:100%;height:100%;object-fit:cover;object-position:top;display:block}
+  .browser-frame video{width:100%;display:block}
   .phone-glow{position:absolute;inset:auto;width:340px;height:340px;border-radius:50%;background:radial-gradient(circle,rgba(174,232,31,.35),rgba(255,77,141,.14) 55%,transparent 70%);top:8%;z-index:1}
   .badge{position:absolute;z-index:3;background:#fff;border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);padding:10px 14px;font-size:13px;font-weight:700;display:flex;gap:9px;align-items:center;animation:floaty 5.5s ease-in-out infinite}
   .badge .pulse{width:9px;height:9px;border-radius:50%;background:#22b573;animation:pulse 1.8s ease-in-out infinite}
@@ -232,7 +234,7 @@
     </div>
     <div class="phone-stage rv in">
       <div class="phone-glow"></div>
-      <div class="phone"><img src="/public/img/shot-flow-scan.png" alt="The live Nova KYC verification flow: choosing the document to scan" width="1170" height="1992"></div>
+      <div class="phone"><video class="tour" muted loop playsinline preload="metadata" poster="/public/img/shot-flow-scan.png" aria-label="Video of the live Nova KYC verification flow: consent, choosing the document, and the live scanner"><source src="/public/img/flow-tour.mp4" type="video/mp4"></video></div>
       <div class="badge b1"><span class="pulse"></span>Live document scanner</div>
       <div class="badge b2">Decision: <span style="color:#5da30a">automatic</span></div>
     </div>
@@ -251,14 +253,14 @@
 <section class="blk" id="live">
   <div class="wrap">
     <h2 class="rv">See it live — the real product</h2>
-    <p class="sub rv">No mock-ups. These are screenshots of Nova KYC itself, taken from the running platform: what an applicant sees on their phone, and what your team sees in the tenant dashboard.</p>
+    <p class="sub rv">No mock-ups, no stock footage. The videos and pictures below are Nova KYC itself, recorded and captured from the running platform (with demo data): what an applicant sees on their phone, and what your team sees in the tenant dashboard.</p>
     <div class="shots">
       <div class="rv">
         <div class="browser-frame">
           <div class="browser-bar"><span class="d" style="background:#ff5f57"></span><span class="d" style="background:#febc2e"></span><span class="d" style="background:#28c840"></span><span class="url">kyc.novamail.store/dashboard</span></div>
-          <img src="/public/img/shot-dashboard.png" alt="The Nova KYC tenant dashboard: usage, invoices and webhook endpoints" width="1280" height="900" loading="lazy">
+          <video class="tour" muted loop playsinline preload="metadata" poster="/public/img/shot-dashboard.png" aria-label="Video tour of the Nova KYC tenant dashboard: usage, invoices and webhook endpoints"><source src="/public/img/dash-tour.mp4" type="video/mp4"></video>
         </div>
-        <p class="caption">The tenant dashboard — usage, invoices, webhook endpoints and sessions, from your own API key.</p>
+        <p class="caption">The tenant dashboard, recorded from the running platform — usage, invoices, webhook endpoints and sessions, from your own API key.</p>
       </div>
       <div class="phones">
         <div class="rv">
@@ -418,6 +420,14 @@ redirect('https://kyc.novamail.store' + session.flow_url);
   overlay.addEventListener('click', function(){ setDrawer(false); });
   drawer.querySelectorAll('a').forEach(function(a){ a.addEventListener('click', function(){ setDrawer(false); }); });
   document.addEventListener('keydown', function(e){ if (e.key === 'Escape') setDrawer(false); });
+
+  // ---- product videos: autoplay unless the visitor prefers reduced motion ----
+  if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    document.querySelectorAll('video.tour').forEach(function(v){
+      v.autoplay = true;
+      var pr = v.play(); if (pr && pr.catch) pr.catch(function(){});
+    });
+  }
 
   // ---- reveal on scroll ----
   var io = new IntersectionObserver(function(es){
