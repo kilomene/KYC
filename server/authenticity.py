@@ -643,6 +643,91 @@ POINTS = {("ela", "strong"): 50, ("ela", "moderate"): 25,
 
 SCREEN_SIGNALS = ("moire", "pixel_grid", "gloss", "gamut")
 
+# Signal families (2026-10-28 recalibration). The census over the
+# owner's labelled corpus (14 genuine documents, 8 subjects) showed
+# the ELA, font-consistency and compositing signals firing at full
+# strength on GENUINE phone photos — 9 of 14 genuine documents scored
+# in the old hard-fail zone (>= 60 points) on those signals alone.
+# The three measure the same underlying artefact class (post-capture
+# compression/editing inconsistency, which ordinary phone pipelines
+# produce on real documents), so they count as ONE family: a points
+# hard-fail now requires corroboration from at least two INDEPENDENT
+# non-edit families at moderate or better. Fitted against the census:
+# every genuine document lands pass/unclear; the labelled fake still
+# fails (provenance + portrait families corroborate).
+SIGNAL_FAMILIES = {"edit": ("ela", "font_consistency", "compositing_edges"),
+                   "screen": ("moire", "pixel_grid", "gloss", "gamut"),
+                   "provenance": ("metadata",),
+                   "portrait": ("portrait",),
+                   "structure": ("border_edges", "pattern_presence"),
+                   "data": ("format",)}
+
+def _signal_families(signals):
+    """Map each family to the strongest member strength present."""
+    rank = {"none": 0, "not_applicable": 0, "weak": 1, "moderate": 2, "strong": 3}
+    by_name = {s["name"]: s["strength"] for s in signals}
+    out = {}
+    for family, members in SIGNAL_FAMILIES.items():
+        best = "none"
+        for m in members:
+            if rank.get(by_name.get(m, "none"), 0) > rank[best]:
+                best = by_name[m]
+        out[family] = best
+    return out
+
+def _verdict_from_signals(signals):
+    """Pure verdict over a computed signal list (split out of
+    check_authenticity so the calibration rules are unit-testable
+    without images)."""
+    by_name = {s["name"]: s for s in signals}
+    total = sum(POINTS.get((s["name"], s["strength"]), 0) for s in signals)
+    # Screen rule: moire + ANY other screen signal at moderate or
+    # better = photographed off a display -> document_on_screen.
+    screen_evidence = [n for n in SCREEN_SIGNALS if by_name[n]["strength"] in ("moderate", "strong")]
+    screen_detected = "moire" in screen_evidence and len(screen_evidence) >= 2
+    portrait_tamper = by_name["portrait"]["strength"] == "strong"
+    families = _signal_families(signals)
+    corroborating = sorted(f for f, st in families.items()
+                           if f != "edit" and st in ("moderate", "strong"))
+    corroborated = len(corroborating) >= 2
+    findings = {"signals": signals, "signal_points": total,
+                "screen_detected": screen_detected, "screen_evidence": screen_evidence,
+                "families": families, "corroborating_families": corroborating,
+                "corroborated": corroborated,
+                "note": "combined evidence decides; one weak signal alone never fails a document; "
+                        "moire + another screen signal = document_on_screen; "
+                        "a points hard-fail needs >= 60 points corroborated by >= 2 "
+                        "independent non-edit signal families (2026-10-28 recalibration)"}
+    extra = []
+    if portrait_tamper:
+        extra.append("portrait_region_tamper")
+    # Security-feature pack (Addition 10B): strong signals become
+    # named findings on the case alongside the points they carry.
+    # altered_text_suspect is gated on provenance corroboration
+    # (2026-10-28): font_consistency strong fired on 13 of 14 genuine
+    # corpus documents, so uncorroborated it annotates noise, not
+    # evidence; with a metadata trace present it names a real edit.
+    for _sig_name, _reason in (("font_consistency", "altered_text_suspect"),
+                               ("compositing_edges", "compositing_suspect"),
+                               ("border_edges", "suspicious_edges"),
+                               ("pattern_presence", "missing_pattern")):
+        if by_name[_sig_name]["strength"] != "strong":
+            continue
+        if _reason == "altered_text_suspect" and \
+                by_name["metadata"]["strength"] not in ("moderate", "strong"):
+            continue
+        extra.append(_reason)
+    if screen_detected:
+        return {"status": "fail", "findings": findings,
+                "reason_codes": ["document_on_screen"] + extra}
+    if total >= 60 and corroborated:
+        strong_names = [s["name"] for s in signals if POINTS.get((s["name"], s["strength"]), 0) >= 20]
+        return {"status": "fail", "findings": findings,
+                "reason_codes": ["suspected_tamper" if "ela" in strong_names else "suspected_recapture_or_edit"] + extra}
+    if total >= 25:
+        return {"status": "unclear", "findings": findings, "reason_codes": ["authenticity_signals_present"] + extra}
+    return {"status": "pass", "findings": findings, "reason_codes": extra}
+
 def check_authenticity(path, kind=None, country=None, doc_number=None, ocr_text="", mrz_found=False):
     signals = [ela_signal(path), metadata_signal(path), moire_signal(path),
                pixel_grid_signal(path), gloss_signal(path), gamut_signal(path),
@@ -651,35 +736,4 @@ def check_authenticity(path, kind=None, country=None, doc_number=None, ocr_text=
                compositing_edges_signal(path), border_edges_signal(path),
                pattern_presence_signal(path, kind, country),
                format_signal(kind or "", country or "", doc_number, ocr_text, mrz_found)]
-    by_name = {s["name"]: s for s in signals}
-    total = sum(POINTS.get((s["name"], s["strength"]), 0) for s in signals)
-    # Screen rule: moire + ANY other screen signal at moderate or
-    # better = photographed off a display -> document_on_screen.
-    screen_evidence = [n for n in SCREEN_SIGNALS if by_name[n]["strength"] in ("moderate", "strong")]
-    screen_detected = "moire" in screen_evidence and len(screen_evidence) >= 2
-    portrait_tamper = by_name["portrait"]["strength"] == "strong"
-    findings = {"signals": signals, "signal_points": total,
-                "screen_detected": screen_detected, "screen_evidence": screen_evidence,
-                "note": "combined evidence decides; one weak signal alone never fails a document; "
-                        "moire + another screen signal = document_on_screen"}
-    extra = []
-    if portrait_tamper:
-        extra.append("portrait_region_tamper")
-    # Security-feature pack (Addition 10B): strong signals become
-    # named findings on the case alongside the points they carry.
-    for _sig_name, _reason in (("font_consistency", "altered_text_suspect"),
-                               ("compositing_edges", "compositing_suspect"),
-                               ("border_edges", "suspicious_edges"),
-                               ("pattern_presence", "missing_pattern")):
-        if by_name[_sig_name]["strength"] == "strong":
-            extra.append(_reason)
-    if screen_detected:
-        return {"status": "fail", "findings": findings,
-                "reason_codes": ["document_on_screen"] + extra}
-    if total >= 60:
-        strong_names = [s["name"] for s in signals if POINTS.get((s["name"], s["strength"]), 0) >= 20]
-        return {"status": "fail", "findings": findings,
-                "reason_codes": ["suspected_tamper" if "ela" in strong_names else "suspected_recapture_or_edit"] + extra}
-    if total >= 25:
-        return {"status": "unclear", "findings": findings, "reason_codes": ["authenticity_signals_present"] + extra}
-    return {"status": "pass", "findings": findings, "reason_codes": extra}
+    return _verdict_from_signals(signals)
