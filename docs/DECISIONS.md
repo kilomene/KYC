@@ -694,3 +694,66 @@ Tests: tests/test_video_sampling.py (12) pins the sampler's spread,
 the weak-presence/movement semantics, the anchoring chains, and the
 weak-reference gate end-to-end. Thresholds unchanged: face match
 0.363, identity min-cosine, PASS_SCORE 70.
+
+### 2026-10-28 — Session-15 fixes: structural face-track identity, vertical liveness, decision gating of inconclusive evidence
+
+The owner's session-15 retest was DECLINED on a single driver,
+face_track_identity_break — while the track's own findings showed
+presence 1.0 and a MEAN identity cosine of 0.72. Frame-level
+measurement of his real media (local only) showed the shape: 23
+frames at 0.81–0.90 against the median identity, one smooth 8-frame
+excursion bottoming at 0.25 DURING the challenged head turn, then a
+return to 0.89–0.90. The old any-frame-minimum rule cannot tell that
+from a swap. Four fixes, each calibrated on measured data:
+
+1. **Structural identity continuity** (server/facetrack.py).
+   build_track now segments the track at consecutive-cosine cliffs
+   (floor − 0.05; a genuine turn's fastest sampled step measured
+   0.32 vs a 0.313 floor, a swap's boundary ~0.0) and fails ONLY on:
+   median collapse (median frame below the floor against the track's
+   own median identity), majority-foreign frames (≥ half), endpoint
+   drift between substantial first/last segments, an abrupt foreign
+   takeover segment (≥4 frames, foreign median, entry already
+   foreign — a graded entry is a rotating face), or a trailing
+   foreign segment ≥3 (ends as someone else). Short foreign runs
+   (≥4), foreign share > ¼, a sub-pass-line median, or a short
+   foreign segment make it UNCLEAR — never a pass. The owner's real
+   take under the new rule: PASS (median 0.848, longest foreign run
+   3, stills segment 0.85 vs anchor). Residual documented in the
+   module: a live accomplice performing the challenge and handing
+   back evades the track leg alone; challenge-response liveness,
+   document face match and deepfake remain the controls.
+2. **Vertical liveness movements** (server/liveness.py). A look
+   up/down rotates the head far more than it translates the box
+   centre: measured genuine excursions — left 0.105 of width, up
+   0.030 of height, detector jitter ~0.003. _movement_made now uses
+   MOVE_THRESHOLD_Y = 0.025 for vertical directions (horizontal
+   stays 0.045). His session-15 clip under the fix: movements
+   [left, up] both made, liveness PASS (was incomplete on 'up').
+3. **Decision gating of inconclusive evidence** (server/engine.py
+   rule 6 split). Previously every non-pass required check —
+   missing, not-run, or merely UNCLEAR — auto-rejected, which made
+   a genuine approval structurally impossible whenever any evidence
+   leg was inconclusive (five such legs on session 15). Now:
+   not-run/missing still auto-rejects (a risk score inflated by
+   missing work must not park the case); face_match unclear still
+   auto-rejects with rescan reasons (the applicant can fix a weak
+   portrait with a closer capture, and the flow coaches exactly
+   that); every OTHER required unclear routes to needs_review with
+   `<check>_inconclusive` reasons — inconclusive evidence is a
+   human's call, never an auto-rejection, never an auto-approval.
+   Hard fails and error routing are unchanged. Re-deciding session
+   15 with the fixed track + liveness: needs_review (was rejected).
+4. **MRZ applicability** (server/app.py, server/engine.py). The
+   registry knows which document types carry an MRZ; for the rest
+   (licences, ID cards, NIN slips) the mrz check now records
+   not_applicable instead of a permanent mrz_not_found unclear, and
+   the engine treats it as non-applicable, mirroring face_match.
+
+Tests: facetrack gains the genuine-dip pass, abrupt-segment fail
+and short-foreign-tail unclear cases (test_facetrack 9/9);
+test_video_sampling gains the vertical-threshold pair (14/14);
+test_checks rewrites the unclear doctrine test to the new rule and
+adds the face_match rescan case (25/25). Thresholds unchanged:
+face match 0.363, PASS_SCORE 70; the track's floor/pass-line still
+derive from the face-match threshold and margin.
