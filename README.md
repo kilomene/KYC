@@ -691,23 +691,31 @@ Read in this order:
 3. **[docs/DATA-MODEL.md](docs/DATA-MODEL.md)** — database schema draft
    (the SQLite implementation mirrors it; see its status banner):
    tenants, applicants, sessions, documents, checks, cases, webhooks, audit.
-4. **[docs/API.md](docs/API.md)** — REST API and webhook contract:
-   implemented endpoints plus explicitly marked unimplemented items.
-5. **[docs/COMPLIANCE-AND-PRIVACY.md](docs/COMPLIANCE-AND-PRIVACY.md)** —
+4. **[docs/DEVELOPER.md](docs/DEVELOPER.md)** — the complete
+   integration guide for websites, mobile apps, backends and AI
+   agents, plus the JavaScript SDK, webhooks, KYB, review, errors,
+   security and testing.
+5. **[docs/openapi.json](docs/openapi.json)** /
+   **[docs/openapi.yaml](docs/openapi.yaml)** — the canonical
+   OpenAPI 3.1 wire contract, also published at `/openapi.json` and
+   through the developer portal at `/docs`.
+6. **[docs/API.md](docs/API.md)** — REST API and webhook platform
+   rules, identity-source semantics and endpoint reference.
+7. **[docs/COMPLIANCE-AND-PRIVACY.md](docs/COMPLIANCE-AND-PRIVACY.md)** —
    the legal/privacy ground rules this product must be built inside.
-6. **[docs/SECURITY.md](docs/SECURITY.md)** — threat model and control
+8. **[docs/SECURITY.md](docs/SECURITY.md)** — threat model and control
    targets; implementation status lives in docs/CLAIMS-AUDIT.md.
-7. **[docs/ROADMAP.md](docs/ROADMAP.md)** — phased build record and plan.
-8. **[docs/DECISIONS.md](docs/DECISIONS.md)** — the owner's decisions
-   D1–D8, settled 2026-10-26 (Nova Inc product, internal first, expanded
-   worldwide coverage, local-first build, Cloudflare as production home).
-9. **[docs/AMBITION.md](docs/AMBITION.md)** — the standing bar: more
-   advanced than Sumsub, Persona, and Onfido — claimed only where built,
-   tested, and measured.
-10. **[docs/CLAIMS-AUDIT.md](docs/CLAIMS-AUDIT.md)** — the Phase 4 WS0
+9. **[docs/ROADMAP.md](docs/ROADMAP.md)** — phased build record and plan.
+10. **[docs/DECISIONS.md](docs/DECISIONS.md)** — the owner's decisions
+    D1–D8, settled 2026-10-26 (Nova Inc product, internal first, expanded
+    worldwide coverage, local-first build, Cloudflare as production home).
+11. **[docs/AMBITION.md](docs/AMBITION.md)** — the standing bar: more
+    advanced than Sumsub, Persona, and Onfido — claimed only where built,
+    tested, and measured.
+12. **[docs/CLAIMS-AUDIT.md](docs/CLAIMS-AUDIT.md)** — the Phase 4 WS0
     audit: every public claim checked against the code, with gaps
     assigned to workstreams.
-11. **[docs/PHASE4-PLAN.md](docs/PHASE4-PLAN.md)** — the approved
+13. **[docs/PHASE4-PLAN.md](docs/PHASE4-PLAN.md)** — the approved
     Phase 4 plan (WS0–WS8).
 
 ## Non-negotiable build rules
