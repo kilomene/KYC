@@ -58,15 +58,25 @@ def _movement_made(centres, direction, start_idx):
     return False, start_idx
 
 def analyse_features(features, challenge):
-    """Pure analysis of sampled frame features against the challenge."""
+    """Pure analysis of sampled frame features against the challenge.
+
+    A feature's "strict" flag separates production-threshold sightings
+    from consistency-anchored relaxed ones (see extract_features).
+    Presence counts both — a face the detector glimpses weakly but
+    continuously IS present — while movement is judged on strict
+    sightings alone: identity-grade geometry is never borrowed from
+    a weak box. Features written before the flag existed count as
+    strict."""
     movements = list((challenge or {}).get("movements") or [])
     n = len(features)
     findings = {"frames_sampled": n, "challenge": movements}
     if n < 4:
         return {"status": "unclear", "findings": {**findings, "error": "too_few_frames"}, "reason_codes": ["liveness_too_few_frames"]}
     faces = [f for f in features if f.get("face")]
+    strict_faces = [f for f in faces if f.get("strict", True)]
     ratio = len(faces) / n
     findings["face_ratio"] = round(ratio, 3)
+    findings["strict_face_ratio"] = round(len(strict_faces) / n, 3)
     if ratio < MIN_FACE_RATIO:
         return {"status": "fail", "findings": findings, "reason_codes": ["liveness_face_absent"]}
     centres = [(float(f["cx"]), float(f["cy"])) for f in faces]
@@ -80,6 +90,15 @@ def analyse_features(features, challenge):
         # A replayed still photo / frozen frame: no head movement AND no
         # pixel change. This is a fail, not a review item.
         return {"status": "fail", "findings": {**findings, "static": True}, "reason_codes": ["liveness_static_replay"]}
+    if len(strict_faces) >= 4:
+        centres = [(float(f["cx"]), float(f["cy"])) for f in strict_faces]
+    elif movements:
+        # Present (weakly) but too few identity-grade sightings to
+        # judge the challenged movements from: honest unclear, never
+        # a pass borrowed from weak geometry and never "absent" —
+        # the face WAS there.
+        findings["movement_basis"] = "insufficient_strict_frames"
+        return {"status": "unclear", "findings": findings, "reason_codes": ["liveness_challenge_incomplete"]}
     made, idx = [], 0
     for d in movements:
         ok, idx2 = _movement_made(centres, d, idx)
@@ -95,40 +114,74 @@ def analyse_features(features, challenge):
         return {"status": "unclear", "findings": findings, "reason_codes": ["liveness_movement_unclear"]}
     return {"status": "unclear", "findings": findings, "reason_codes": ["liveness_challenge_incomplete"]}
 
-def extract_features(video_path, max_frames=30):
-    """Sample frames from a video with OpenCV and reduce each to features
-    via YuNet. Requires cv2 + models; raises on unreadable video."""
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        raise ValueError("video_unreadable")
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-    idxs = set()
-    if total > 0:
-        step = max(1, total // max_frames)
-        idxs = set(range(0, total, step))
-    features = []
-    i = 0
-    while True:
-        ok, frame = cap.read()
-        if not ok:
-            break
-        if total > 0 and i not in idxs:
-            i += 1
-            if i > total:
-                break
-            continue
-        i += 1
+def extract_features(video_path, max_frames=30, _meta=None):
+    """Reduce a video to per-frame features via YuNet.
+
+    Frames come from FACE.video_frames: sampled across the FULL
+    duration (container frame-count metadata is unreliable on
+    MediaRecorder WebM) and orientation-corrected as one clip.
+
+    Presence rescue (2026-10-28, owner session 14): at a steep camera
+    angle or against backlight, YuNet's score for a real, continuously
+    present face can sit at 0.31-0.38 — under the 0.6 production
+    threshold at EVERY scale and after enhancement. A relaxed second
+    look (RELAXED_THRESHOLD) therefore runs per frame, but a relaxed
+    sighting counts as presence ONLY when it is anchored: a strict
+    sighting exists somewhere in the clip and a neighbouring sampled
+    frame holds an accepted face. It never feeds movement geometry
+    (analyse_features judges movement on strict sightings alone) and
+    never identity. Raises on unreadable video."""
+    frames, vinfo = FACE.video_frames(video_path, max_frames)
+    if _meta is not None:
+        _meta.update(vinfo)
+    raw = []      # (strict_face_or_None, relaxed_face_or_None, pix_std, h, w)
+    for frame in frames:
         grey = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        face = FACE.largest_face(frame)
+        h, w = frame.shape[:2]
+        strict = FACE.largest_face(frame)
+        relaxed = None
+        if strict is None:
+            relaxed = FACE.largest_face(frame, thr=FACE.RELAXED_THRESHOLD)
+        raw.append((strict, relaxed, float(grey.std()), h, w))
+    n = len(raw)
+    has_strict = any(r[0] is not None for r in raw)
+    accepted_weak = [False] * n
+    if has_strict:
+        # Forward sweep: anchored by a strict or already-accepted
+        # neighbour on the left; backward sweep: anchored from the
+        # right. A relaxed sighting with no anchor path to any strict
+        # sighting stays rejected.
+        prev_ok = False
+        for i in range(n):
+            if raw[i][0] is not None:
+                prev_ok = True
+            elif raw[i][1] is not None and prev_ok:
+                accepted_weak[i] = True
+            if raw[i][0] is None and raw[i][1] is None:
+                prev_ok = False
+        next_ok = False
+        for i in range(n - 1, -1, -1):
+            if raw[i][0] is not None:
+                next_ok = True
+            elif raw[i][1] is not None and next_ok:
+                accepted_weak[i] = True
+            if raw[i][0] is None and raw[i][1] is None:
+                next_ok = False
+    features = []
+    for i, (strict, relaxed, pix_std, h, w) in enumerate(raw):
+        face = strict
+        is_strict = strict is not None
+        if face is None and accepted_weak[i]:
+            face = relaxed
+            is_strict = False
         if face is None:
-            features.append({"face": False, "cx": 0.0, "cy": 0.0, "size": 0.0, "pix_std": float(grey.std())})
+            features.append({"face": False, "strict": False, "cx": 0.0, "cy": 0.0,
+                             "size": 0.0, "pix_std": pix_std})
         else:
-            h, w = frame.shape[:2]
             cx = (face[0] + face[2] / 2) / w; cy = (face[1] + face[3] / 2) / h
-            features.append({"face": True, "cx": float(cx), "cy": float(cy), "size": float(face[2] / w), "pix_std": float(grey.std())})
-        if len(features) >= max_frames:
-            break
-    cap.release()
+            features.append({"face": True, "strict": is_strict, "cx": float(cx),
+                             "cy": float(cy), "size": float(face[2] / w),
+                             "pix_std": pix_std})
     return features
 
 def check_liveness(video_path, challenge):
@@ -139,12 +192,17 @@ def check_liveness(video_path, challenge):
         return {"status": "error", "findings": {"error": "opencv_unavailable"}, "reason_codes": ["model_missing"]}
     if not FACE.models_present():
         return {"status": "error", "findings": {"error": "face_models_not_fetched_run_scripts/fetch_models.py"}, "reason_codes": ["model_missing"]}
+    meta = {}
     try:
-        features = extract_features(video_path)
+        features = extract_features(video_path, _meta=meta)
     except Exception as e:
         return {"status": "error", "findings": {"error": str(e)[:200]}, "reason_codes": ["liveness_video_unreadable"]}
     if not features:
         return {"status": "error", "findings": {"error": "no_frames_extracted"}, "reason_codes": ["liveness_video_unreadable"]}
     res = analyse_features(features, challenge)
-    res["findings"] = {**res["findings"], "method": "active_challenge_yunet"}
+    res["findings"] = {**res["findings"], "method": "active_challenge_yunet",
+                       "video_total_frames": meta.get("total_frames"),
+                       "video_rotation_degrees": meta.get("rotation_degrees"),
+                       "weak_frames_accepted": sum(1 for f in features
+                                                   if f.get("face") and not f.get("strict", True))}
     return res
