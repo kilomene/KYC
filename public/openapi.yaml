@@ -1,0 +1,4773 @@
+openapi: 3.1.0
+info:
+  title: Nova KYC API
+  version: 1.0.0
+  summary: Identity verification, KYB, review, credentials and monitoring for websites, mobile apps and backend systems.
+  description: 'Nova KYC is a Nova Inc identity-verification platform. The recommended integration is deliberately simple:
+    a server creates an applicant and a verification session, sends the person to the hosted phone-first flow, and learns
+    the decision from a signed webhook or the Sessions API.
+
+
+    Important boundaries:
+
+    - API keys are server-side secrets. Never put one in a browser, mobile app, public repository or agent prompt.
+
+    - The hosted flow is the capture product. There is no general API-only document/selfie upload endpoint.
+
+    - The one upload exception is the Nigerian NIN slip inside the hosted flow.
+
+    - Test and live keys select separate environments on the same production host.
+
+    - Webhook payloads and reusable credentials carry claims and outcomes, never document images or raw biometric data.
+
+
+    Human integration guide: https://kyc.novamail.store/docs
+
+    Detailed developer guide: https://github.com/kilomene/KYC/blob/main/docs/DEVELOPER.md'
+  contact:
+    name: Nova Inc
+    url: https://kyc.novamail.store
+    email: info@novamail.store
+servers:
+- url: https://kyc.novamail.store
+  description: Production (test and live environments are selected by API key)
+- url: http://127.0.0.1:8765
+  description: Local development default
+tags:
+- name: Developer resources
+  description: Documentation and machine-readable specifications.
+- name: Health
+  description: Service capability health.
+- name: Platform operations
+  description: Nova operator only; not tenant self-service.
+- name: Applicants
+  description: People to be verified and privacy erasure.
+- name: Sessions
+  description: Verification sessions, checks and outcomes.
+- name: Hosted flow
+  description: The applicant-facing flow's token-scoped endpoints.
+- name: Configuration
+  description: Versioned per-level decision configuration.
+- name: Keys
+  description: Tenant API-key lifecycle metadata.
+- name: Users and reviewer MFA
+  description: Named reviewers and TOTP enrolment.
+- name: Webhooks
+  description: Signed event delivery, retries, dead letters and replay.
+- name: Credentials
+  description: Reusable signed verification credentials.
+- name: Monitoring
+  description: Ongoing screening and alerts.
+- name: Billing and usage
+  description: Metered usage and invoices.
+- name: Businesses (KYB)
+  description: Business records, people, registry evidence and evaluation.
+- name: Review and cases
+  description: Human review, four-eyes decisions, hits and audited media.
+paths:
+  /docs:
+    get:
+      tags:
+      - Developer resources
+      summary: Open the human developer documentation portal. It links the integration guide, API reference, JavaScript SDK,
+        and downloadable OpenAPI documents.
+      description: Open the human developer documentation portal. It links the integration guide, API reference, JavaScript
+        SDK, and downloadable OpenAPI documents.
+      operationId: getDeveloperDocumentation
+      security: &id001 []
+      responses:
+        '200':
+          description: Developer documentation portal
+          content:
+            text/html:
+              schema:
+                type: string
+                format: html
+  /openapi.json:
+    get:
+      tags:
+      - Developer resources
+      summary: Download the machine-readable OpenAPI 3.1 specification as JSON. Import it into Postman, Insomnia, openapi-generator,
+        or an AI agent's tool registry.
+      description: Download the machine-readable OpenAPI 3.1 specification as JSON. Import it into Postman, Insomnia, openapi-generator,
+        or an AI agent's tool registry.
+      operationId: getOpenApiJson
+      security: *id001
+      responses:
+        '200':
+          description: OpenAPI specification (JSON)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /openapi.yaml:
+    get:
+      tags:
+      - Developer resources
+      summary: Download the same OpenAPI 3.1 specification as YAML.
+      description: Download the same OpenAPI 3.1 specification as YAML.
+      operationId: getOpenApiYaml
+      security: *id001
+      responses:
+        '200':
+          description: OpenAPI specification (YAML)
+          content:
+            application/yaml:
+              schema:
+                type: string
+  /healthz:
+    get:
+      tags:
+      - Health
+      summary: Capability-aware health. A 200 means the HTTP service and its critical OCR capability are available; a deployment
+        whose OCR binary is missing answers 503 instead of pretending to be healthy.
+      description: Capability-aware health. A 200 means the HTTP service and its critical OCR capability are available; a
+        deployment whose OCR binary is missing answers 503 instead of pretending to be healthy.
+      operationId: getHealth
+      security: *id001
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  missing:
+                    type: array
+                    items:
+                      type: string
+        '503':
+          description: A required local capability or stored-data key is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+  /v1/tenants:
+    post:
+      tags:
+      - Platform operations
+      summary: Create a tenant and its test and live API keys. This is an operator operation, not public self-service signup.
+        Both raw keys are shown once in the response.
+      description: Create a tenant and its test and live API keys. This is an operator operation, not public self-service
+        signup. Both raw keys are shown once in the response.
+      operationId: createTenant
+      security: &id002
+      - platformAdmin: []
+      responses:
+        '201':
+          description: Tenant created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantCreated'
+        '403':
+          description: The caller is authenticated but is not allowed to perform this operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '422':
+          description: Validation failed. Correct the named field or state and retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TenantCreate'
+            examples:
+              create:
+                value:
+                  name: Example Ltd
+                  country: NG
+  /v1/platform/tenants/{tenantId}:
+    delete:
+      tags:
+      - Platform operations
+      summary: Delete a tenant's operational data and stored media while retaining audit, deletion, invoice and usage records.
+        The JSON body must repeat the tenant id as an explicit confirmation.
+      description: Delete a tenant's operational data and stored media while retaining audit, deletion, invoice and usage
+        records. The JSON body must repeat the tenant id as an explicit confirmation.
+      operationId: deleteTenant
+      security: *id002
+      responses:
+        '200':
+          description: Tenant deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '403':
+          description: The caller is authenticated but is not allowed to perform this operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '404':
+          description: The resource does not exist, or it belongs to another tenant or environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '422':
+          description: Validation failed. Correct the named field or state and retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      parameters:
+      - name: tenantId
+        in: path
+        required: true
+        description: Tenant UUID. Platform-operator operations only.
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - confirm
+              properties:
+                confirm:
+                  type: string
+                  format: uuid
+  /v1/platform/metrics:
+    get:
+      tags:
+      - Platform operations
+      summary: Read 24-hour session and decision counts, current processing depth, webhook dead-letter count and fraud-index
+        size.
+      description: Read 24-hour session and decision counts, current processing depth, webhook dead-letter count and fraud-index
+        size.
+      operationId: getPlatformMetrics
+      security: *id002
+      responses:
+        '200':
+          description: Platform metrics
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '403':
+          description: The caller is authenticated but is not allowed to perform this operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+  /v1/platform/prices:
+    post:
+      tags:
+      - Platform operations
+      summary: Set the versioned unit price for a verification level and environment. Documentation does not publish a price;
+        prices are operator configuration.
+      description: Set the versioned unit price for a verification level and environment. Documentation does not publish a
+        price; prices are operator configuration.
+      operationId: setPlatformPrice
+      security: *id002
+      responses:
+        '201':
+          description: Price set
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  price_id:
+                    type: string
+                    format: uuid
+        '403':
+          description: The caller is authenticated but is not allowed to perform this operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '422':
+          description: Validation failed. Correct the named field or state and retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlatformPriceCreate'
+  /v1/platform/quotas:
+    post:
+      tags:
+      - Platform operations
+      summary: Set a tenant's monthly live-verification quota. Test verifications are not capped by this quota.
+      description: Set a tenant's monthly live-verification quota. Test verifications are not capped by this quota.
+      operationId: setPlatformQuota
+      security: *id002
+      responses:
+        '200':
+          description: Quota set
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tenant_id:
+                    type: string
+                    format: uuid
+                  monthly_limit:
+                    type: integer
+        '403':
+          description: The caller is authenticated but is not allowed to perform this operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '422':
+          description: Validation failed. Correct the named field or state and retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlatformQuotaCreate'
+  /v1/platform/invoices:
+    post:
+      tags:
+      - Platform operations
+      summary: Generate a draft invoice from priced, uninvoiced usage in a period.
+      description: Generate a draft invoice from priced, uninvoiced usage in a period.
+      operationId: generatePlatformInvoice
+      security: *id002
+      responses:
+        '201':
+          description: Invoice generated or no priced usage found
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '403':
+          description: The caller is authenticated but is not allowed to perform this operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '422':
+          description: Validation failed. Correct the named field or state and retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlatformInvoiceCreate'
+  /v1/applicants:
+    post:
+      tags:
+      - Applicants
+      summary: 'Create an applicant. Prefer identity_source=document: the platform reads the identity from the document and
+        adopts it after decision. The declared form cross-checks a name and date of birth the tenant already holds.'
+      description: 'Create an applicant. Prefer identity_source=document: the platform reads the identity from the document
+        and adopts it after decision. The declared form cross-checks a name and date of birth the tenant already holds.'
+      operationId: createApplicant
+      security: &id003
+      - tenantApiKey: []
+      responses:
+        '201':
+          description: Applicant created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Applicant'
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '422':
+          description: Validation failed. Correct the named field or state and retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplicantCreate'
+            examples:
+              documentIdentity:
+                summary: 'Recommended: identity read from the document'
+                value:
+                  country: NG
+                  identity_source: document
+                  external_ref: user_12345
+              declaredIdentity:
+                summary: Cross-check an identity the tenant already holds
+                value:
+                  country: NG
+                  first_name: Adaeze
+                  last_name: Example
+                  dob: '1992-04-17'
+                  external_ref: user_12345
+  /v1/applicants/{applicantId}:
+    get:
+      tags:
+      - Applicants
+      summary: Read one applicant owned by the authenticated tenant and environment. The view is audited.
+      description: Read one applicant owned by the authenticated tenant and environment. The view is audited.
+      operationId: getApplicant
+      security: *id003
+      responses:
+        '200':
+          description: Applicant
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Applicant'
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '404':
+          description: The resource does not exist, or it belongs to another tenant or environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      parameters:
+      - &id004
+        name: applicantId
+        in: path
+        required: true
+        description: Applicant UUID owned by the authenticated tenant and environment.
+        schema:
+          type: string
+    delete:
+      tags:
+      - Applicants
+      summary: 'Perform subject erasure: stored document and biometric files are deleted, direct PII fields are nulled, the
+        erasure is audited, and applicant.deleted is emitted to matching webhooks.'
+      description: 'Perform subject erasure: stored document and biometric files are deleted, direct PII fields are nulled,
+        the erasure is audited, and applicant.deleted is emitted to matching webhooks.'
+      operationId: eraseApplicant
+      security: *id003
+      responses:
+        '200':
+          description: Applicant erased
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: boolean
+                  applicant_id:
+                    type: string
+                    format: uuid
+                  files_deleted:
+                    type: integer
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '404':
+          description: The resource does not exist, or it belongs to another tenant or environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      parameters:
+      - *id004
+  /v1/sessions:
+    post:
+      tags:
+      - Sessions
+      summary: Create a verification session and receive its hosted-flow URL and one-session flow token. Level 1 is the document-identity
+        core; Level 2 adds the full biometric and authenticity set; Level 3 adds proof of address and sanctions screening
+        under the tenant's active configuration.
+      description: Create a verification session and receive its hosted-flow URL and one-session flow token. Level 1 is the
+        document-identity core; Level 2 adds the full biometric and authenticity set; Level 3 adds proof of address and sanctions
+        screening under the tenant's active configuration.
+      operationId: createSession
+      security: *id003
+      responses:
+        '201':
+          description: Session created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionCreated'
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '404':
+          description: The resource does not exist, or it belongs to another tenant or environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '422':
+          description: Validation failed. Correct the named field or state and retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionCreate'
+            examples:
+              existingApplicant:
+                value:
+                  applicant_id: 00000000-0000-4000-8000-000000000001
+                  level: 2
+              documentSession:
+                value:
+                  identity_source: document
+                  country: NG
+                  level: 1
+                  external_ref: user_12345
+    get:
+      tags:
+      - Sessions
+      summary: List sessions for the authenticated tenant and environment, newest first.
+      description: List sessions for the authenticated tenant and environment, newest first.
+      operationId: listSessions
+      security: *id003
+      responses:
+        '200':
+          description: Sessions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Session'
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+  /v1/sessions/{sessionId}:
+    get:
+      tags:
+      - Sessions
+      summary: Read a session's status, check summary, decision, masked client IP, IP country and VPN status.
+      description: Read a session's status, check summary, decision, masked client IP, IP country and VPN status.
+      operationId: getSession
+      security: *id003
+      responses:
+        '200':
+          description: Session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '404':
+          description: The resource does not exist, or it belongs to another tenant or environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      parameters:
+      - &id005
+        name: sessionId
+        in: path
+        required: true
+        description: Verification session UUID owned by the authenticated tenant and environment.
+        schema:
+          type: string
+  /v1/sessions/{sessionId}/checks:
+    get:
+      tags:
+      - Sessions
+      summary: Read every recorded check for a session, including provider, findings and reason codes.
+      description: Read every recorded check for a session, including provider, findings and reason codes.
+      operationId: listSessionChecks
+      security: *id003
+      responses:
+        '200':
+          description: Session checks
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  checks:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Check'
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '404':
+          description: The resource does not exist, or it belongs to another tenant or environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      parameters:
+      - *id005
+  /v1/sessions/{sessionId}/cancel:
+    post:
+      tags:
+      - Sessions
+      summary: Cancel a live session. Its hosted-flow token stops working immediately.
+      description: Cancel a live session. Its hosted-flow token stops working immediately.
+      operationId: cancelSession
+      security: *id003
+      responses:
+        '200':
+          description: Session cancelled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cancelled:
+                    type: boolean
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '404':
+          description: The resource does not exist, or it belongs to another tenant or environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      parameters:
+      - *id005
+  /v1/sessions/{sessionId}/credential:
+    get:
+      tags:
+      - Credentials
+      summary: Read the reusable credential issued for an approved session. Claims and signature only.
+      description: Read the reusable credential issued for an approved session. Claims and signature only.
+      operationId: getSessionCredential
+      security: *id003
+      responses:
+        '200':
+          description: Issued credential
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  credential:
+                    $ref: '#/components/schemas/Credential'
+                  status:
+                    type: string
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '404':
+          description: The resource does not exist, or it belongs to another tenant or environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      parameters:
+      - *id005
+  /v1/config:
+    get:
+      tags:
+      - Configuration
+      summary: Read the active flow configuration for a level. If the tenant has never stored a version, the platform defaults
+        and version 0 are returned.
+      description: Read the active flow configuration for a level. If the tenant has never stored a version, the platform
+        defaults and version 0 are returned.
+      operationId: getFlowConfig
+      security: *id003
+      responses:
+        '200':
+          description: Active flow configuration
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  level:
+                    type: integer
+                  version:
+                    type: integer
+                  config:
+                    $ref: '#/components/schemas/FlowConfig'
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '422':
+          description: Validation failed. Correct the named field or state and retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      parameters:
+      - name: level
+        in: query
+        required: false
+        description: Verification level.
+        schema:
+          type: integer
+          enum:
+          - 1
+          - 2
+          - 3
+          default: 2
+    put:
+      tags:
+      - Configuration
+      summary: Store a new version of a level's flow configuration. The request body is {level, config:{...patch}}; the SDK's
+        updateConfig method builds this shape for you.
+      description: Store a new version of a level's flow configuration. The request body is {level, config:{...patch}}; the
+        SDK's updateConfig method builds this shape for you.
+      operationId: updateFlowConfig
+      security: *id003
+      responses:
+        '200':
+          description: Updated flow configuration
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  level:
+                    type: integer
+                  version:
+                    type: integer
+                  config:
+                    $ref: '#/components/schemas/FlowConfig'
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '422':
+          description: Validation failed. Correct the named field or state and retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - level
+              - config
+              properties:
+                level:
+                  type: integer
+                  enum:
+                  - 1
+                  - 2
+                  - 3
+                config:
+                  $ref: '#/components/schemas/FlowConfigPatch'
+            examples:
+              tighten:
+                value:
+                  level: 2
+                  config:
+                    four_eyes: true
+                    sla_hours: 12
+  /v1/keys:
+    get:
+      tags:
+      - Keys
+      summary: List the tenant's API keys across environments without exposing key material. Only prefixes and lifecycle fields
+        are returned.
+      description: List the tenant's API keys across environments without exposing key material. Only prefixes and lifecycle
+        fields are returned.
+      operationId: listApiKeys
+      security: *id003
+      responses:
+        '200':
+          description: API keys
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  keys:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+  /v1/keys/{keyId}/revoke:
+    post:
+      tags:
+      - Keys
+      summary: Revoke one of the tenant's API keys immediately.
+      description: Revoke one of the tenant's API keys immediately.
+      operationId: revokeApiKey
+      security: *id003
+      responses:
+        '200':
+          description: API key revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  revoked:
+                    type: boolean
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '404':
+          description: The resource does not exist, or it belongs to another tenant or environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      parameters:
+      - name: keyId
+        in: path
+        required: true
+        description: API-key UUID belonging to the authenticated tenant.
+        schema:
+          type: string
+  /v1/users:
+    post:
+      tags:
+      - Users and reviewer MFA
+      summary: Create a named tenant user. The returned token is shown once and is presented as X-Reviewer-Key on reviewer
+        actions.
+      description: Create a named tenant user. The returned token is shown once and is presented as X-Reviewer-Key on reviewer
+        actions.
+      operationId: createTenantUser
+      security: *id003
+      responses:
+        '201':
+          description: Tenant user created
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '422':
+          description: Validation failed. Correct the named field or state and retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TenantUserCreate'
+    get:
+      tags:
+      - Users and reviewer MFA
+      summary: List named tenant users without token material.
+      description: List named tenant users without token material.
+      operationId: listTenantUsers
+      security: *id003
+      responses:
+        '200':
+          description: Tenant users
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  users:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TenantUser'
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+  /v1/users/{userId}/revoke:
+    post:
+      tags:
+      - Users and reviewer MFA
+      summary: Revoke a named tenant user's token.
+      description: Revoke a named tenant user's token.
+      operationId: revokeTenantUser
+      security: *id003
+      responses:
+        '200':
+          description: Tenant user revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  revoked:
+                    type: boolean
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '404':
+          description: The resource does not exist, or it belongs to another tenant or environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      parameters:
+      - &id006
+        name: userId
+        in: path
+        required: true
+        description: Tenant user UUID.
+        schema:
+          type: string
+  /v1/users/{userId}/mfa/enroll:
+    post:
+      tags:
+      - Users and reviewer MFA
+      summary: Start TOTP MFA enrolment for a named user. The secret and otpauth URI are shown once; MFA activates only after
+        confirmation.
+      description: Start TOTP MFA enrolment for a named user. The secret and otpauth URI are shown once; MFA activates only
+        after confirmation.
+      operationId: enrollReviewerMfa
+      security: *id003
+      responses:
+        '200':
+          description: MFA enrolment started
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '404':
+          description: The resource does not exist, or it belongs to another tenant or environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '409':
+          description: The current resource state conflicts with the requested operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      parameters:
+      - *id006
+  /v1/users/{userId}/mfa/confirm:
+    post:
+      tags:
+      - Users and reviewer MFA
+      summary: Confirm TOTP MFA enrolment with a current six-digit code.
+      description: Confirm TOTP MFA enrolment with a current six-digit code.
+      operationId: confirmReviewerMfa
+      security: *id003
+      responses:
+        '200':
+          description: MFA enabled
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '404':
+          description: The resource does not exist, or it belongs to another tenant or environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '409':
+          description: The current resource state conflicts with the requested operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      parameters:
+      - *id006
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MfaCode'
+  /v1/users/{userId}/mfa/reset:
+    post:
+      tags:
+      - Users and reviewer MFA
+      summary: 'Tenant-admin recovery: clear a user''s MFA secret and disable MFA. The user must re-enrol; no bypass code
+        is issued.'
+      description: 'Tenant-admin recovery: clear a user''s MFA secret and disable MFA. The user must re-enrol; no bypass code
+        is issued.'
+      operationId: resetReviewerMfa
+      security: *id003
+      responses:
+        '200':
+          description: MFA reset
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '404':
+          description: The resource does not exist, or it belongs to another tenant or environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      parameters:
+      - *id006
+  /v1/webhooks:
+    post:
+      tags:
+      - Webhooks
+      summary: Register a webhook endpoint for the authenticated tenant and environment. The signing secret is shown once.
+        An empty events list receives every implemented event.
+      description: Register a webhook endpoint for the authenticated tenant and environment. The signing secret is shown once.
+        An empty events list receives every implemented event.
+      operationId: createWebhookEndpoint
+      security: *id003
+      responses:
+        '201':
+          description: Webhook endpoint created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookCreated'
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '422':
+          description: Validation failed. Correct the named field or state and retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookCreate'
+            examples:
+              sessionEvents:
+                value:
+                  url: https://api.example.com/webhooks/nova-kyc
+                  events:
+                  - session.completed
+                  - case.opened
+                  - case.decided
+    get:
+      tags:
+      - Webhooks
+      summary: List webhook endpoints for the authenticated tenant and environment. Secrets are never returned.
+      description: List webhook endpoints for the authenticated tenant and environment. Secrets are never returned.
+      operationId: listWebhookEndpoints
+      security: *id003
+      responses:
+        '200':
+          description: Webhook endpoints
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  endpoints:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/WebhookEndpoint'
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+  /v1/webhooks/{webhookId}:
+    delete:
+      tags:
+      - Webhooks
+      summary: Delete one of the tenant's webhook endpoints and its delivery records.
+      description: Delete one of the tenant's webhook endpoints and its delivery records.
+      operationId: deleteWebhookEndpoint
+      security: *id003
+      responses:
+        '200':
+          description: Webhook endpoint deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: string
+                    format: uuid
+                  deliveries_removed:
+                    type: integer
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '404':
+          description: The resource does not exist, or it belongs to another tenant or environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      parameters:
+      - name: webhookId
+        in: path
+        required: true
+        description: Webhook endpoint UUID owned by the authenticated tenant and environment.
+        schema:
+          type: string
+  /v1/webhooks/deliveries:
+    get:
+      tags:
+      - Webhooks
+      summary: List up to 200 recent webhook deliveries for the tenant and environment, optionally filtered by status.
+      description: List up to 200 recent webhook deliveries for the tenant and environment, optionally filtered by status.
+      operationId: listWebhookDeliveries
+      security: *id003
+      responses:
+        '200':
+          description: Webhook deliveries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deliveries:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/WebhookDelivery'
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '422':
+          description: Validation failed. Correct the named field or state and retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      parameters:
+      - name: status
+        in: query
+        required: false
+        description: Delivery status filter.
+        schema:
+          type: string
+          enum:
+          - pending
+          - delivered
+          - failed
+          - dead_letter
+  /v1/webhooks/deliveries/{deliveryId}/replay:
+    post:
+      tags:
+      - Webhooks
+      summary: Reset a failed or dead-lettered delivery's attempt budget and deliver it immediately with a fresh signature.
+      description: Reset a failed or dead-lettered delivery's attempt budget and deliver it immediately with a fresh signature.
+      operationId: replayWebhookDelivery
+      security: *id003
+      responses:
+        '200':
+          description: Delivery replayed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  delivery:
+                    $ref: '#/components/schemas/WebhookDelivery'
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '404':
+          description: The resource does not exist, or it belongs to another tenant or environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '409':
+          description: The current resource state conflicts with the requested operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      parameters:
+      - name: deliveryId
+        in: path
+        required: true
+        description: Webhook delivery UUID belonging to the authenticated tenant.
+        schema:
+          type: string
+  /v1/credentials/verify:
+    post:
+      tags:
+      - Credentials
+      summary: Verify a reusable credential's signature, status and expiry. Any tenant key may verify. The response contains
+        claims only, never document data.
+      description: Verify a reusable credential's signature, status and expiry. Any tenant key may verify. The response contains
+        claims only, never document data.
+      operationId: verifyCredential
+      security: *id003
+      responses:
+        '200':
+          description: Credential verification result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CredentialVerifyResponse'
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '422':
+          description: Validation failed. Correct the named field or state and retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CredentialVerifyRequest'
+  /v1/credentials/revoke:
+    post:
+      tags:
+      - Credentials
+      summary: Revoke a credential issued by the authenticated tenant and environment.
+      description: Revoke a credential issued by the authenticated tenant and environment.
+      operationId: revokeCredential
+      security: *id003
+      responses:
+        '200':
+          description: Credential revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  revoked:
+                    type: boolean
+                  credential_id:
+                    type: string
+                    format: uuid
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '404':
+          description: The resource does not exist, or it belongs to another tenant or environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '422':
+          description: Validation failed. Correct the named field or state and retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - credential_id
+              properties:
+                credential_id:
+                  type: string
+                  format: uuid
+  /v1/monitoring/rescreen:
+    post:
+      tags:
+      - Monitoring
+      summary: Re-screen all approved applicants of the tenant against the current screening lists using the Level 3 threshold.
+        New matches create alerts, emit screening.hit_new and reopen cases; monitoring never silently un-approves a person.
+      description: Re-screen all approved applicants of the tenant against the current screening lists using the Level 3 threshold.
+        New matches create alerts, emit screening.hit_new and reopen cases; monitoring never silently un-approves a person.
+      operationId: rescreenApplicants
+      security: *id003
+      responses:
+        '200':
+          description: Rescreening result
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+  /v1/monitoring/alerts:
+    get:
+      tags:
+      - Monitoring
+      summary: List ongoing-monitoring alerts for the authenticated tenant and environment.
+      description: List ongoing-monitoring alerts for the authenticated tenant and environment.
+      operationId: listMonitoringAlerts
+      security: *id003
+      responses:
+        '200':
+          description: Monitoring alerts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  alerts:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+  /v1/usage:
+    get:
+      tags:
+      - Billing and usage
+      summary: Read metered usage for a period. The default period is the current UTC month. Every decided session is metered
+        exactly once; test-environment events are priced at zero in the sandbox model.
+      description: Read metered usage for a period. The default period is the current UTC month. Every decided session is
+        metered exactly once; test-environment events are priced at zero in the sandbox model.
+      operationId: getUsage
+      security: *id003
+      responses:
+        '200':
+          description: Usage summary
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '422':
+          description: Validation failed. Correct the named field or state and retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      parameters:
+      - name: from
+        in: query
+        required: false
+        description: Inclusive ISO-8601 period start.
+        schema:
+          type: string
+      - name: to
+        in: query
+        required: false
+        description: Inclusive ISO-8601 period end.
+        schema:
+          type: string
+  /v1/invoices:
+    get:
+      tags:
+      - Billing and usage
+      summary: List generated invoices for the authenticated tenant and environment.
+      description: List generated invoices for the authenticated tenant and environment.
+      operationId: listInvoices
+      security: *id003
+      responses:
+        '200':
+          description: Invoices
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  invoices:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+  /v1/businesses:
+    post:
+      tags:
+      - Businesses (KYB)
+      summary: Create a KYB business. The registration number is format-validated for its country; format validation alone
+        is not represented as a live government-registry verification.
+      description: Create a KYB business. The registration number is format-validated for its country; format validation alone
+        is not represented as a live government-registry verification.
+      operationId: createBusiness
+      security: *id003
+      responses:
+        '201':
+          description: Business created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Business'
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '422':
+          description: Validation failed. Correct the named field or state and retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BusinessCreate'
+    get:
+      tags:
+      - Businesses (KYB)
+      summary: List businesses for the authenticated tenant and environment with brief people summaries.
+      description: List businesses for the authenticated tenant and environment with brief people summaries.
+      operationId: listBusinesses
+      security: *id003
+      responses:
+        '200':
+          description: Businesses
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  businesses:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Business'
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+  /v1/businesses/{businessId}:
+    get:
+      tags:
+      - Businesses (KYB)
+      summary: Read one business with its people, documents and screening hits.
+      description: Read one business with its people, documents and screening hits.
+      operationId: getBusiness
+      security: *id003
+      responses:
+        '200':
+          description: Business
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Business'
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '404':
+          description: The resource does not exist, or it belongs to another tenant or environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      parameters:
+      - &id007
+        name: businessId
+        in: path
+        required: true
+        description: Business UUID owned by the authenticated tenant and environment.
+        schema:
+          type: string
+  /v1/businesses/{businessId}/people:
+    post:
+      tags:
+      - Businesses (KYB)
+      summary: Attach an applicant to a business as a director or ultimate beneficial owner. The API schema currently accepts
+        director or ubo; an officer role is not accepted by this endpoint.
+      description: Attach an applicant to a business as a director or ultimate beneficial owner. The API schema currently
+        accepts director or ubo; an officer role is not accepted by this endpoint.
+      operationId: addBusinessPerson
+      security: *id003
+      responses:
+        '201':
+          description: Person attached
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Business'
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '404':
+          description: The resource does not exist, or it belongs to another tenant or environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '409':
+          description: The current resource state conflicts with the requested operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '422':
+          description: Validation failed. Correct the named field or state and retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      parameters:
+      - *id007
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BusinessPersonCreate'
+  /v1/businesses/{businessId}/document:
+    post:
+      tags:
+      - Businesses (KYB)
+      summary: Upload company registry evidence as multipart form data. The document is stored encrypted under the platform's
+        storage controls and is not returned as a public URL.
+      description: Upload company registry evidence as multipart form data. The document is stored encrypted under the platform's
+        storage controls and is not returned as a public URL.
+      operationId: uploadBusinessDocument
+      security: *id003
+      responses:
+        '201':
+          description: Business document uploaded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  document_id:
+                    type: string
+                    format: uuid
+                  registry_status:
+                    type: string
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '404':
+          description: The resource does not exist, or it belongs to another tenant or environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '413':
+          description: The request body exceeds the configured size limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '422':
+          description: Validation failed. Correct the named field or state and retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      parameters:
+      - *id007
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+              - document
+              properties:
+                document:
+                  type: string
+                  format: binary
+                kind:
+                  type: string
+                  default: registration
+  /v1/businesses/{businessId}/registry-check:
+    post:
+      tags:
+      - Businesses (KYB)
+      summary: 'Consult the authoritative registry adapter configured for the business''s country and store the lookup outcome.
+        Adapters fail closed: where a source is not configured, the result says not_configured rather than guessing.'
+      description: 'Consult the authoritative registry adapter configured for the business''s country and store the lookup
+        outcome. Adapters fail closed: where a source is not configured, the result says not_configured rather than guessing.'
+      operationId: checkBusinessRegistry
+      security: *id003
+      responses:
+        '200':
+          description: Registry lookup result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  business_id:
+                    type: string
+                    format: uuid
+                  registry_lookup:
+                    type: object
+                    additionalProperties: true
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '404':
+          description: The resource does not exist, or it belongs to another tenant or environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      parameters:
+      - *id007
+  /v1/businesses/{businessId}/registry:
+    post:
+      tags:
+      - Businesses (KYB)
+      summary: Record a reviewer's registry decision after examining the format validation, uploaded evidence and any adapter
+        lookup. A reason is mandatory. This endpoint does not pretend that a human confirmation is itself a live registry
+        connection.
+      description: Record a reviewer's registry decision after examining the format validation, uploaded evidence and any
+        adapter lookup. A reason is mandatory. This endpoint does not pretend that a human confirmation is itself a live registry
+        connection.
+      operationId: decideBusinessRegistry
+      security: *id003
+      responses:
+        '200':
+          description: Registry decision recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '403':
+          description: The caller is authenticated but is not allowed to perform this operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '404':
+          description: The resource does not exist, or it belongs to another tenant or environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '422':
+          description: Validation failed. Correct the named field or state and retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      parameters:
+      - *id007
+      - &id009
+        name: X-Reviewer-Key
+        in: header
+        required: false
+        description: Optional named reviewer token issued by POST /v1/users. If present it must be valid; without it, the
+          tenant API-key identity is recorded as an admin reviewer.
+        schema:
+          type: string
+      - &id010
+        name: X-Reviewer-TOTP
+        in: header
+        required: false
+        description: Required conditionally when the named reviewer has MFA enabled, or when the deployment requires MFA enrolment
+          for privileged actions.
+        schema:
+          type: string
+          pattern: ^[0-9]{6}$
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegistryDecision'
+  /v1/businesses/{businessId}/evaluate:
+    post:
+      tags:
+      - Businesses (KYB)
+      summary: Assemble the business decision. Verified requires a confirmed registry leg, at least one attached person, every
+        person approved at Level 2 or above, and no pending or confirmed screening hit.
+      description: Assemble the business decision. Verified requires a confirmed registry leg, at least one attached person,
+        every person approved at Level 2 or above, and no pending or confirmed screening hit.
+      operationId: evaluateBusiness
+      security: *id003
+      responses:
+        '200':
+          description: Business evaluation
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '404':
+          description: The resource does not exist, or it belongs to another tenant or environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      parameters:
+      - *id007
+  /v1/cases:
+    get:
+      tags:
+      - Review and cases
+      summary: List the tenant's review queue, sorted by SLA due time and then newest first.
+      description: List the tenant's review queue, sorted by SLA due time and then newest first.
+      operationId: listCases
+      security: *id003
+      responses:
+        '200':
+          description: Review cases
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cases:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+  /v1/cases/{caseId}:
+    get:
+      tags:
+      - Review and cases
+      summary: 'Read the full audited case view: session, applicant, documents and biometric metadata, checks, screening hits,
+        the deterministic human-assist summary and any issued credential. Image access uses the separate protected media endpoints.'
+      description: 'Read the full audited case view: session, applicant, documents and biometric metadata, checks, screening
+        hits, the deterministic human-assist summary and any issued credential. Image access uses the separate protected media
+        endpoints.'
+      operationId: getCase
+      security: *id003
+      responses:
+        '200':
+          description: Review case
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '404':
+          description: The resource does not exist, or it belongs to another tenant or environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      parameters:
+      - &id008
+        name: caseId
+        in: path
+        required: true
+        description: Review case UUID owned by the authenticated tenant and environment.
+        schema:
+          type: string
+  /v1/cases/{caseId}/decide:
+    post:
+      tags:
+      - Review and cases
+      summary: Record a reviewer decision. A reason is mandatory. Privileged reviewer actions may require X-Reviewer-TOTP;
+        some outcomes park the case for a different reviewer's four-eyes confirmation and return 202.
+      description: Record a reviewer decision. A reason is mandatory. Privileged reviewer actions may require X-Reviewer-TOTP;
+        some outcomes park the case for a different reviewer's four-eyes confirmation and return 202.
+      operationId: decideCase
+      security: *id003
+      responses:
+        '200':
+          description: Case decision recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '403':
+          description: The caller is authenticated but is not allowed to perform this operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '404':
+          description: The resource does not exist, or it belongs to another tenant or environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '409':
+          description: The current resource state conflicts with the requested operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '422':
+          description: Validation failed. Correct the named field or state and retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+        '202':
+          description: Decision parked for four-eyes confirmation.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      parameters:
+      - *id008
+      - *id009
+      - *id010
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CaseDecision'
+  /v1/cases/{caseId}/confirm:
+    post:
+      tags:
+      - Review and cases
+      summary: Confirm a parked case decision. The confirmer must be a different reviewer identity from the first decider.
+      description: Confirm a parked case decision. The confirmer must be a different reviewer identity from the first decider.
+      operationId: confirmCase
+      security: *id003
+      responses:
+        '200':
+          description: Case decision confirmed
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '403':
+          description: The caller is authenticated but is not allowed to perform this operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '404':
+          description: The resource does not exist, or it belongs to another tenant or environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '409':
+          description: The current resource state conflicts with the requested operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '422':
+          description: Validation failed. Correct the named field or state and retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      parameters:
+      - *id008
+      - *id009
+      - *id010
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CaseConfirm'
+  /v1/cases/{caseId}/hits/{hitId}/dispose:
+    post:
+      tags:
+      - Review and cases
+      summary: Dispose a screening hit as confirmed or false_positive with a mandatory reason. A confirmed hit rejects the
+        session; a false-positive disposition lets the case proceed but flags it for four-eyes handling.
+      description: Dispose a screening hit as confirmed or false_positive with a mandatory reason. A confirmed hit rejects
+        the session; a false-positive disposition lets the case proceed but flags it for four-eyes handling.
+      operationId: disposeScreeningHit
+      security: *id003
+      responses:
+        '200':
+          description: Screening hit disposed
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '403':
+          description: The caller is authenticated but is not allowed to perform this operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '404':
+          description: The resource does not exist, or it belongs to another tenant or environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '409':
+          description: The current resource state conflicts with the requested operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '422':
+          description: Validation failed. Correct the named field or state and retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      parameters:
+      - *id008
+      - name: hitId
+        in: path
+        required: true
+        description: Screening-hit UUID belonging to the case.
+        schema:
+          type: string
+      - *id009
+      - *id010
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HitDisposition'
+  /v1/documents/{documentId}/image:
+    get:
+      tags:
+      - Review and cases
+      summary: Download a stored document image for an authorized tenant reviewer. Use side=back for the back image. Every
+        view is audited; this is not a public or signed URL.
+      description: Download a stored document image for an authorized tenant reviewer. Use side=back for the back image. Every
+        view is audited; this is not a public or signed URL.
+      operationId: getDocumentImage
+      security: *id003
+      responses:
+        '200':
+          description: Document image
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '404':
+          description: The resource does not exist, or it belongs to another tenant or environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+        '500':
+          description: An internal error occurred. Retry with backoff and contact the operator if it persists.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '503':
+          description: A required local capability or stored-data key is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+      parameters:
+      - name: documentId
+        in: path
+        required: true
+        description: Stored document UUID owned by the authenticated tenant and environment.
+        schema:
+          type: string
+      - name: side
+        in: query
+        required: false
+        description: Document side.
+        schema:
+          type: string
+          enum:
+          - front
+          - back
+          default: front
+  /v1/biometrics/{biometricId}/image:
+    get:
+      tags:
+      - Review and cases
+      summary: Download a stored biometric capture image for an authorized tenant reviewer. Every view is audited; this is
+        not a public or signed URL.
+      description: Download a stored biometric capture image for an authorized tenant reviewer. Every view is audited; this
+        is not a public or signed URL.
+      operationId: getBiometricImage
+      security: *id003
+      responses:
+        '200':
+          description: Biometric image
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '404':
+          description: The resource does not exist, or it belongs to another tenant or environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+        '500':
+          description: An internal error occurred. Retry with backoff and contact the operator if it persists.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '503':
+          description: A required local capability or stored-data key is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+      parameters:
+      - name: biometricId
+        in: path
+        required: true
+        description: Stored biometric capture UUID owned by the authenticated tenant and environment.
+        schema:
+          type: string
+  /v1/flow/session:
+    get:
+      tags:
+      - Hosted flow
+      summary: Read the current hosted-flow state, applicant summary, already-uploaded capture metadata, the authoritative
+        document registry and allowed documents for this session.
+      description: Read the current hosted-flow state, applicant summary, already-uploaded capture metadata, the authoritative
+        document registry and allowed documents for this session.
+      operationId: getFlowSession
+      security: &id011
+      - flowTokenBearer: []
+      - flowTokenHeader: []
+      responses:
+        '200':
+          description: Flow session state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowSession'
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+  /v1/flow/credential:
+    get:
+      tags:
+      - Hosted flow
+      summary: Read the applicant's own issued credential for this session, when one exists.
+      description: Read the applicant's own issued credential for this session, when one exists.
+      operationId: getFlowCredential
+      security: *id011
+      responses:
+        '200':
+          description: Issued credential
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  credential:
+                    $ref: '#/components/schemas/Credential'
+                  status:
+                    type: string
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '404':
+          description: The resource does not exist, or it belongs to another tenant or environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+  /v1/flow/consent:
+    post:
+      tags:
+      - Hosted flow
+      summary: Record consent, start the session, harvest the disclosed IP/location signals, and apply the VPN/proxy hard
+        gate. A detected VPN or proxy returns 403 before scanning starts.
+      description: Record consent, start the session, harvest the disclosed IP/location signals, and apply the VPN/proxy hard
+        gate. A detected VPN or proxy returns 403 before scanning starts.
+      operationId: submitFlowConsent
+      security: *id011
+      responses:
+        '200':
+          description: Consent recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  consented:
+                    type: boolean
+                  vpn_status:
+                    type: string
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '403':
+          description: The caller is authenticated but is not allowed to perform this operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '422':
+          description: Validation failed. Correct the named field or state and retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FlowConsent'
+  /v1/flow/document:
+    post:
+      tags:
+      - Hosted flow
+      summary: Upload the document front and, when captured together, its back. The hosted flow normally sends live-camera
+        frames. File upload is accepted by this endpoint for the flow's controlled cases; the Nigerian NIN slip is the named
+        upload exception and is the only type that may carry a typed claimed_number.
+      description: Upload the document front and, when captured together, its back. The hosted flow normally sends live-camera
+        frames. File upload is accepted by this endpoint for the flow's controlled cases; the Nigerian NIN slip is the named
+        upload exception and is the only type that may carry a typed claimed_number.
+      operationId: uploadFlowDocument
+      security: *id011
+      responses:
+        '201':
+          description: Document stored
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  document_id:
+                    type: string
+                    format: uuid
+                  kind:
+                    type: string
+                  issuing_country:
+                    type: string
+                  sides:
+                    type: integer
+                  has_expiry:
+                    type: boolean
+                  back_uploaded:
+                    type: boolean
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '413':
+          description: The request body exceeds the configured size limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '422':
+          description: Validation failed. Correct the named field or state and retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+              - kind
+              - issuing_country
+              - front
+              properties:
+                kind:
+                  type: string
+                  description: Document kind from the session's document_registry.
+                issuing_country:
+                  type: string
+                  description: ISO alpha-2 issuing country.
+                front:
+                  type: string
+                  format: binary
+                back:
+                  type: string
+                  format: binary
+                capture_meta:
+                  type: string
+                  description: JSON string describing capture method and per-side metadata.
+                claimed_number:
+                  type: string
+                  description: 'NIN slip only: the 11-digit number typed by the applicant. Rejected for every other document
+                    kind.'
+  /v1/flow/document/back:
+    post:
+      tags:
+      - Hosted flow
+      summary: Attach the back side to an existing two-sided flow document.
+      description: Attach the back side to an existing two-sided flow document.
+      operationId: uploadFlowDocumentBack
+      security: *id011
+      responses:
+        '201':
+          description: Document back stored
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  document_id:
+                    type: string
+                    format: uuid
+                  back_uploaded:
+                    type: boolean
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '404':
+          description: The resource does not exist, or it belongs to another tenant or environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '413':
+          description: The request body exceeds the configured size limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '422':
+          description: Validation failed. Correct the named field or state and retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+              - document_id
+              - back
+              properties:
+                document_id:
+                  type: string
+                  format: uuid
+                back:
+                  type: string
+                  format: binary
+                capture_meta:
+                  type: string
+  /v1/flow/presence:
+    post:
+      tags:
+      - Hosted flow
+      summary: Check one live frame for a usable face and return coaching guidance. The frame is decoded in memory and is
+        not stored.
+      description: Check one live frame for a usable face and return coaching guidance. The frame is decoded in memory and
+        is not stored.
+      operationId: probeFlowPresence
+      security: *id011
+      responses:
+        '200':
+          description: Presence guidance
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  face_present:
+                    type: boolean
+                  size_frac:
+                    type: number
+                  centred:
+                    type: boolean
+                  guidance:
+                    type: string
+                  detail:
+                    type: string
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '413':
+          description: The request body exceeds the configured size limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '422':
+          description: Validation failed. Correct the named field or state and retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+              - frame
+              properties:
+                frame:
+                  type: string
+                  format: binary
+  /v1/flow/selfie:
+    post:
+      tags:
+      - Hosted flow
+      summary: Upload the live selfie and optional same-second burst frames used by the continuous face track. The selfie
+        part is required; burst_0 through burst_4 are optional.
+      description: Upload the live selfie and optional same-second burst frames used by the continuous face track. The selfie
+        part is required; burst_0 through burst_4 are optional.
+      operationId: uploadFlowSelfie
+      security: *id011
+      responses:
+        '201':
+          description: Selfie stored
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  biometric_id:
+                    type: string
+                    format: uuid
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '413':
+          description: The request body exceeds the configured size limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '422':
+          description: Validation failed. Correct the named field or state and retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+              - selfie
+              properties:
+                selfie:
+                  type: string
+                  format: binary
+                burst_0:
+                  type: string
+                  format: binary
+                burst_1:
+                  type: string
+                  format: binary
+                burst_2:
+                  type: string
+                  format: binary
+                burst_3:
+                  type: string
+                  format: binary
+                burst_4:
+                  type: string
+                  format: binary
+                capture_meta:
+                  type: string
+  /v1/flow/liveness/challenge:
+    post:
+      tags:
+      - Hosted flow
+      summary: Issue a fresh server-generated movement challenge. The movement sequence comes from the server, never from
+        the client.
+      description: Issue a fresh server-generated movement challenge. The movement sequence comes from the server, never from
+        the client.
+      operationId: createFlowLivenessChallenge
+      security: *id011
+      responses:
+        '201':
+          description: Liveness challenge issued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  challenge:
+                    type: object
+                    additionalProperties: true
+                  instructions:
+                    type: string
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '422':
+          description: Validation failed. Correct the named field or state and retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+  /v1/flow/liveness:
+    post:
+      tags:
+      - Hosted flow
+      summary: Upload the active-liveness video for the previously issued challenge. WebM and MP4 filenames retain their media
+        extension; other filenames are stored as binary media.
+      description: Upload the active-liveness video for the previously issued challenge. WebM and MP4 filenames retain their
+        media extension; other filenames are stored as binary media.
+      operationId: uploadFlowLiveness
+      security: *id011
+      responses:
+        '201':
+          description: Liveness video stored
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  biometric_id:
+                    type: string
+                    format: uuid
+                  method:
+                    type: string
+                    enum:
+                    - active_challenge
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '413':
+          description: The request body exceeds the configured size limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '422':
+          description: Validation failed. Correct the named field or state and retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+              - video
+              properties:
+                video:
+                  type: string
+                  format: binary
+                capture_meta:
+                  type: string
+  /v1/flow/poa:
+    post:
+      tags:
+      - Hosted flow
+      summary: Upload the proof-of-address document for a Level 3 session.
+      description: Upload the proof-of-address document for a Level 3 session.
+      operationId: uploadFlowPoa
+      security: *id011
+      responses:
+        '201':
+          description: Proof of address stored
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  document_id:
+                    type: string
+                    format: uuid
+                  kind:
+                    type: string
+                    enum:
+                    - proof_of_address
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '413':
+          description: The request body exceeds the configured size limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '422':
+          description: Validation failed. Correct the named field or state and retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+              - document
+              properties:
+                document:
+                  type: string
+                  format: binary
+                capture_meta:
+                  type: string
+  /v1/flow/document/process:
+    post:
+      tags:
+      - Hosted flow
+      summary: 'Read the uploaded document and return the server''s read-back: extracted identity fields, missing required
+        fields, framing, quality and cross-engine evidence. A long read returns 202 with status=reading; poll the same endpoint
+        until it returns 200. A transport failure is never a document verdict.'
+      description: 'Read the uploaded document and return the server''s read-back: extracted identity fields, missing required
+        fields, framing, quality and cross-engine evidence. A long read returns 202 with status=reading; poll the same endpoint
+        until it returns 200. A transport failure is never a document verdict.'
+      operationId: processFlowDocument
+      security: *id011
+      responses:
+        '200':
+          description: Document read-back
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentRead'
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '404':
+          description: The resource does not exist, or it belongs to another tenant or environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '422':
+          description: Validation failed. Correct the named field or state and retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+        '500':
+          description: An internal error occurred. Retry with backoff and contact the operator if it persists.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '202':
+          description: The read is still running. Poll this endpoint.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcessingAccepted'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                document_id:
+                  type: string
+                  format: uuid
+  /v1/flow/document/claim:
+    post:
+      tags:
+      - Hosted flow
+      summary: Correct the typed NIN for an already-uploaded Nigerian NIN slip without re-uploading it. The corrected claim
+        is compared with the number read from the slip itself.
+      description: Correct the typed NIN for an already-uploaded Nigerian NIN slip without re-uploading it. The corrected
+        claim is compared with the number read from the slip itself.
+      operationId: correctFlowDocumentClaim
+      security: *id011
+      responses:
+        '200':
+          description: NIN claim corrected
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  claimed_number:
+                    type: string
+                  extracted_number:
+                    type:
+                    - string
+                    - 'null'
+                  match:
+                    type:
+                    - boolean
+                    - 'null'
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '404':
+          description: The resource does not exist, or it belongs to another tenant or environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '422':
+          description: Validation failed. Correct the named field or state and retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - document_id
+              - claimed_number
+              properties:
+                document_id:
+                  type: string
+                  format: uuid
+                claimed_number:
+                  type: string
+                  pattern: ^[0-9]{11}$
+  /v1/flow/submit:
+    post:
+      tags:
+      - Hosted flow
+      summary: Submit the completed session for the automatic decision. If processing is already running or takes longer than
+        the synchronous window, the endpoint returns 202 with status=processing; the tenant should read the session or wait
+        for session.completed rather than submitting repeatedly.
+      description: Submit the completed session for the automatic decision. If processing is already running or takes longer
+        than the synchronous window, the endpoint returns 202 with status=processing; the tenant should read the session or
+        wait for session.completed rather than submitting repeatedly.
+      operationId: submitFlowSession
+      security: *id011
+      responses:
+        '200':
+          description: Decision or final session view
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '422':
+          description: Validation failed. Correct the named field or state and retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+        '202':
+          description: Decision processing is running.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcessingAccepted'
+  /v1/flow/credential/revoke:
+    post:
+      tags:
+      - Hosted flow
+      summary: Let the applicant revoke their own issued credential from the hosted flow.
+      description: Let the applicant revoke their own issued credential from the hosted flow.
+      operationId: revokeFlowCredential
+      security: *id011
+      responses:
+        '200':
+          description: Credential revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  revoked:
+                    type: boolean
+                  credential_id:
+                    type: string
+                    format: uuid
+        '401':
+          description: Authentication is missing, invalid, revoked, or not valid for this resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '404':
+          description: The resource does not exist, or it belongs to another tenant or environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '422':
+          description: Validation failed. Correct the named field or state and retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers: {}
+        '429':
+          description: A rate limit or monthly live-verification quota was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - credential_id
+              properties:
+                credential_id:
+                  type: string
+                  format: uuid
+components:
+  securitySchemes:
+    tenantApiKey:
+      type: http
+      scheme: bearer
+      bearerFormat: Nova KYC API key
+      description: Tenant API key. Test keys use the kyc_test_ prefix and live keys use kyc_live_; the key selects the environment.
+        Keep keys on a server only.
+    platformAdmin:
+      type: apiKey
+      in: header
+      name: X-Platform-Admin
+      description: Platform-operator token. Tenant creation and operator administration fail closed when the server has no
+        platform token configured.
+    flowTokenBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: Hosted-flow token
+      description: Short-lived token returned when a session is created. It identifies one applicant session only and is used
+        by the hosted flow, not as a tenant credential.
+    flowTokenHeader:
+      type: apiKey
+      in: header
+      name: X-Flow-Token
+      description: Alternative presentation of the hosted-flow token.
+  headers:
+    RetryAfter:
+      description: Seconds until the rate-limit window frees a slot.
+      schema:
+        type: integer
+        minimum: 0
+  schemas:
+    Error:
+      type: object
+      required:
+      - error
+      properties:
+        error:
+          type: object
+          required:
+          - code
+          - message
+          properties:
+            code:
+              type: string
+              example: validation_error
+            message:
+              type: string
+              example: country required
+          additionalProperties: false
+      additionalProperties: false
+    Environment:
+      type: string
+      enum:
+      - test
+      - live
+    IdentitySource:
+      type: string
+      enum:
+      - declared
+      - document
+    SessionStatus:
+      type: string
+      enum:
+      - created
+      - in_progress
+      - processing
+      - approved
+      - rejected
+      - needs_review
+      - needs_more_information
+      - expired
+      - cancelled
+    CheckStatus:
+      type: string
+      enum:
+      - pass
+      - fail
+      - unclear
+      - error
+      - not_run
+    Applicant:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        env:
+          $ref: '#/components/schemas/Environment'
+        external_ref:
+          type:
+          - string
+          - 'null'
+          description: The integrating product's own user reference.
+        first_name:
+          type:
+          - string
+          - 'null'
+        last_name:
+          type:
+          - string
+          - 'null'
+        dob:
+          type:
+          - string
+          - 'null'
+          format: date
+        country:
+          type: string
+          description: ISO 3166-1 alpha-2 country code.
+        email:
+          type:
+          - string
+          - 'null'
+          format: email
+        phone:
+          type:
+          - string
+          - 'null'
+        address_line:
+          type:
+          - string
+          - 'null'
+        city:
+          type:
+          - string
+          - 'null'
+        identity_source:
+          $ref: '#/components/schemas/IdentitySource'
+        identity_document_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        data_deleted_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      additionalProperties: true
+    ApplicantCreate:
+      oneOf:
+      - $ref: '#/components/schemas/ApplicantCreateDeclared'
+      - $ref: '#/components/schemas/ApplicantCreateDocument'
+      description: Use the declared form only when the integrating product already has a lawful, reliable name and date of
+        birth to cross-check. The document form is the recommended default because the platform reads identity from the presented
+        document.
+    ApplicantCreateDeclared:
+      type: object
+      required:
+      - first_name
+      - last_name
+      - dob
+      - country
+      properties:
+        identity_source:
+          type: string
+          enum:
+          - declared
+          default: declared
+        first_name:
+          type: string
+          example: Adaeze
+        last_name:
+          type: string
+          example: Example
+        dob:
+          type: string
+          format: date
+          example: '1992-04-17'
+        country:
+          type: string
+          example: NG
+        external_ref:
+          type: string
+          example: user_12345
+        email:
+          type: string
+          format: email
+        phone:
+          type: string
+        address_line:
+          type: string
+        city:
+          type: string
+    ApplicantCreateDocument:
+      type: object
+      required:
+      - country
+      - identity_source
+      properties:
+        identity_source:
+          type: string
+          enum:
+          - document
+        country:
+          type: string
+          example: NG
+        external_ref:
+          type: string
+          example: user_12345
+        email:
+          type: string
+          format: email
+        phone:
+          type: string
+        address_line:
+          type: string
+        city:
+          type: string
+    SessionCreate:
+      description: 'Create a session in exactly one of three ways: for an existing applicant, inline as a document-sourced
+        session, or from a verified reusable credential.'
+      oneOf:
+      - type: object
+        required:
+        - applicant_id
+        - level
+        properties:
+          applicant_id:
+            type: string
+            format: uuid
+          level:
+            type: integer
+            enum:
+            - 1
+            - 2
+            - 3
+          expires_hours:
+            type: integer
+            minimum: 1
+            default: 24
+      - type: object
+        required:
+        - identity_source
+        - country
+        - level
+        properties:
+          identity_source:
+            type: string
+            enum:
+            - document
+          country:
+            type: string
+            example: NG
+          external_ref:
+            type: string
+          level:
+            type: integer
+            enum:
+            - 1
+            - 2
+            - 3
+          expires_hours:
+            type: integer
+            minimum: 1
+            default: 24
+      - type: object
+        required:
+        - credential
+        - level
+        properties:
+          credential:
+            $ref: '#/components/schemas/Credential'
+          level:
+            type: integer
+            enum:
+            - 1
+            - 2
+            - 3
+          expires_hours:
+            type: integer
+            minimum: 1
+            default: 24
+    SessionCreated:
+      type: object
+      required:
+      - id
+      - level
+      - env
+      - status
+      - applicant_id
+      - flow_url
+      - flow_token
+      - expires_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        level:
+          type: integer
+          enum:
+          - 1
+          - 2
+          - 3
+        env:
+          $ref: '#/components/schemas/Environment'
+        status:
+          $ref: '#/components/schemas/SessionStatus'
+        applicant_id:
+          type: string
+          format: uuid
+        identity_source:
+          $ref: '#/components/schemas/IdentitySource'
+        flow_url:
+          type: string
+          example: /flow/REPLACE_WITH_TOKEN
+          description: Path on the KYC host. Prepend https://kyc.novamail.store in production.
+        flow_token:
+          type: string
+          description: Sensitive one-session token. Do not log it or expose it to another user.
+        expires_at:
+          type: string
+          format: date-time
+        credential_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        inherited_checks:
+          type: array
+          items:
+            type: string
+    Decision:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        session_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        env:
+          $ref: '#/components/schemas/Environment'
+        outcome:
+          type: string
+          enum:
+          - approved
+          - rejected
+          - needs_review
+          - needs_more_information
+        decided_by:
+          type: string
+          example: engine
+        reason:
+          type:
+          - string
+          - 'null'
+        reason_codes:
+          type: array
+          items:
+            type: string
+        rules_version:
+          type: string
+        risk_score:
+          type:
+          - number
+          - 'null'
+        risk_band:
+          type:
+          - string
+          - 'null'
+          enum:
+          - low
+          - medium
+          - high
+          - null
+        risk_contributions:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        config_version:
+          type:
+          - integer
+          - string
+          - 'null'
+        created_at:
+          type: string
+          format: date-time
+      additionalProperties: true
+    Session:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        env:
+          $ref: '#/components/schemas/Environment'
+        applicant_id:
+          type: string
+          format: uuid
+        identity_source:
+          $ref: '#/components/schemas/IdentitySource'
+        level:
+          type: integer
+          enum:
+          - 1
+          - 2
+          - 3
+        status:
+          $ref: '#/components/schemas/SessionStatus'
+        expires_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        client_ip_masked:
+          type:
+          - string
+          - 'null'
+        ip_country:
+          type:
+          - string
+          - 'null'
+        vpn_status:
+          type:
+          - string
+          - 'null'
+        checks_summary:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/CheckStatus'
+        decision:
+          oneOf:
+          - $ref: '#/components/schemas/Decision'
+          - type: 'null'
+        credential:
+          $ref: '#/components/schemas/Credential'
+        case_id:
+          type: string
+          format: uuid
+      additionalProperties: true
+    Check:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        session_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        env:
+          $ref: '#/components/schemas/Environment'
+        type:
+          type: string
+          example: face_match
+        provider:
+          type:
+          - string
+          - 'null'
+        status:
+          $ref: '#/components/schemas/CheckStatus'
+        findings:
+          type: object
+          additionalProperties: true
+        reason_codes:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+      additionalProperties: true
+    Credential:
+      type: object
+      description: A signed reusable verification credential. It carries claims only, never document images or biometric data.
+      properties:
+        claims:
+          type: object
+          additionalProperties: true
+        signature:
+          type: string
+      additionalProperties: true
+    FlowConfig:
+      type: object
+      required:
+      - required_checks
+      - face_pass_threshold
+      - face_margin
+      - risk_auto_approve_ceiling
+      - poa_window_days
+      - screening_threshold
+      - sla_hours
+      - four_eyes
+      properties:
+        required_checks:
+          type: array
+          items:
+            type: string
+        face_pass_threshold:
+          type: number
+          minimum: 0
+          maximum: 1
+        face_margin:
+          type: number
+          minimum: 0
+          maximum: 1
+        risk_auto_approve_ceiling:
+          type: number
+          minimum: -1
+          maximum: 100
+        poa_window_days:
+          type: integer
+          minimum: 1
+        screening_threshold:
+          type: number
+          minimum: 0
+          maximum: 100
+        sla_hours:
+          type: integer
+          minimum: 1
+        four_eyes:
+          type: boolean
+    FlowConfigPatch:
+      type: object
+      minProperties: 1
+      description: Partial configuration. Unknown keys and out-of-range values are rejected with 422.
+      properties:
+        required_checks:
+          type: array
+          minItems: 1
+          items:
+            type: string
+        face_pass_threshold:
+          type: number
+          minimum: 0
+          maximum: 1
+        face_margin:
+          type: number
+          minimum: 0
+          maximum: 1
+        risk_auto_approve_ceiling:
+          type: number
+          minimum: -1
+          maximum: 100
+        poa_window_days:
+          type: integer
+          minimum: 1
+        screening_threshold:
+          type: number
+          minimum: 0
+          maximum: 100
+        sla_hours:
+          type: integer
+          minimum: 1
+        four_eyes:
+          type: boolean
+    WebhookCreate:
+      type: object
+      required:
+      - url
+      properties:
+        url:
+          type: string
+          format: uri
+          example: https://api.example.com/webhooks/nova-kyc
+          description: Public HTTP(S) receiver. Private, loopback, link-local and reserved targets are refused at delivery
+            by the SSRF guard.
+        events:
+          type: array
+          description: Implemented event names. An empty list subscribes to every event.
+          items:
+            type: string
+            enum:
+            - session.completed
+            - case.opened
+            - case.decided
+            - applicant.deleted
+            - screening.hit_new
+    WebhookCreated:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        url:
+          type: string
+          format: uri
+        secret:
+          type: string
+          description: Shown once. Store it in a secret manager.
+        note:
+          type: string
+    WebhookEndpoint:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        url:
+          type: string
+          format: uri
+        events:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+      additionalProperties: true
+    WebhookDelivery:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        endpoint_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        event:
+          type: string
+        payload:
+          type: string
+          description: The exact JSON body that was signed and delivered.
+        signature:
+          type: string
+        status:
+          type: string
+          enum:
+          - pending
+          - delivered
+          - failed
+          - dead_letter
+        attempts:
+          type: integer
+        response_summary:
+          type:
+          - string
+          - 'null'
+        next_attempt_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        dead_lettered_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+      additionalProperties: true
+    WebhookEvent:
+      type: object
+      required:
+      - event
+      - data
+      properties:
+        event:
+          type: string
+          enum:
+          - session.completed
+          - case.opened
+          - case.decided
+          - applicant.deleted
+          - screening.hit_new
+        data:
+          type: object
+          additionalProperties: true
+          description: Event-specific decision data. It never contains document images or raw biometric data.
+    TenantUserCreate:
+      type: object
+      required:
+      - name
+      - role
+      properties:
+        name:
+          type: string
+        role:
+          type: string
+          enum:
+          - admin
+          - reviewer
+    TenantUser:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        role:
+          type: string
+          enum:
+          - admin
+          - reviewer
+        token_prefix:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        revoked_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+      additionalProperties: true
+    BusinessCreate:
+      type: object
+      required:
+      - legal_name
+      - registration_number
+      - country
+      properties:
+        legal_name:
+          type: string
+        registration_number:
+          type: string
+        country:
+          type: string
+          description: Country with a registration-number format in the platform registry.
+    BusinessPersonCreate:
+      type: object
+      required:
+      - applicant_id
+      - role
+      properties:
+        applicant_id:
+          type: string
+          format: uuid
+        role:
+          type: string
+          enum:
+          - director
+          - ubo
+        ownership_pct:
+          type:
+          - number
+          - 'null'
+          minimum: 0
+          maximum: 100
+    Business:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        env:
+          $ref: '#/components/schemas/Environment'
+        legal_name:
+          type: string
+        registration_number:
+          type: string
+        country:
+          type: string
+        status:
+          type: string
+          enum:
+          - pending
+          - verified
+          - rejected
+        registry_status:
+          type: string
+        registry_source:
+          type:
+          - string
+          - 'null'
+        registry_checked_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        registry_lookup_status:
+          type:
+          - string
+          - 'null'
+        people:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        documents:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        screening_hits:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      additionalProperties: true
+    CaseDecision:
+      type: object
+      required:
+      - action
+      - reason
+      properties:
+        action:
+          type: string
+          enum:
+          - approve
+          - reject
+          - request_more
+        reason:
+          type: string
+          minLength: 1
+    CaseConfirm:
+      type: object
+      required:
+      - reason
+      properties:
+        reason:
+          type: string
+          minLength: 1
+    HitDisposition:
+      type: object
+      required:
+      - disposition
+      - reason
+      properties:
+        disposition:
+          type: string
+          enum:
+          - confirmed
+          - false_positive
+        reason:
+          type: string
+          minLength: 1
+    CredentialVerifyRequest:
+      type: object
+      required:
+      - credential
+      properties:
+        credential:
+          $ref: '#/components/schemas/Credential'
+    CredentialVerifyResponse:
+      type: object
+      required:
+      - valid
+      properties:
+        valid:
+          type: boolean
+        reason:
+          type: string
+        claims:
+          type: object
+          additionalProperties: true
+    FlowConsent:
+      type: object
+      properties:
+        text_version:
+          type: string
+        locale:
+          type: string
+          example: en
+        device_tz:
+          type: string
+          example: Africa/Lagos
+          description: IANA timezone reported by the applicant device; used only as a corroborating location signal.
+        webrtc_ips:
+          type: array
+          items:
+            type: string
+          description: WebRTC candidate addresses reported by the flow for the VPN/proxy assessment.
+    FlowSession:
+      type: object
+      properties:
+        session:
+          type: object
+          additionalProperties: true
+        applicant:
+          $ref: '#/components/schemas/Applicant'
+        documents:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        document_registry:
+          type: object
+          additionalProperties: true
+          description: Authoritative per-country document facts used by the flow, including label, side count, expiry behaviour
+            and machine-readable-zone location.
+        selfie_uploaded:
+          type: boolean
+        liveness_uploaded:
+          type: boolean
+        liveness_challenge:
+          type:
+          - object
+          - 'null'
+          additionalProperties: true
+        poa_uploaded:
+          type: boolean
+        credential_issued:
+          type: boolean
+        allowed_docs:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+        consent_text_version:
+          type: string
+    DocumentRead:
+      type: object
+      properties:
+        document_id:
+          type: string
+          format: uuid
+        document_label:
+          type: string
+        framing:
+          type: object
+          additionalProperties: true
+        read:
+          type: object
+          properties:
+            first_name:
+              type:
+              - string
+              - 'null'
+            last_name:
+              type:
+              - string
+              - 'null'
+            dob:
+              type:
+              - string
+              - 'null'
+            number:
+              type:
+              - string
+              - 'null'
+            expiry:
+              type:
+              - string
+              - 'null'
+          additionalProperties: true
+        missing:
+          type: array
+          items:
+            type: string
+        complete:
+          type: boolean
+        quality:
+          type: object
+          additionalProperties: true
+        cross_engine:
+          type: object
+          additionalProperties: true
+      additionalProperties: true
+    ProcessingAccepted:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+          - processing
+          - reading
+        session_id:
+          type: string
+          format: uuid
+        document_id:
+          type: string
+          format: uuid
+    TenantCreate:
+      type: object
+      required:
+      - name
+      properties:
+        name:
+          type: string
+        country:
+          type: string
+    TenantCreated:
+      type: object
+      properties:
+        tenant:
+          type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            name:
+              type: string
+        keys:
+          type: object
+          additionalProperties:
+            type: object
+            additionalProperties: true
+    PlatformPriceCreate:
+      type: object
+      required:
+      - level
+      - env
+      - unit_price_cents
+      properties:
+        level:
+          type: integer
+          enum:
+          - 1
+          - 2
+          - 3
+        env:
+          $ref: '#/components/schemas/Environment'
+        unit_price_cents:
+          type: integer
+          minimum: 0
+        currency:
+          type: string
+          default: USD
+        tenant_id:
+          type: string
+          format: uuid
+    PlatformQuotaCreate:
+      type: object
+      required:
+      - tenant_id
+      - monthly_limit
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+        monthly_limit:
+          type: integer
+          minimum: 0
+    PlatformInvoiceCreate:
+      type: object
+      required:
+      - tenant_id
+      - period_start
+      - period_end
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+        env:
+          $ref: '#/components/schemas/Environment'
+        period_start:
+          type: string
+          format: date-time
+        period_end:
+          type: string
+          format: date-time
+    MfaCode:
+      type: object
+      required:
+      - code
+      properties:
+        code:
+          type: string
+          pattern: ^[0-9]{6}$
+    RegistryDecision:
+      type: object
+      required:
+      - status
+      - reason
+      properties:
+        status:
+          type: string
+          enum:
+          - confirmed
+          - rejected
+        reason:
+          type: string
+          minLength: 1
+security: []
