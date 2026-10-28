@@ -98,6 +98,30 @@ class TestAnalyseWeakPresence(unittest.TestCase):
         self.assertEqual(r["status"], "fail", r)
         self.assertIn("liveness_face_absent", r["reason_codes"])
 
+    def test_vertical_movement_uses_vertical_threshold(self):
+        # The session-15 shape: a genuine look-UP moves the centre
+        # only ~0.029 (pitch rotates more than it translates), well
+        # under the 0.045 horizontal bar but ~10x the detector jitter.
+        # Centres: settle, turn left (cx -0.06), then look up.
+        cs = ([(0.50, 0.50)] * 2
+              + [(0.47, 0.49), (0.44, 0.49), (0.44, 0.49)]
+              + [(0.44, 0.48), (0.44, 0.466), (0.44, 0.461), (0.44, 0.463)]
+              + [(0.44, 0.47)] * 3)
+        feats = [_feat(True, True, cx=x, cy=y, pix=9.0 + i) for i, (x, y) in enumerate(cs)]
+        r = LV.analyse_features(feats, {"movements": ["left", "up"]})
+        self.assertEqual(r["status"], "pass", r)
+        self.assertEqual(r["findings"]["movements_made"], ["left", "up"])
+
+    def test_tiny_vertical_dip_still_incomplete(self):
+        cs = ([(0.50, 0.50)] * 2
+              + [(0.47, 0.49), (0.44, 0.49), (0.44, 0.49)]
+              + [(0.44, 0.485), (0.44, 0.48), (0.44, 0.482)]
+              + [(0.44, 0.485)] * 3)
+        feats = [_feat(True, True, cx=x, cy=y, pix=9.0 + i) for i, (x, y) in enumerate(cs)]
+        r = LV.analyse_features(feats, {"movements": ["left", "up"]})
+        self.assertEqual(r["status"], "unclear", r)
+        self.assertEqual(r["findings"]["movements_made"], ["left"])
+
     def test_legacy_features_without_strict_flag_count_as_strict(self):
         feats = [{"face": True, "cx": 0.5 - 0.02 * i, "cy": 0.5, "size": 0.3,
                   "pix_std": 10.0} for i in range(6)]
