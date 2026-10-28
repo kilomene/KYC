@@ -490,3 +490,85 @@ Regressions: identity-from-document + live-scanner 38/38.
 Live-verified on production after restart: blank frame →
 no_face_seen; the owner's own photo → face_present, centred,
 guidance ok.
+
+## Developer layer (2026-10-27, owner's phase choice — direction 2)
+
+Built for external integrators, in the order an integration
+actually touches them:
+
+- Webhook endpoint self-service: GET /v1/webhooks (list, existed),
+  POST /v1/webhooks (register, existed), and NEW
+  DELETE /v1/webhooks/{id} — a tenant removes its OWN endpoint
+  (cross-tenant ids 404, isolation-tested); its deliveries are
+  removed with it and the deletion is audited. This replaces the
+  placeholder-endpoint problem structurally: Payments/Exchange
+  can now retire the loopback proof endpoints themselves when
+  they wire in their real ones.
+- Platform tenant-delete: DELETE /v1/platform/tenants/{id},
+  X-Platform-Admin gated, requires {"confirm": "<tenant_id>"}.
+  Cascades the tenant's OPERATIONAL data (api_keys, sessions
+  graph — documents, captures, checks, decisions, cases,
+  credentials — applicants, businesses + their people/documents,
+  webhook endpoints/deliveries, flow_configs, tenant_users,
+  screening_hits, monitoring_alerts, fraud_index, quotas) and
+  its stored media files; RETAINS audit_log, deletions,
+  invoices and usage_events (the financial/audit trail survives
+  the tenant). The deletion itself is recorded in both retained
+  tables. FIRST USE, same day: the two standing "Probe Tenant"
+  rows (2026-10-26 bootstrap probes) were deleted through it —
+  production tenants are now exactly Owner Test, Nova Payments,
+  Agent Exchange.
+- Tenant dashboard: public/dashboard.html at /dashboard —
+  paste-key (sessionStorage only), shows current-period usage
+  (per-level counts/amounts summed client-side from
+  GET /v1/usage), invoices, webhook endpoints WITH removal
+  wired to the new DELETE, and recent sessions.
+- JavaScript SDK: sdk/kyc.mjs — zero-dependency ESM client
+  (applicants, sessions, businesses + registry check, webhooks,
+  usage/invoices, flow config) plus verifyWebhookSignature.
+  INTEROP-PROVEN against the Python signer: the SDK verifies a
+  server.webhooks.sign header and rejects a tampered body.
+- Integration guide: docs/INTEGRATION.md — keys/environments,
+  the 4-step flow pattern, webhook signing contract (raw body,
+  shown-once secret, SSRF rule), KYB registry honesty, usage/
+  dashboard, error model, erasure.
+
+Tests: tests/test_devlayer.py 4/4 (endpoint delete + cross-
+tenant 404; tenant-delete gates 403/422, cascade counts, key
+dead after, retained-trail rows present, second delete 404;
+dashboard served). Live-verified on production: register →
+delete → list-empty on the owner tenant; both Probe Tenants
+deleted through the API (2 keys each).
+
+## Incident addendum (2026-10-27 evening): the "healthy" lie + apt/proxy
+
+During the developer-layer regression pass, the billing e2e
+failed with ocr='error' — a VM replacement had wiped tesseract
+while kyc.service stayed up and /healthz kept answering 200.
+Two fixes came out of it:
+
+1. /healthz is now capability-aware: it probes for the
+   tesseract binary and answers 503 {"ok": false, "missing":
+   ["tesseract"]} when absent, so the existing watchdog's
+   recovery actually fires for this class (previously it only
+   fired when the process was down).
+2. Recovery of the binary itself was a fight worth recording:
+   recover.sh's apt path wedged because (a) sudo strips the
+   live proxy env, (b) the saved proxy credential in
+   ~/.vm-agent/proxy.env is STALE (rotated — same host,
+   different value), and (c) even with working credentials,
+   apt's fetches from the configured cogent mirror (and
+   intermittently azure) return 407 through the egress proxy
+   while curl through the same proxy succeeds. An apt proxy
+   drop-in (/etc/apt/apt.conf.d/99-muse-proxy, 600) now carries
+   the live credentials — it will stale again on the next
+   credential rotation; the durable fix is in recover.sh: a
+   bounded apt attempt, then a curl fallback fetching the exact
+   noble .deb set (giflib, leptonlib, tesseract-lang eng/osd,
+   libtesseract5, tesseract-ocr) from archive.ubuntu.com +
+   dpkg -i. That fallback is what actually restored OCR
+   (tesseract 5.3.4, eng+osd). The cogent URI was also removed
+   from ubuntu.sources (backup kept alongside).
+   Post-restore proof: the previously failing billing e2e
+   passes (decision approved, exactly one sandbox event
+   metered); isolation suite OK.
