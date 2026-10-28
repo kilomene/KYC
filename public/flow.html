@@ -143,6 +143,7 @@ pre{background:#f6f6f6;padding:.6rem;overflow:auto;font-size:.8rem;white-space:p
   <div class="faceoval" id="selfie-oval"></div>
 </div>
 <p class="hint" id="selfie-hint">Starting camera…</p>
+<p class="hint" id="selfie-coach" style="color:#1d4ed8"></p>
 <div class="progress"><div id="selfie-progress"></div></div>
 </section>
 
@@ -156,6 +157,7 @@ pre{background:#f6f6f6;padding:.6rem;overflow:auto;font-size:.8rem;white-space:p
   <div class="faceoval" id="lv-oval"></div>
 </div>
 <p class="hint" id="lv-hint">Starting camera…</p>
+<p class="hint" id="lv-coach" style="color:#1d4ed8"></p>
 </section>
 
 <section class="step" id="s-poa">
@@ -178,6 +180,7 @@ pre{background:#f6f6f6;padding:.6rem;overflow:auto;font-size:.8rem;white-space:p
 <section class="step" id="s-status">
 <h2>Your verification</h2>
 <p id="status"></p>
+<p id="status-coach" style="color:#1d4ed8"></p>
 <div id="cred" style="display:none">
 <h3>Your verified credential</h3>
 <p>This credential proves your verification to other businesses that use this platform, without sharing your documents. You can revoke it at any time.</p>
@@ -1320,6 +1323,11 @@ async function finishDocStep(){
     $('doc-read-text').textContent = (nm || '—') + ' · ' + (r.document_label || '') + (rd.number ? ' ' + rd.number : '')
       + (rd.dob ? ' · born ' + rd.dob : '') + (rd.expiry ? ' · expires ' + rd.expiry : '');
     $('doc-read-note').textContent = 'This is what the document itself says — nothing was typed. If anything looks wrong, rescan: a clearer scan reads better.';
+    if(r.portrait && r.portrait.found && r.portrait.size_frac !== null && r.portrait.size_frac !== undefined && r.portrait.size_frac < 0.06){
+      // Small printed portrait = weak face-match reference: coach a
+      // closer scan NOW, before the selfie is matched against it.
+      $('doc-read-note').textContent += ' One more thing: the photo printed on your document came out small in this scan — a closer, straighter scan gives a bigger portrait for your selfie to match against.';
+    }
     $('btn-doc-continue').style.display = '';
     VOICE.say('doc_read_ok', true);
   }else{
@@ -1524,9 +1532,53 @@ const selfieScanner = makeAutoScanner({
     info.selfie_uploaded = true; msg('Selfie captured.'); nextStep();
   }
 });
+// ---------------- server-verdict face coaching ----------------
+// The client heuristics gate capture; the PRODUCTION detector has
+// the final word on whether a usable face is in frame. A probe
+// sends ONE live frame to /v1/flow/presence (nothing is stored)
+// and the answer drives specific coaching copy. Probes never block
+// capture: they coach alongside the existing auto-scanner.
+let _presenceBusy = false;
+async function probePresence(video){
+  if(_presenceBusy) return null;
+  _presenceBusy = true;
+  try{
+    const w = video.videoWidth, h = video.videoHeight;
+    if(!w || !h) return null;
+    const c = document.createElement('canvas');
+    const scale = Math.min(1, 480 / w);
+    c.width = Math.round(w * scale); c.height = Math.round(h * scale);
+    c.getContext('2d').drawImage(video, 0, 0, c.width, c.height);
+    const blob = await new Promise(res => c.toBlob(res, 'image/jpeg', 0.8));
+    if(!blob) return null;
+    const fd = new FormData(); fd.append('frame', blob, 'frame.jpg');
+    return await api('POST', '/v1/flow/presence', fd, true, true);
+  }catch(e){ return null; }
+  finally{ _presenceBusy = false; }
+}
+const PRESENCE_COPY = {
+  no_face_seen: 'We can\'t see your face yet — face the camera and fill the oval with your face.',
+  move_closer: 'Your face is small in the frame — move closer until it fills the oval.',
+  centre_your_face: 'Centre your face inside the oval.',
+  frame_unreadable: 'Still looking for your face…'
+};
+function coachFromPresence(el, p){
+  if(!p) return;
+  if(!p.face_present){ el.textContent = PRESENCE_COPY[p.guidance] || PRESENCE_COPY.no_face_seen; return; }
+  if(p.guidance === 'ok'){ el.textContent = '✓ Face found, looking good.'; return; }
+  el.textContent = PRESENCE_COPY[p.guidance] || '';
+}
+
 function enterSelfieStep(){
   show('s-selfie');
   selfieScanner.start('user').catch(()=>{ camRetry = enterSelfieStep; });
+  // Coach with the server's verdict while the auto-scanner works.
+  const coachTimer = setInterval(async () => {
+    if(!$('s-selfie').classList.contains('on') || info.selfie_uploaded){ clearInterval(coachTimer); return; }
+    const p = await probePresence($('selfie-video'));
+    if(p && !$('s-selfie').classList.contains('on')) return;
+    coachFromPresence($('selfie-coach'), p);
+  }, 1500);
 }
 
 // ---------------- liveness step (fully automatic) ----------------
@@ -1547,10 +1599,27 @@ async function enterLivenessStep(){
   try{ stream = await startCam($('lv-video'), 'user'); noteTrackLabel(stream); }
   catch(e){ camRetry = enterLivenessStep; return; }
   lvGuide.show('lv_wait'); VOICE.say('lv_wait');
-  const waitFace = setInterval(() => {
+  // Recording starts when the client gate sees a face AND the
+  // production detector confirms one (probed live). Escapes keep a
+  // genuine user un-trappable: if the presence service is
+  // unreachable for 20s, or 35s pass on client evidence alone,
+  // recording starts anyway — the server still judges the video.
+  let lvServerFace = null;
+  const lvWaitStart = Date.now();
+  const waitFace = setInterval(async () => {
     if(!$('s-liveness').classList.contains('on')){ clearInterval(waitFace); return; }
     const fr = analyseFrame($('lv-video'));
-    if(fr && faceMetrics(fr).present && fr.mean >= 45){
+    const clientOk = !!(fr && faceMetrics(fr).present && fr.mean >= 45);
+    if(clientOk){
+      const p = await probePresence($('lv-video'));
+      if(p){
+        lvServerFace = p.face_present;
+        if(p.face_present && p.guidance === 'ok') $('lv-coach').textContent = '✓ Face found — hold still, the recording starts by itself.';
+        else coachFromPresence($('lv-coach'), p);
+      }
+    }
+    const waited = Date.now() - lvWaitStart;
+    if(clientOk && (lvServerFace === true || (lvServerFace === null && waited > 20000) || waited > 35000)){
       clearInterval(waitFace);
       recordLiveness(stream);
     }
@@ -1673,6 +1742,10 @@ $('btn-resume').onclick = () => { VOICE.prime('welcome_back'); nextStep(); };
   level = info.session.level; registry = info.document_registry || {};
   if(['approved','rejected','needs_review','needs_more_information'].includes(info.session.status)){
     show('s-status'); $('status').textContent = 'Status: '+info.session.status;
+    if(['rejected','needs_review'].includes(info.session.status)){
+      const _rs = (info.session.decision && info.session.decision.reason_codes) || (info.decision && info.decision.reason_codes) || [];
+      for(const [codes, line] of RESULT_COACH){ if(codes.some(c => _rs.includes(c))){ $('status-coach').textContent = line; break; } }
+    }
     if(info.session.status === 'approved' && info.credential_issued){
       try{ const c = await api('GET', '/v1/flow/credential');
         if(c.credential){ $('cred').style.display = 'block'; $('cred-json').textContent = JSON.stringify(c.credential.claims, null, 1); }
@@ -1685,9 +1758,27 @@ $('btn-resume').onclick = () => { VOICE.prime('welcome_back'); nextStep(); };
   else if(info.session.vpn_status === 'detected') show('s-vpn');
   else show('s-resume');
 })();
-function renderSubmitOutcome(st, credential){
+// Capture-quality coaching on the result screen: when a decision
+// turned on HOW the media was captured (not on fraud signals),
+// tell the applicant exactly what to do differently next time.
+const RESULT_COACH = [
+  [['face_mismatch', 'face_match_unclear'], 'Your selfie did not clearly match the photo on your document. Next time: bright, even light, face the camera straight on, and use a closer, sharper scan of the document so its printed photo is bigger.'],
+  [['face_track_identity_break', 'face_track_low_presence'], 'Keep your face in the frame the whole time — looking away, or anything covering your face, breaks the check.'],
+  [['liveness_face_absent', 'liveness_static_replay', 'liveness_challenge_incomplete', 'liveness_movement_unclear', 'liveness_too_few_frames'], 'During the live check, keep your face inside the oval for the whole recording and follow each head movement slowly, one at a time.'],
+  [['document_photo_small', 'portrait_not_found'], 'The photo on your document was hard to use — a closer, flatter scan of the document, filling the frame, reads best.']
+];
+function renderSubmitOutcome(st, credential, reasons){
   $('out').innerHTML = '';
   show('s-status'); $('status').textContent = 'Status: '+st+(st === 'needs_review' ? ' — a reviewer will check your documents.' : st === 'rejected' ? ' — the checks did not pass. The business can send you a new link to try again.' : '');
+  const coachEl = $('status-coach');
+  if(coachEl){
+    coachEl.textContent = '';
+    if((st === 'rejected' || st === 'needs_review') && Array.isArray(reasons)){
+      for(const [codes, line] of RESULT_COACH){
+        if(codes.some(c => reasons.includes(c))){ coachEl.textContent = line; break; }
+      }
+    }
+  }
   if(st === 'approved' && credential){ $('cred').style.display = 'block'; $('cred-json').textContent = JSON.stringify(credential.claims, null, 1); }
 }
 async function pollSubmitOutcome(){
@@ -1706,7 +1797,9 @@ async function pollSubmitOutcome(){
       if(st === 'approved' && inf.credential_issued){
         try{ const c = await api('GET', '/v1/flow/credential'); if(c.credential) cred = c.credential; }catch(e){}
       }
-      renderSubmitOutcome(st, cred);
+      const reasons = (inf.session && inf.session.decision && inf.session.decision.reason_codes)
+        || (inf.decision && inf.decision.reason_codes) || [];
+      renderSubmitOutcome(st, cred, reasons);
       return;
     }
     // Back to a submittable state (the pass failed and was reverted):
@@ -1725,7 +1818,7 @@ $('btn-submit').onclick = async () => {
       pollSubmitOutcome();
       return;
     }
-    renderSubmitOutcome(r.status, r.credential);
+    renderSubmitOutcome(r.status, r.credential, (r.decision && r.decision.reason_codes) || []);
   }catch(e){ msg(e.message, true); } };
 $('btn-revoke').onclick = async () => {
   try{ await api('POST', '/v1/flow/credential/revoke', {}); $('cred').style.display = 'none'; msg('Credential revoked.'); }catch(e){ msg(e.message, true); } };
