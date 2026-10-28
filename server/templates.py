@@ -66,7 +66,12 @@ FULL_TEMPLATES = {
         "aspect": 1.586, "portrait_zone": (0.02, 0.15, 0.36, 0.88), "portrait_expected": True, "pattern_expected": True,
         "labels": ["DRIVER", "LICENCE", "NIGERIA"], "number_zone": (0.36, 0.05, 0.98, 0.42), "mrz_zone": None},
     ("NG", "voter_card"): {
-        "aspect": 1.586, "portrait_zone": (0.02, 0.15, 0.36, 0.88), "portrait_expected": True, "pattern_expected": True,
+        # Portrait zone corrected 2026-10-28: the INEC PVC prints the
+        # portrait on the RIGHT (specimen dossier estimate
+        # (0.66, 0.30, 0.97, 0.78); owner's genuine sample agrees) —
+        # the template carried the driver's-licence left zone, so a
+        # found portrait on a genuine card scored as misplaced.
+        "aspect": 1.586, "portrait_zone": (0.66, 0.30, 0.97, 0.78), "portrait_expected": True, "pattern_expected": True,
         "labels": ["VOTER", "INEC", "NIGERIA"], "number_zone": (0.36, 0.05, 0.98, 0.42), "mrz_zone": None},
     ("NG", "nin_card"): {
         "aspect": 1.586, "portrait_zone": (0.02, 0.15, 0.36, 0.88), "portrait_expected": True, "pattern_expected": True,
@@ -210,7 +215,13 @@ GENERIC_TD3 = {
     "aspect": 1.42, "portrait_zone": (0.03, 0.15, 0.42, 0.78), "portrait_expected": True, "pattern_expected": True,
     "labels": ["PASSPORT"], "number_zone": (0.45, 0.05, 0.98, 0.35), "mrz_zone": "bottom"}
 
-_LABEL_ALIASES = {"LICENCE": ("LICENCE", "LICENSE"), "LICENSE": ("LICENSE", "LICENCE")}
+_LABEL_ALIASES = {"LICENCE": ("LICENCE", "LICENSE"), "LICENSE": ("LICENSE", "LICENCE"),
+                  # INEC's small logo acronym rarely survives OCR of a
+                  # photographed PVC; the commission's full name is
+                  # printed large directly under the federal header
+                  # (calibration 2026-10-28: genuine PVCs found 1/3
+                  # labels — NIGERIA only — and failed classification).
+                  "INEC": ("INEC", "ELECTORAL COMMISSION", "NATIONAL ELECTORAL")}
 
 # Country-anchor words: the issuing-country names authorities print
 # on their documents. A template label containing one of these words
@@ -224,6 +235,11 @@ _LABEL_ALIASES = {"LICENCE": ("LICENCE", "LICENSE"), "LICENSE": ("LICENSE", "LIC
 # the labels fraction is capped — generic words alone cannot carry a
 # cross-country claim. Countries whose cards carry no single federal
 # phrase (US state-issued cards) have no entry and are unchanged.
+_ALPHA3 = {"NG": "NGA", "US": "USA", "CA": "CAN", "GB": "GBR", "AU": "AUS",
+           "DE": "DEU", "GH": "GHA", "KE": "KEN", "ZA": "ZAF", "IN": "IND",
+           "PH": "PHL", "SG": "SGP", "AE": "ARE", "FR": "FRA", "NL": "NLD",
+           "IE": "IRL"}
+
 _COUNTRY_ANCHOR_WORDS = {
     "NG": ("NIGERIA",), "GH": ("GHANA",), "KE": ("KENYA",),
     "ZA": ("SOUTH AFRICA",), "AU": ("AUSTRALIA",), "IN": ("INDIA",),
@@ -403,31 +419,49 @@ def check_classification(image_path, country, kind, ocr_text="", mrz_parsed=None
             aspect_rec["frame_match"] = frame_frac
             a_frac = max(a_frac, frame_frac)
             aspect_rec["match"] = a_frac
+    aspect_neutral = False
     if not warped:
         # No document-space measure exists (framing found no quad):
         # the frame's aspect is the PHONE's, not the document's, and
         # scoring it against the template manufactures a mismatch on
         # genuine hand-held captures (measured 2026-10-27: a genuine
         # CA licence, card upright inside a portrait phone frame,
-        # scored aspect 0). Mirror the portrait element's convention
-        # below: absence of evidence is neutral-low, never proof
-        # against the claim. Framing quality is gated separately.
+        # scored aspect 0). Absence of evidence is not evidence: the
+        # element is EXCLUDED from the score (2026-10-28 — as a 0.48
+        # drag it capped genuine hand-held documents below the pass
+        # line no matter how well the evidenced elements scored;
+        # measured on the owner's genuine INEC PVCs). Framing quality
+        # is gated separately.
         aspect_rec["frame_only"] = True
-        a_frac = 0.48
-        aspect_rec["match"] = a_frac
+        aspect_rec["match"] = None
+        aspect_rec["neutral"] = True
+        aspect_neutral = True
     findings["elements"]["aspect"] = aspect_rec
-    scored.append((25, a_frac))
+    if not aspect_neutral:
+        scored.append((25, a_frac))
     # --- portrait position (YuNet on the document image) ---
     if tpl.get("portrait_expected"):
         face = None
         try: face = FACE.largest_face(img)
         except Exception: face = None
+        if face is not None and float(face[2]) < 0.05 * w:
+            # Detector noise, not a portrait (2026-10-28): YuNet
+            # returned a 1.4%-of-frame box on the genuine INEC PVC's
+            # glare/texture, which then scored as a MISPLACED portrait
+            # (0.16) — manufactured evidence against a genuine card.
+            # A printed document portrait is never that small; treat
+            # sub-5% boxes as not found (neutral, excluded below).
+            face = None
         if face is None:
             # Not proof of absence (glare, print quality, a drawn
-            # stand-in): neutral-low. A face in the WRONG place is the
-            # strong tell, scored below.
-            findings["elements"]["portrait"] = {"found": False, "position_match": None}
-            scored.append((25, 0.48))
+            # stand-in): the element is EXCLUDED from the score
+            # (2026-10-28, same recalibration as the aspect element —
+            # a 0.48 drag here plus a neutral aspect made the pass
+            # line unreachable for genuine hand-held captures).
+            # A face in the WRONG place is the strong tell, scored
+            # below when a face IS found.
+            findings["elements"]["portrait"] = {"found": False, "position_match": None,
+                                                "neutral": True}
         else:
             box = (float(face[0]) / w, float(face[1]) / h, (float(face[0]) + float(face[2])) / w, (float(face[1]) + float(face[3])) / h)
             inside = _inside(_centre(box), tpl["portrait_zone"], pad=0.08)
@@ -435,6 +469,7 @@ def check_classification(image_path, country, kind, ocr_text="", mrz_parsed=None
                                                 "position_match": inside}
             scored.append((25, 1.0 if inside else 0.16))
     # --- expected labels ---
+    anchor_absent = False
     labels = tpl.get("labels") or []
     if labels:
         up = (ocr_text or "").upper()
@@ -453,6 +488,7 @@ def check_classification(image_path, country, kind, ocr_text="", mrz_parsed=None
             # words cannot carry the element (see _COUNTRY_ANCHOR_WORDS).
             labels_frac = min(labels_frac, 0.34)
             labels_rec["anchor_missing"] = anchor_labels
+            anchor_absent = True
         findings["elements"]["labels"] = labels_rec
         scored.append((25, labels_frac))
     # --- document-number zone read ---
@@ -510,8 +546,48 @@ def check_classification(image_path, country, kind, ocr_text="", mrz_parsed=None
         scored.append((15, 0.0 if present else 1.0))
     total_w = sum(wt for wt, _ in scored) or 1
     score = round(100 * sum(wt * fr for wt, fr in scored) / total_w, 1)
+    findings["scored_elements"] = len(scored)
+    if anchor_absent and score >= PASS_SCORE:
+        # Country-anchor guard (2026-10-28): with neutral elements
+        # excluded from the denominator, a cross-country claim could
+        # otherwise ride generic labels + a readable number zone over
+        # the pass line. A claim whose own country anchor never
+        # appeared cannot pass, whatever the evidenced elements say
+        # (the labels-fraction cap above stays as the element-level
+        # expression of the same rule). Exemption: a check-digit-valid
+        # MRZ whose issuing state IS the claimed country is itself
+        # country-grade evidence — the anchor word going unread in
+        # the VIZ must not convict a cryptographically consistent
+        # document (the synthetic NG passport fixture: VIZ labels
+        # read PASSPORT only, MRZ valid and NGA-issued).
+        _l1 = (mrz_parsed or {}).get("line1") or ""
+        if not _l1 and ocr_text:
+            # The band probe can return a valid parse whose line 1
+            # fell outside the probed strip; the caller's full OCR
+            # text usually carries both lines — re-parse for line 1
+            # before judging the issuing state.
+            try:
+                from . import checks as _CHECKS
+                _full = _CHECKS.parse_mrz(ocr_text)
+                if _full:
+                    _l1 = _full.get("line1") or ""
+            except Exception:
+                pass
+        _issuing = _l1[2:5].rstrip("<") if len(_l1) >= 5 else ""
+        if mrz_parsed and mrz_parsed.get("valid") and _issuing and \
+                _issuing == _ALPHA3.get((country or "").upper(), ""):
+            findings["anchor_via_mrz"] = _issuing
+        else:
+            score = round(PASS_SCORE - 0.1, 1)
+            findings["anchor_capped"] = True
     findings["score"] = score
     findings["pass_threshold"] = PASS_SCORE
+    if len(scored) < 2:
+        # Too little evidence was measurable to judge the claim at
+        # all (e.g. no quad, no portrait, no labels, no zone read):
+        # unclear, never a manufactured pass or fail.
+        return {"status": "unclear", "findings": findings,
+                "reason_codes": ["classification_evidence_insufficient"]}
     if score >= PASS_SCORE:
         return {"status": "pass", "findings": findings, "reason_codes": []}
     if level == "full":
