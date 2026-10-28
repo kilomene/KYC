@@ -441,3 +441,52 @@ advanced, full intelligence, full capabilities"):**
   production secret or real person's data was involved
   (production data/ was always excluded). Post-fix push
   verified 0 mismatches.
+
+## Liveness coaching + capture hardening (2026-10-27, owner's phase choice)
+
+The owner picked direction 1 of the post-programme options —
+fix the genuine-user capture experience first (the session-13
+lesson: his acceptance test was rejected on CAPTURE quality,
+not fraud: face presence 0.241 across the track, liveness face
+ratio 0.067). Shipped and live:
+
+- POST /v1/flow/presence — the flow sends ONE live frame; the
+  PRODUCTION YuNet detector answers {face_present, size_frac,
+  centred, guidance ∈ ok | move_closer | centre_your_face |
+  no_face_seen | frame_unreadable}. The frame is decoded in
+  memory; NOTHING is stored (test-proven: zero biometric rows
+  after probes). Flow-token auth + consent required, consistent
+  with the selfie endpoint.
+- Selfie step: a probe loop coaches with the server's verdict
+  in a dedicated line under the hint while the existing
+  auto-scanner works (probes never block capture).
+- Liveness step: recording now starts when the client gate
+  sees a face AND the server confirms one; escapes keep a
+  genuine user un-trappable (presence service unreachable 20s,
+  or 35s on client evidence alone → recording starts anyway;
+  the server still judges the video itself).
+- Read-back: the process payload now carries portrait stats
+  {found, size_frac} measured on the document's reading
+  rendition; below 0.06 width fraction the flow adds the
+  closer-scan coaching line (a tiny printed portrait is the
+  weak face-match reference on slip-class documents).
+- Result screen: capture-quality reason codes (face_mismatch /
+  face_match_unclear, face_track_*, liveness_*) map to one
+  plain retry-coaching line on rejected/needs_review outcomes,
+  on all three render paths (submit response, polling, page
+  load). Fraud-class reasons get no coaching.
+- PAD corpus: benchmarks/pad-corpus/README.md is the
+  recording protocol (consent, bona-fide + three PAI kinds,
+  layout the harness reads, corpus kept under
+  benchmarks/corpus/ = push-excluded). Harness smoke-proven on
+  a generated no-face corpus: APCER 0.0% (2/2 attacks failed),
+  BPCER honestly n/a — no bona-fide corpus exists yet, so no
+  video-level metric is claimed.
+
+Tests: tests/test_coaching.py 4/4 (blank frame → no_face_seen
+with the real detector; guidance geometry via patched boxes;
+stores-nothing; portrait shape in the process payload).
+Regressions: identity-from-document + live-scanner 38/38.
+Live-verified on production after restart: blank frame →
+no_face_seen; the owner's own photo → face_present, centred,
+guidance ok.
