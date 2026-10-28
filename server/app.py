@@ -403,6 +403,9 @@ def make_handler(db: DB, data_dir: str):
             if p == "/" or p == "/index.html": return self._static("index.html")
             if p == "/console": return self._static("console.html")
             if p == "/dashboard": return self._static("dashboard.html")
+            if p in ("/docs", "/developers"): return self._static("developer.html")
+            if p == "/openapi.json": return self._static("openapi.json")
+            if p == "/openapi.yaml": return self._static("openapi.yaml")
             if p.startswith("/flow/"): return self._static("flow.html")
             if p.startswith("/img/"): return self._static(p)
             if p.startswith("/voice/"): return self._static(p)
@@ -593,6 +596,8 @@ def make_handler(db: DB, data_dir: str):
             ctype = "text/html" if name.endswith(".html") else "text/plain"
             if name.endswith(".js"): ctype = "application/javascript"
             if name.endswith(".css"): ctype = "text/css"
+            if name.endswith(".json"): ctype = "application/json"
+            if name.endswith(".yaml") or name.endswith(".yml"): ctype = "application/yaml"
             if name.endswith(".mp3"): ctype = "audio/mpeg"
             _ext = name.rsplit(".", 1)[-1].lower()
             if _ext in ("webp", "png", "jpg", "jpeg", "svg", "gif"):
