@@ -117,6 +117,50 @@ def largest_face(img):
     faces = detect_faces(img)
     return faces[0] if faces else None
 
+_DNN_FACE_NET = None
+
+def detect_face_box_any(img):
+    """Portrait-presence fallback (2026-10-28 vision sharpening):
+    YuNet first; when YuNet sees no face, a second, architecturally
+    different detector (OpenCV DNN ResNet-10 SSD, models fetched
+    alongside the YuNet/SFace pair) takes a turn. Returns
+    (x, y, w, h) in image pixels or None. PRESENCE ONLY — the box
+    carries no landmarks, so it must never feed SFace alignment or
+    matching; its job is the document-portrait statistic that
+    drives capture coaching (a portrait YuNet misses on a small or
+    degraded print is exactly the weak-reference case)."""
+    global _DNN_FACE_NET
+    row = largest_face(img)
+    if row is not None:
+        return (float(row[0]), float(row[1]), float(row[2]), float(row[3]))
+    if cv2 is None or not hasattr(cv2, "dnn"):
+        return None
+    proto = os.path.join(MODELS_DIR, "face_deploy.prototxt")
+    model = os.path.join(MODELS_DIR, "face_res10.caffemodel")
+    if not (os.path.exists(proto) and os.path.exists(model)):
+        return None
+    try:
+        if _DNN_FACE_NET is None:
+            _DNN_FACE_NET = cv2.dnn.readNetFromCaffe(proto, model)
+        h, w = img.shape[:2]
+        blob = cv2.dnn.blobFromImage(cv2.resize(img, (300, 300)), 1.0,
+                                     (300, 300), (104.0, 177.0, 123.0))
+        _DNN_FACE_NET.setInput(blob)
+        dets = _DNN_FACE_NET.forward()
+        best = None
+        for i in range(dets.shape[2]):
+            conf = float(dets[0, 0, i, 2])
+            if conf < 0.5:
+                continue
+            x0, y0, x1, y1 = (int(dets[0, 0, i, 3] * w), int(dets[0, 0, i, 4] * h),
+                              int(dets[0, 0, i, 5] * w), int(dets[0, 0, i, 6] * h))
+            area = max(0, x1 - x0) * max(0, y1 - y0)
+            if best is None or area > best[0]:
+                best = (area, (float(x0), float(y0), float(x1 - x0), float(y1 - y0)))
+        return best[1] if best else None
+    except Exception:
+        return None
+
 def face_feature(img, face_row):
     """SFace 128-d embedding for an aligned face."""
     rec = _recognizer()
