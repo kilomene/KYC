@@ -11,6 +11,7 @@ Environment=HOME=/home/hatch
 # production's data dir, keys, or tunnel.
 EnvironmentFile=-/home/hatch/workspace/KYC/data-staging/platform-admin.env
 Environment=KYC_MASTER_KEY_FILE=/home/hatch/workspace/KYC/data-staging/kyc-master.key
+Environment=KYC_OCR2=on
 WorkingDirectory=/home/hatch/workspace/KYC
 ExecStart=/usr/bin/python3 -m server --port 8792 --data-dir data-staging
 Restart=always
