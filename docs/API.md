@@ -1,21 +1,35 @@
 # KYC — API (v1)
 
 *REST, JSON. Auth: tenant API key (`Authorization: Bearer <key>`) scoped
-per environment. All timestamps UTC ISO-8601. All ids are opaque UUIDs.
-The Phase 1 endpoints below are implemented as drafted; the Phase 2/3
-section after the decision object documents what was added in the
-2026-10-26 local build (implemented and covered by the test suite).
-Unimplemented items are marked as such where they appear: API-only
-document/selfie upload endpoints (the hosted flow is the only capture
-path), the `GET /v1/documents/{id}` metadata endpoint, and idempotency
-keys. Rate limiting, webhook retries/dead-letter/replay and reviewer
-MFA were implemented in Phase 4 WS3 (2026-10-26) — see below.*
+per environment. All timestamps UTC ISO-8601. All ids are opaque UUIDs.*
+
+**Canonical machine-readable contract:** [`openapi.json`](openapi.json)
+or [`openapi.yaml`](openapi.yaml) — OpenAPI 3.1, 63 paths and 69
+operations, generated from the route inventory in
+`scripts/generate_openapi.py` and also published at
+<https://kyc.novamail.store/openapi.json>. **Complete integration
+guide:** [`DEVELOPER.md`](DEVELOPER.md) — website, mobile, backend,
+SDK, agent, webhook, KYB, review, error and testing patterns.
+
+This file remains the human endpoint and platform-rules reference.
+Where a summary here and the OpenAPI operation disagree, treat the
+OpenAPI operation as the wire contract and report the discrepancy.
+General API-only document/selfie uploads, a document-metadata
+endpoint and `Idempotency-Key` deduplication are **not offered**;
+the hosted flow is the capture path.*
 
 Platform bootstrap: `POST /v1/tenants` creates a tenant and its test/live
 keys, and is **platform-operator only** — it requires the server-side
 `KYC_PLATFORM_ADMIN_TOKEN` environment variable presented in the
 `X-Platform-Admin` header. With no token configured it returns `403`
 (tenant creation disabled). It is not part of the tenant API surface.
+
+Other operator-only operations in the OpenAPI contract:
+`GET /v1/platform/metrics`, `POST /v1/platform/prices`,
+`POST /v1/platform/quotas`, `POST /v1/platform/invoices`, and
+`DELETE /v1/platform/tenants/{id}` (body must repeat the tenant id
+as `{"confirm":"<tenant_id>"}`). Tenant developers must not treat
+these as self-service endpoints.
 
 ## Core flow
 
@@ -40,14 +54,22 @@ keys, and is **platform-operator only** — it requires the server-side
 | `POST /v1/sessions` | Create session: applicant_id, level, optional allowed document types/countries, expiry override. With `{identity_source: "document", country, level}` and no applicant_id, a document-sourced applicant shell is created inline (see "Identity source"). The response carries `applicant_id` and `identity_source` |
 | `GET /v1/sessions/{id}` | Status, decision, reason codes, timestamps |
 | `POST /v1/sessions/{id}/cancel` | Cancel a live session; its link dies immediately |
-| `POST /v1/sessions/{id}/documents` | **NOT IMPLEMENTED (draft)** — API-only upload when not using the hosted flow |
-| `POST /v1/sessions/{id}/selfie` | **NOT IMPLEMENTED (draft)** — API-only biometric capture upload |
 | `GET /v1/sessions/{id}/checks` | Every check: type, status, findings, provider, timestamps |
-| `GET /v1/documents/{id}` | **NOT IMPLEMENTED (draft)** — document metadata + extracted fields. (Implemented today: `GET /v1/documents/{id}/image`, tenant-authenticated and audited, used by the console case view) |
+| `GET /v1/documents/{id}/image` | Protected, audited document image (`?side=front\|back`) for tenant review |
+| `GET /v1/biometrics/{id}/image` | Protected, audited biometric image for tenant review |
 | `POST /v1/cases/{id}/decide` | Reviewer action via API (approve / reject / request_more) — reason mandatory |
-| `GET /v1/cases` | Review queue for the tenant |
+| `GET /v1/cases` / `GET /v1/cases/{id}` | Review queue and full audited case view |
 | `POST /v1/webhooks` / `GET /v1/webhooks` | Manage webhook endpoints |
-| `POST /v1/webhooks/{id}/replay/{delivery_id}` | **NOT IMPLEMENTED (draft)** — replay a delivery |
+| `DELETE /v1/webhooks/{id}` | Delete a webhook endpoint and its delivery records |
+| `POST /v1/webhooks/deliveries/{delivery_id}/replay` | Re-queue a failed/dead-lettered delivery (re-signed on send) |
+| `GET /v1/keys` / `POST /v1/keys/{id}/revoke` | API-key metadata and revocation |
+| `GET /v1/sessions` | Tenant session list |
+| `GET /v1/flow/session` | Token-scoped hosted-flow state + authoritative document registry |
+
+Not offered: `POST /v1/sessions/{id}/documents`,
+`POST /v1/sessions/{id}/selfie`, `GET /v1/documents/{id}` metadata,
+or a tenant `return_url` / iframe capture API. Capture happens in
+the hosted flow.
 
 ## Phase 2/3 endpoints (implemented 2026-10-26)
 
@@ -60,7 +82,7 @@ it never silently falls back.
 | Method & path | Purpose |
 |---|---|
 | `GET /v1/config?level=N` | Active flow config for the level: required_checks, face_pass_threshold, face_margin, risk_auto_approve_ceiling, poa_window_days, screening_threshold, sla_hours, four_eyes + its version (0 = built-in defaults) |
-| `PUT /v1/config` | Body `{level, patch}` — validates and stores a NEW config version (old versions are kept; decisions record the `config_version` they ran under). Unknown keys / out-of-range values → `422` |
+| `PUT /v1/config` | Body `{level, config}` — `config` is the patch object. Validates and stores a NEW config version (old versions are kept; decisions record the `config_version` they ran under). Unknown keys / out-of-range values → `422` |
 | `POST /v1/users` | Create a named tenant user `{name, role: admin\|reviewer}` → returns a per-user token ONCE (only its hash is stored) |
 | `GET /v1/users` | List users (no tokens) |
 | `POST /v1/users/{id}/revoke` | Revoke a user token |
@@ -73,9 +95,10 @@ it never silently falls back.
 | `GET /v1/cases/{id}` | Case detail — now includes `screening_hits`, the issued `credential` (if approved), and a deterministic `assist` block: `{label: "Assist — a human decides.", mismatches[], risk_summary, suggested_disposition, suggestion_reasons[]}` |
 | `POST /v1/businesses` | Create a KYB business `{legal_name, registration_number, country}` — the registration number is format-validated per country (NG/US/GB/CA/AU/DE/GH patterns); invalid format → `422` with the expected pattern |
 | `GET /v1/businesses` / `GET /v1/businesses/{id}` | Businesses with people + per-person `verified_l2plus` status |
-| `POST /v1/businesses/{id}/people` | Attach an applicant as `{applicant_id, role: director\|ubo\|officer, ownership_pct}` |
+| `POST /v1/businesses/{id}/people` | Attach an applicant as `{applicant_id, role: director\|ubo, ownership_pct}` (the endpoint does not accept `officer`) |
 | `POST /v1/businesses/{id}/document` | Multipart company document upload (registry evidence) |
-| `POST /v1/businesses/{id}/registry` | Reviewer registry decision `{status: confirmed\|rejected, reason}` — **format validation + document + human confirmation only; there is no live government registry connection in this build** |
+| `POST /v1/businesses/{id}/registry-check` | Run the configured authoritative-registry adapter and store its outcome. Adapters fail closed as `not_configured` where no source/credential is connected |
+| `POST /v1/businesses/{id}/registry` | Reviewer registry decision `{status: confirmed\|rejected, reason}` after format validation, uploaded evidence and any adapter lookup. The human decision itself is not a live government-registry connection |
 | `POST /v1/businesses/{id}/evaluate` | Assemble the business decision: `verified` only when the registry leg is confirmed AND every attached person is approved at Level 2+ AND no person has a pending/confirmed screening hit; otherwise `pending`/`rejected` with named reasons |
 | `POST /v1/monitoring/rescreen` | Re-screen all approved applicants of the tenant against the CURRENT lists. New matches → `monitoring_alerts` rows + `screening.hit_new` webhook + a reopened case. Returns `{screened, new_hits, alerts}` |
 | `GET /v1/monitoring/alerts` | Monitoring alerts for the tenant |
@@ -84,15 +107,23 @@ it never silently falls back.
 | `GET /v1/sessions/{id}/credential` | The credential issued for an approved session (issuing tenant) |
 | `POST /v1/sessions` with `{credential}` | Create a session seeded by a verified credential instead of a fresh applicant: shared checks are recorded with `provider: "verified_credential"` and pass only if the credential verifies, is unrevoked and unexpired, and its level ≥ the requested level (`422` otherwise). **Biometrics (face match, liveness) are never inherited** — if the level's config requires them, they run fresh in the flow |
 
-Hosted-flow additions (flow token auth):
+Hosted-flow endpoints (flow token auth — `Authorization: Bearer
+<flow_token>` or `X-Flow-Token`):
 
 | Method & path | Purpose |
 |---|---|
+| `GET /v1/flow/session` | Current flow state, applicant summary, capture state, `allowed_docs` and the authoritative `document_registry` |
+| `POST /v1/flow/consent` | Record consent and start the flow; harvests disclosed IP/location signals and applies the VPN/proxy hard gate (`403 vpn_proxy_detected`) |
+| `POST /v1/flow/document` | Store the document front (and a together-captured back). The hosted UI is a live camera scanner. The Nigerian NIN slip is the named upload exception and the only kind that may send an 11-digit `claimed_number` |
+| `POST /v1/flow/document/back` | Attach the BACK side scan to an existing flow document (`document_id` + `back` part). 422 if the document type has no back side (per-country registry, `server/docregistry.py`). Document/selfie/liveness uploads accept a `capture_meta` JSON field (e.g. `{"method":"live_camera","side":"front"}`), stored per side and shown in the review console |
+| `POST /v1/flow/presence` | One-frame face-presence coaching probe. The frame is analysed in memory and never stored |
+| `POST /v1/flow/selfie` | Store the live selfie plus optional same-second `burst_0`…`burst_4` frames for continuous face tracking |
 | `POST /v1/flow/liveness/challenge` | Issue the server-generated movement challenge for this session (random 2-direction sequence); returns the challenge + a plain-language instruction |
 | `POST /v1/flow/liveness` | Multipart upload of the liveness video (`video` part, webm/mp4) — analysed server-side (face presence, challenged movement, static-replay rejection). Labelled in the UI as **active liveness (movement challenge)** |
-| `POST /v1/flow/document/back` | Attach the BACK side scan to an existing flow document (`document_id` + `back` part). 422 if the document type has no back side (per-country registry, `server/docregistry.py`). Document/selfie/liveness uploads accept a `capture_meta` JSON field (e.g. `{"method":"live_camera","side":"front"}`), stored per side and shown in the review console. The hosted flow itself is a live camera scanner — it has no file-upload path |
-| `POST /v1/flow/document/process` | Read-back step: the server reads the session's uploaded document (framing + multi-pass OCR + MRZ + template field extraction) and returns `{document_id, document_label, framing, read: {first_name, last_name, dob, number, expiry}, missing[], complete}`. The hosted flow shows the applicant what was read and lets them confirm or rescan — there is no form; rescan is the only correction path |
+| `POST /v1/flow/document/process` | Read-back step: the server reads the session's uploaded document (framing + dual-engine OCR + MRZ + template field extraction) and returns `{document_id, document_label, framing, read: {first_name, last_name, dob, number, expiry}, missing[], complete}`. A long read returns `202 {"status":"reading"}` and the caller polls the same endpoint. The hosted flow shows the applicant what was read and lets them confirm or rescan — there is no name/DOB form |
+| `POST /v1/flow/document/claim` | Correct the typed NIN for an uploaded `nin_slip` without re-uploading it; the claim is compared with the number read from the slip |
 | `POST /v1/flow/poa` | Multipart proof-of-address upload (`document` part) for Level 3 |
+| `POST /v1/flow/submit` | Submit for the automatic decision. Returns the final session view or `202 {"status":"processing","session_id"}` while processing runs |
 | `GET /v1/flow/credential` | The applicant's own issued credential for this session (claims + signature) |
 | `POST /v1/flow/credential/revoke` | The applicant revokes their own credential |
 
@@ -161,31 +192,57 @@ The repo ships a small SAMPLE fixture list under `lists/`; real lists
 `risk_contributions[]` and `config_version` are returned with the
 session decision object.
 
-## Decision object (shape)
+## Session and decision shape
+
+`GET /v1/sessions/{id}` returns the session view. The decision is
+nested under `decision`; the session outcome itself is the top-level
+`status`.
 
 ```json
 {
-  "session_id": "…",
-  "status": "approved",
+  "id": "…",
+  "tenant_id": "…",
+  "env": "test",
+  "applicant_id": "…",
+  "identity_source": "document",
   "level": 2,
-  "reason_codes": [],
-  "decided_by": "engine",
-  "rules_version": "2026-10-26.1",
+  "status": "approved",
+  "expires_at": "2026-10-29T00:00:00Z",
+  "created_at": "2026-10-28T00:00:00Z",
+  "client_ip_masked": "203.0.113.x",
+  "ip_country": "NG",
+  "vpn_status": "clear",
   "checks_summary": {
-    "document_authenticity": "pass",
+    "document_classification": "pass",
     "face_match": "pass",
     "liveness": "pass",
     "screening_sanctions": "pass"
   },
-  "decided_at": "2026-10-26T00:00:00Z"
+  "decision": {
+    "id": "…",
+    "session_id": "…",
+    "outcome": "approved",
+    "decided_by": "engine",
+    "reason": null,
+    "reason_codes": [],
+    "rules_version": "2026-10-26.1",
+    "risk_score": 0,
+    "risk_band": "low",
+    "risk_contributions": [],
+    "config_version": 0,
+    "created_at": "2026-10-28T00:01:00Z"
+  }
 }
 ```
 
 ## Webhooks
 
-Events: `session.created`, `session.completed`, `session.expired`,
-`session.needs_more_information`, `case.opened`, `case.decided`,
-`applicant.deleted`, `screening.hit_new` (ongoing monitoring).
+Implemented events: `session.completed`, `case.opened`,
+`case.decided`, `applicant.deleted`, and `screening.hit_new`
+(ongoing monitoring). An endpoint whose `events` list is empty
+receives every implemented event. Deliveries also carry a
+`KYC-Event: <event>` header and a JSON envelope
+`{"event": "...", "data": {...}}`.
 
 - Signed: `KYC-Signature: t=<ts>,v1=<hmac-sha256>` over the raw body with
   the endpoint secret; tenants must verify and reject stale timestamps.
@@ -212,8 +269,9 @@ Events: `session.created`, `session.completed`, `session.expired`,
   `413` request body over the size cap, `422` validation.
   `429` rate limiting **is implemented** (WS3): body
   `{error:{code:"rate_limited"}}` plus a `Retry-After` header.
-- Idempotency: `Idempotency-Key` is **not honoured yet** (Phase 4 WS6);
-  creation endpoints do not deduplicate on it today.
+- Idempotency: `Idempotency-Key` is **not currently honoured**;
+  creation endpoints do not deduplicate on it. Reconcile a timed-out
+  creation against your own mapping before creating another resource.
 - Sandbox: test keys run the **identical real checks** as live keys —
   there are no faked deterministic outcomes. "Test" means strict data
   separation only: a test key can never read live data, and every
