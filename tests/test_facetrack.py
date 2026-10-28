@@ -41,6 +41,45 @@ class TestBuildTrack(unittest.TestCase):
         self.assertEqual(res["status"], "fail", res)
         self.assertIn("face_track_identity_break", res["reason_codes"])
 
+    def test_abrupt_foreign_segment_breaks_track(self):
+        # A -> B (6 frames, entry fully foreign) -> A: a takeover
+        # segment, caught by the segment leg even though the track
+        # starts and ends as the same person.
+        frames = _frames(0, 10) + _frames(1, 6, seed0=100) + _frames(0, 6, seed0=200)
+        res, _ = FT.build_track(frames)
+        self.assertEqual(res["status"], "fail", res)
+        self.assertIn("face_track_identity_break", res["reason_codes"])
+
+    def test_short_foreign_tail_is_unclear_not_pass(self):
+        frames = _frames(0, 12) + _frames(1, 2, seed0=100)
+        res, _ = FT.build_track(frames)
+        self.assertEqual(res["status"], "unclear", res)
+        self.assertIn("face_track_identity_unstable", res["reason_codes"])
+
+    def test_genuine_head_turn_dip_passes(self):
+        # The session-15 shape (2026-10-28): the challenge itself
+        # rotates the face through a deep, smooth, self-consistent
+        # dip (cosine to the median bottoms ~0.21 mid-turn) that
+        # RETURNS to the anchor identity. The old any-frame-minimum
+        # rule failed this genuine take; the structural rule passes
+        # it — median stays high, the dip is brief, nothing foreign
+        # persists.
+        import math
+        rng = random.Random(7)
+        def vec(theta_deg):
+            t = math.radians(theta_deg)
+            v = [rng.gauss(0, 0.02) for _ in range(128)]
+            v[0] += math.cos(t)
+            v[1] += math.sin(t)
+            return v
+        thetas = ([0] * 10 + [15, 30, 45, 65, 75, 78, 75, 65, 45, 30, 15]
+                  + [0] * 9)
+        frames = [{"centre": (0.5, 0.5), "size": 0.3, "embedding": vec(t)} for t in thetas]
+        res, _ = FT.build_track(frames)
+        self.assertEqual(res["status"], "pass", res)
+        self.assertGreater(res["findings"]["identity_median_cosine"], 0.7)
+        self.assertLess(res["findings"]["identity_min_cosine"], 0.313)
+
     def test_too_few_frames_is_unclear_never_pass(self):
         res, agg = FT.build_track(_frames(0, 3))
         self.assertEqual(res["status"], "unclear", res)
