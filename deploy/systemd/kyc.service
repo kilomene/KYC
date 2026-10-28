@@ -15,6 +15,7 @@ EnvironmentFile=-/home/hatch/workspace/KYC/data/platform-admin.env
 # (AES-256-GCM envelope). The key VALUE lives only in that file
 # (chmod 600, gitignored data/); without it media reads fail closed (503).
 Environment=KYC_MASTER_KEY_FILE=/home/hatch/workspace/KYC/data/kyc-master.key
+Environment=KYC_OCR2=on
 WorkingDirectory=/home/hatch/workspace/KYC
 ExecStart=/usr/bin/python3 -m server --port 8790
 Restart=always
