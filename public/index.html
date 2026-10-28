@@ -207,7 +207,9 @@
     <a href="/dashboard"><span class="tick p"></span>Tenant dashboard</a>
     <a href="/console"><span class="tick p"></span>Review console</a>
     <div class="grp">Developers</div>
-    <a href="https://github.com/kilomene/KYC/blob/main/docs/INTEGRATION.md"><span class="tick"></span>Integration guide</a>
+    <a href="/docs"><span class="tick"></span>Developer portal & API explorer</a>
+    <a href="/openapi.json"><span class="tick"></span>OpenAPI specification</a>
+    <a href="https://github.com/kilomene/KYC/blob/main/docs/DEVELOPER.md"><span class="tick"></span>Complete developer guide</a>
     <a href="https://github.com/kilomene/KYC/blob/main/docs/API.md"><span class="tick"></span>API reference</a>
     <a href="https://github.com/kilomene/KYC/tree/main/sdk"><span class="tick"></span>JavaScript SDK</a>
     <a href="https://github.com/kilomene/KYC"><span class="tick"></span>GitHub repository</a>
@@ -333,19 +335,20 @@
 <section class="blk" id="developers">
   <div class="wrap">
     <h2 class="rv">For developers</h2>
-    <p class="sub rv">Two keys per tenant (test and live), a hosted flow so you never touch raw biometrics, signed webhooks, and a zero-dependency JavaScript SDK. Test mode runs the full pipeline and is always free.</p>
-    <pre class="rv"><code>// Create a verification in four lines
+    <p class="sub rv">Two keys per tenant (test and live), a hosted flow so you never touch raw biometrics, signed webhooks, a zero-dependency JavaScript SDK, and a complete OpenAPI 3.1 specification for websites, mobile apps, backends and AI agents. Test mode runs the full pipeline and is always free.</p>
+    <pre class="rv"><code>// Create a verification from your server
 const applicant = await kyc.createApplicant({ country: 'NG' });
-const session   = await kyc.createSession({ applicantId: applicant.id, level: 1 });
-// Send the user to the hosted flow:
-redirect('https://kyc.novamail.store' + session.flow_url);
+const session   = await kyc.createSession({ applicantId: applicant.id, level: 2 });
+// Send the person to the hosted flow:
+redirect(kyc.absoluteFlowUrl(session));
 // Get the decision by signed webhook — or poll kyc.getSession(session.id)</code></pre>
     <div class="devlinks rv">
-      <a class="btn primary" href="/dashboard">Tenant dashboard</a>
-      <a class="btn ghost" href="https://github.com/kilomene/KYC/blob/main/docs/INTEGRATION.md">Integration guide</a>
+      <a class="btn primary" href="/docs">Developer portal</a>
+      <a class="btn ghost" href="/openapi.json">OpenAPI JSON</a>
+      <a class="btn ghost" href="https://github.com/kilomene/KYC/blob/main/docs/DEVELOPER.md">Developer guide</a>
       <a class="btn ghost" href="https://github.com/kilomene/KYC/blob/main/docs/API.md">API reference</a>
       <a class="btn ghost" href="https://github.com/kilomene/KYC/tree/main/sdk">JavaScript SDK</a>
-      <a class="btn ghost" href="https://github.com/kilomene/KYC">GitHub repository</a>
+      <a class="btn ghost" href="/dashboard">Tenant dashboard</a>
     </div>
   </div>
 </section>
@@ -388,7 +391,9 @@ redirect('https://kyc.novamail.store' + session.flow_url);
       </div>
       <div>
         <h4>Developers</h4>
-        <a href="https://github.com/kilomene/KYC/blob/main/docs/INTEGRATION.md">Integration guide</a>
+        <a href="/docs">Developer portal</a>
+        <a href="/openapi.json">OpenAPI specification</a>
+        <a href="https://github.com/kilomene/KYC/blob/main/docs/DEVELOPER.md">Developer guide</a>
         <a href="https://github.com/kilomene/KYC/blob/main/docs/API.md">API reference</a>
         <a href="https://github.com/kilomene/KYC/tree/main/sdk">JavaScript SDK</a>
         <a href="https://github.com/kilomene/KYC">GitHub</a>
