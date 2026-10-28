@@ -166,18 +166,28 @@ _LABEL_OVERRIDES = {
                                 "given_names": ["FIRST NAME", "OTHER NAMES", "GIVEN NAMES"],
                                 "dob": ["D OF B", "DOB", "DATE OF BIRTH"],
                                 "expiry": ["EXP", "EXPIRY"]},
-    # California DL (2018 + 2025 generations): AAMVA-style short
-    # labels LN / FN / DL / DOB / EXP printed beside the values.
-    ("US", "drivers_license"): {"number": ["DL", "DLN", "4D"],
-                                "surname": ["LN", "SURNAME"],
+    # US licences/IDs print in two dialects: California-style word
+    # labels (LN / FN / DL / DOB / EXP) and the numbered AAMVA
+    # furniture most other states use (4d LIC NO, 3 DOB, 4b EXP,
+    # 1/2 name lines) — plus state variants like Virginia's
+    # 'Customer identifier' and bare 'Name'. Calibration
+    # 2026-10-28 across IL/CO/OK/NV/VA/WI/OR cards: without the
+    # numbered composites the reader missed dates wholesale, and
+    # on Wisconsin an unanchored zone scoop borrowed the ISSUE
+    # date into both date slots and falsely expired the card.
+    ("US", "drivers_license"): {"number": ["4D LIC NO", "LIC NO", "DL NO", "DL", "DLN", "4D",
+                                           "CUSTOMER IDENTIFIER"],
+                                "surname": ["LN", "SURNAME", "NAME"],
                                 "given_names": ["FN", "GIVEN NAMES", "FIRST NAME"],
-                                "dob": ["DOB", "DATE OF BIRTH"],
-                                "expiry": ["EXP", "EXPIRES"]},
-    # New York non-driver ID: sparse printed labels; the number
-    # sits under the ID banner, DOB/Expires anchor the dates.
-    ("US", "state_id"): {"number": ["ID", "ID NUMBER"],
-                         "dob": ["DOB", "DATE OF BIRTH"],
-                         "expiry": ["EXPIRES", "EXPIRY", "EXP"]},
+                                "dob": ["3 DOB", "DOB", "DATE OF BIRTH"],
+                                "expiry": ["4B EXP", "EXP", "EXPIRES"]},
+    # State IDs (New York non-driver ID, Illinois ID cards): same
+    # numbered furniture; IL prints '4d LIC NO' even on ID cards.
+    ("US", "state_id"): {"number": ["4D LIC NO", "LIC NO", "ID", "ID NUMBER"],
+                         "surname": ["LN", "SURNAME", "NAME"],
+                         "given_names": ["FN", "GIVEN NAMES", "FIRST NAME"],
+                         "dob": ["3 DOB", "DOB", "DATE OF BIRTH"],
+                         "expiry": ["4B EXP", "EXPIRES", "EXPIRY", "EXP"]},
     # Canada passport data page is bilingual throughout; the
     # French halves of the labels are first-class anchors.
     ("CA", "passport"): {"number": ["PASSPORT NO", "PASSPORT", "PASSEPORT"],
@@ -344,10 +354,24 @@ for _i, _names in enumerate([
     for _n in _names:
         _MONTHS[_n] = _i + 1
 
-def parse_date_value(s):
+def parse_date_value(s, mdy=False):
     """Parse a printed date value in the formats the launch documents
     use (ISO, DD/MM/YYYY, DD.MM.YYYY, DD-MM-YYYY, '12 AUG 1974',
-    '12 August 1974'). Returns a date or None."""
+    '12 August 1974'). Returns a date or None.
+
+    The numeric a/b/year order is day-first by default — most launch
+    countries print DD/MM/YYYY. Two disambiguators, in order:
+    (1) VALIDITY — a 'month' above 12 cannot be a month, so when the
+    second number exceeds 12 the only possible reading is
+    month-first (US '04/20/2031': the old day-first-only parse
+    returned None, the field fell to the zone scoop, and a borrowed
+    issue date landed in both date slots — measured on a genuine
+    Wisconsin licence, 2026-10-28). This fires only where the
+    day-first reading is impossible, so day-first documents are
+    untouched.
+    (2) LOCALE — when both numbers are <= 12 the order is genuinely
+    ambiguous; callers pass mdy=True for month-first countries
+    (US, PH) so '04/03/2023' reads as April 3, not March 4."""
     if not s:
         return None
     t = str(s).strip().upper()
@@ -356,7 +380,12 @@ def parse_date_value(s):
         return C._safe_date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
     m = re.search(r"(\d{1,2})[./-](\d{1,2})[./-](\d{4})", t)
     if m:
-        return C._safe_date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+        a, b, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if b > 12 and a <= 12:
+            return C._safe_date(y, a, b)
+        if mdy and a <= 12 and b <= 12:
+            return C._safe_date(y, a, b)
+        return C._safe_date(y, b, a)
     m = re.search(r"(\d{1,2})\s+([A-ZÄÉÛ]+)\s+(\d{4})", t)
     if m and m.group(2) in _MONTHS:
         return C._safe_date(int(m.group(3)), _MONTHS[m.group(2)], int(m.group(1)))
@@ -440,6 +469,19 @@ def _label_span(line, labels):
         for i in range(0, len(norms) - len(parts) + 1):
             if norms[i:i + len(parts)] == parts:
                 return lab, i + len(parts)
+        if len(parts) == 1 and len(parts[0]) >= 2:
+            # AAMVA field-number prefix fused to the label: US cards
+            # print '3 DOB' / '4b EXP', and segmentation routinely
+            # fuses the furniture into the label token ('3DOB',
+            # '4BEXP' — measured on a genuine Wisconsin licence,
+            # 2026-10-28: '3DOB' never matched the DOB anchor, the
+            # field fell to the zone scoop). The digits (plus the
+            # optional sub-letter) are anchor furniture, not value.
+            for i, n in enumerate(norms):
+                for _pat in (r"\d{1,2}([A-Z]{2,})", r"\d{1,2}[A-Z]([A-Z]{2,})"):
+                    m = re.fullmatch(_pat, n)
+                    if m and m.group(1) == parts[0]:
+                        return lab, i + 1
         if len(parts) == 1 and len(parts[0]) >= 5:
             # One-letter misread of a single-word label ('Surman'
             # for 'Surname:' — the final letter eaten at the cell
@@ -470,17 +512,19 @@ def _label_span(line, labels):
                     return lab, j
     return None
 
-def _value_from_tokens(field, tokens):
-    """Interpret raw value tokens for a field. -> value string or None."""
+def _value_from_tokens(field, tokens, mdy=False):
+    """Interpret raw value tokens for a field. -> value string or None.
+    mdy: the document's country prints numeric dates month-first
+    (US, PH) — forwarded to parse_date_value for ambiguous dates."""
     if not tokens:
         return None
     joined = " ".join(tokens)
     if field in ("dob", "expiry"):
-        d = parse_date_value(joined)
+        d = parse_date_value(joined, mdy=mdy)
         if d:
             return d.isoformat()
         # date may be split across tokens like 12 / 08 / 1974
-        d = parse_date_value(re.sub(r"\s+", "", joined))
+        d = parse_date_value(re.sub(r"\s+", "", joined), mdy=mdy)
         return d.isoformat() if d else None
     if field == "number":
         # Clean to the alphanumeric core first: a trailing '.' or a
@@ -1660,6 +1704,7 @@ def _extract_fields_pass(image_path, country, kind, ocr_text="", words=None, ocr
     manufactures not-found fields out of text the pipeline had in
     fact read."""
     country = (country or "").upper()
+    _mdy = country in ("US", "PH")
     tpl = get_field_template(country, kind)
     if tpl is None:
         return {"status": "unclear",
@@ -1722,7 +1767,7 @@ def _extract_fields_pass(image_path, country, kind, ocr_text="", words=None, ocr
                     # value's row band as extra tokens the gap rule
                     # cannot see (they chain across in <5% steps).
                     items_after = _verify_name_tokens(image_path, trimmed)
-                cand = _value_from_tokens(field, [it["text"] for it in items_after])
+                cand = _value_from_tokens(field, [it["text"] for it in items_after], mdy=_mdy)
                 if cand:
                     if field == "number" and validate_number(country, kind, cand) is False:
                         if fallback is None and _plausible_number_fallback(cand):
@@ -1847,7 +1892,7 @@ def _extract_fields_pass(image_path, country, kind, ocr_text="", words=None, ocr
                                                for p in label_parts):
                         zitems = zitems[1:]
                     kept = _verify_name_tokens(image_path, zitems)
-                    cand = _value_from_tokens(field, [it["text"] for it in kept])
+                    cand = _value_from_tokens(field, [it["text"] for it in kept], mdy=_mdy)
                     if not cand:
                         continue
                     merged = False
@@ -1893,9 +1938,9 @@ def _extract_fields_pass(image_path, country, kind, ocr_text="", words=None, ocr
                             break
                     if value is None:
                         digit_toks = [t for t in toks if any(ch.isdigit() for ch in t)]
-                        value = _value_from_tokens(field, digit_toks)
+                        value = _value_from_tokens(field, digit_toks, mdy=_mdy)
                 else:
-                    value = _value_from_tokens(field, toks)
+                    value = _value_from_tokens(field, toks, mdy=_mdy)
                 if value:
                     source = "zone"
         # 3) text fallback (label-anchored over plain OCR text).
@@ -1909,7 +1954,7 @@ def _extract_fields_pass(image_path, country, kind, ocr_text="", words=None, ocr
                 for lab in labels:
                     m = re.search(r"(?<![A-Z0-9ÄÉÜ])" + re.escape(lab) + r"(?![A-Z0-9ÄÉÜ])", up)
                     if m:
-                        cand = _value_from_tokens(field, raw[m.end():].split())
+                        cand = _value_from_tokens(field, raw[m.end():].split(), mdy=_mdy)
                         if cand:
                             if field == "number" and validate_number(country, kind, cand) is False:
                                 if fallback is None and _plausible_number_fallback(cand):
@@ -2007,6 +2052,20 @@ def _extract_fields_pass(image_path, country, kind, ocr_text="", words=None, ocr
                     valid = True
             entry["format_valid"] = valid
         fields_out[field] = entry
+    # Cross-field date sanity (calibration 2026-10-28, Wisconsin):
+    # a document never expires on or before the holder's birth
+    # date. When the two extracted dates collide that way, at
+    # least one is a BORROWED date — an unanchored zone/text scoop
+    # that harvested a neighbouring row's date (there, the issue
+    # date filled both slots and falsely expired a valid card).
+    # Label/band-anchored values are trusted as printed; an
+    # unanchored offender is dropped to 'not read' rather than
+    # allowed to decide the verification.
+    _dob, _exp = fields_out.get("dob") or {}, fields_out.get("expiry") or {}
+    if _dob.get("value") and _exp.get("value") and _exp["value"] <= _dob["value"]:
+        for _f in ("dob", "expiry"):
+            if fields_out[_f].get("source") not in ("label", "band_reread"):
+                fields_out[_f] = {"value": None, "source": None}
     extracted = sum(1 for f in fields_out.values() if f["value"])
     findings = {"template_level": tpl["level"], "layout": tpl["layout"],
                 "claimed": f"{country}/{kind}", "fields": fields_out,
