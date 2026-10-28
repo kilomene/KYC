@@ -198,11 +198,14 @@ class TestSyntheticWideSlip(unittest.TestCase):
         self.assertGreaterEqual(r["findings"]["score"], 70)
         aspect = r["findings"]["elements"]["aspect"]
         self.assertEqual(aspect["range"], [1.2, 2.8])
-        # WS1 contract (2026-10-27): with no document-space warp,
-        # the frame's aspect is not evidence about the document —
-        # neutral 0.48, never the old manufactured 1.0/0. The
-        # classification itself still passes on the label evidence.
-        self.assertEqual(aspect["match"], 0.48)
+        # WS1 contract (2026-10-27), exclusion form (2026-10-28):
+        # with no document-space warp, the frame's aspect is not
+        # evidence about the document — the element is neutral and
+        # EXCLUDED from the score, never a manufactured 1.0/0 or a
+        # 0.48 drag. The classification itself still passes on the
+        # label evidence.
+        self.assertIsNone(aspect["match"])
+        self.assertTrue(aspect["neutral"])
         self.assertTrue(aspect["frame_only"])
 
     def test_extracts_fields(self):
