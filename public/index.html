@@ -3,78 +3,460 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>KYC — Identity Verification by Nova Inc</title>
-<meta name="description" content="KYC is Nova Inc's identity verification platform: live document scanning, automatic decisions, face verification, liveness, screening and business verification.">
+<title>Nova KYC — Identity Verification by Nova Inc</title>
+<meta name="description" content="Nova KYC is Nova Inc's identity verification platform: live document scanning, face verification, active liveness, fraud intelligence, screening and business verification — fully automatic decisions, built for trust.">
+<link rel="icon" href="/public/img/nova-logo.jpg">
 <style>
-  :root{color-scheme:light dark;--bg:#f6f7fb;--card:#fff;--ink:#10131a;--muted:#5b6472;--line:#dde2ec;--accent:#0b5fff;--good:#087f5b;--warn:#9a6700}
-  @media (prefers-color-scheme:dark){:root{--bg:#0b0e14;--card:#131824;--ink:#eef1f7;--muted:#9aa4b5;--line:#263047}}
-  *{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--ink);line-height:1.55}
-  main{max-width:880px;margin:0 auto;padding:3rem 1.25rem 4rem}
-  .brand{font-size:.85rem;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);font-weight:700}
-  h1{font-size:3rem;line-height:1.05;margin:.4rem 0 .6rem} h2{font-size:1.25rem;margin:0 0 .6rem} p{margin:.45rem 0}
-  .lede{font-size:1.15rem;color:var(--muted);max-width:42rem}
-  .status{display:inline-flex;gap:.5rem;align-items:center;border:1px solid var(--line);background:var(--card);border-radius:999px;padding:.35rem .8rem;font-weight:600;margin:1rem 0}
-  .dot{width:.6rem;height:.6rem;border-radius:50%;background:var(--good)}
-  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:1rem;margin:1.25rem 0}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:1.1rem 1.25rem}
-  ul{margin:.4rem 0 .2rem;padding-left:1.2rem} li{margin:.25rem 0}
-  a{color:var(--accent)} .links{display:flex;flex-wrap:wrap;gap:.75rem;margin-top:1rem}
-  .btn{display:inline-block;border:1px solid var(--accent);border-radius:10px;padding:.55rem 1rem;text-decoration:none;font-weight:600}
-  .btn.primary{background:var(--accent);color:#fff}
-  footer{color:var(--muted);font-size:.92rem;margin-top:2rem;border-top:1px solid var(--line);padding-top:1rem}
+  :root{
+    --bg:#ffffff; --alt:#f6f8fb; --card:#ffffff;
+    --ink:#0c1425; --muted:#52637c; --line:#e3e9f2;
+    --green:#79c40f; --pink:#ff4d8d; --black:#0a0a0a;
+    --shadow:0 18px 50px rgba(12,20,37,.10);
+    --radius:18px;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--ink);line-height:1.6}
+  a{color:#0b5fff;text-decoration:none}
+  a:hover{text-decoration:underline}
+  img{display:block;max-width:100%}
+  .wrap{max-width:1160px;margin:0 auto;padding:0 20px}
+
+  /* ---------- header ---------- */
+  header{position:sticky;top:0;z-index:60;background:rgba(255,255,255,.9);backdrop-filter:blur(12px);border-bottom:1px solid var(--line)}
+  .nav{display:flex;align-items:center;gap:18px;height:66px}
+  .burger{background:#fff;border:1px solid var(--line);border-radius:10px;width:40px;height:40px;font-size:18px;cursor:pointer;color:var(--ink);display:inline-flex;align-items:center;justify-content:center}
+  .burger:hover{border-color:#c8d3e4}
+  .brand{display:flex;align-items:center;gap:11px;color:var(--ink);font-weight:800;font-size:19px}
+  .brand:hover{text-decoration:none}
+  .brand img{width:36px;height:36px;border-radius:9px;object-fit:cover}
+  .brand small{display:block;font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);line-height:1.1}
+  .nav nav{display:flex;gap:22px;margin-left:10px}
+  .nav nav a{color:var(--muted);font-size:14.5px;font-weight:600}
+  .nav nav a:hover{color:var(--ink);text-decoration:none}
+  .spacer{flex:1}
+  .btn{display:inline-block;border-radius:11px;padding:11px 20px;font-weight:700;font-size:14.5px;border:1px solid var(--black);cursor:pointer;transition:transform .15s ease, box-shadow .15s ease, background .15s ease}
+  .btn:hover{text-decoration:none;transform:translateY(-1px)}
+  .btn.primary{background:var(--black);color:#fff;box-shadow:0 8px 22px rgba(10,10,10,.18)}
+  .btn.ghost{background:#fff;color:var(--ink);border-color:var(--line)}
+  .btn.small{padding:8px 15px;font-size:13.5px}
+  @media (max-width:940px){ .nav nav{display:none} .nav .desk{display:none} }
+  .status{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line);background:#fff;border-radius:999px;padding:6px 13px;font-size:13px;font-weight:600;color:var(--muted)}
+  .status .dot{width:9px;height:9px;border-radius:50%;background:#98a5ba}
+  .status.ok .dot{background:#22b573;box-shadow:0 0 0 4px rgba(34,181,115,.15)}
+  .status.bad .dot{background:#f5a623;box-shadow:0 0 0 4px rgba(245,166,35,.15)}
+
+  /* ---------- side drawer ---------- */
+  #overlay{position:fixed;inset:0;background:rgba(9,13,22,.45);opacity:0;pointer-events:none;transition:opacity .3s ease;z-index:70}
+  #overlay.open{opacity:1;pointer-events:auto}
+  #drawer{position:fixed;top:0;left:0;height:100dvh;width:308px;max-width:86vw;background:#fff;z-index:71;transform:translateX(-105%);transition:transform .34s cubic-bezier(.32,.72,.24,1);box-shadow:30px 0 60px rgba(12,20,37,.18);display:flex;flex-direction:column}
+  #drawer.open{transform:translateX(0)}
+  .drawer-head{display:flex;align-items:center;gap:11px;padding:18px 18px 14px;border-bottom:1px solid var(--line)}
+  .drawer-head img{width:38px;height:38px;border-radius:9px;object-fit:cover}
+  .drawer-head .t{font-weight:800;font-size:17px;line-height:1.15}
+  .drawer-head .t small{display:block;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);font-weight:700}
+  #drawer-close{margin-left:auto;background:#fff;border:1px solid var(--line);border-radius:9px;width:34px;height:34px;cursor:pointer;font-size:15px;color:var(--ink)}
+  .drawer-body{padding:12px 12px 6px;overflow-y:auto;flex:1}
+  .drawer-body .grp{font-size:11px;font-weight:800;letter-spacing:.13em;text-transform:uppercase;color:var(--muted);padding:14px 10px 6px}
+  .drawer-body a{display:flex;align-items:center;gap:10px;padding:10px;border-radius:11px;color:var(--ink);font-weight:600;font-size:15px}
+  .drawer-body a:hover{background:var(--alt);text-decoration:none}
+  .drawer-body a .tick{width:7px;height:7px;border-radius:50%;background:var(--green);flex:none}
+  .drawer-body a .tick.p{background:var(--pink)}
+  .drawer-health{margin:14px 12px;border:1px solid var(--line);border-radius:13px;padding:12px 14px;background:var(--alt)}
+  .drawer-health .h{font-size:11px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:5px}
+  .drawer-foot{padding:14px 18px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}
+  .drawer-foot b{color:var(--ink)}
+
+  /* ---------- hero ---------- */
+  .hero{position:relative;overflow:hidden;background:linear-gradient(180deg,#fdfefe, #fbfdf7 55%, #fff)}
+  .blob{position:absolute;border-radius:50%;filter:blur(70px);opacity:.5;pointer-events:none}
+  .blob.g{width:480px;height:480px;background:rgba(174,232,31,.35);top:-160px;right:-80px;animation:drift 16s ease-in-out infinite alternate}
+  .blob.p{width:420px;height:420px;background:rgba(255,77,141,.22);bottom:-200px;left:-100px;animation:drift 20s ease-in-out infinite alternate-reverse}
+  @keyframes drift{from{transform:translate(0,0) scale(1)}to{transform:translate(-50px,36px) scale(1.08)}}
+  .hero-grid{position:relative;display:grid;grid-template-columns:1.05fr .95fr;gap:48px;align-items:center;padding:70px 0 64px}
+  @media (max-width:940px){ .hero-grid{grid-template-columns:1fr;padding:46px 0} }
+  .eyebrow{display:inline-flex;align-items:center;gap:8px;font-size:12.5px;font-weight:800;letter-spacing:.15em;text-transform:uppercase;color:var(--ink);border:1px solid var(--line);background:#fff;border-radius:999px;padding:6px 13px}
+  .eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--green)}
+  h1{font-size:clamp(35px,4.6vw,55px);line-height:1.07;margin:20px 0 16px;letter-spacing:-.015em}
+  h1 .grad{background:linear-gradient(92deg,#5da30a 5%,var(--green) 35%,var(--pink) 95%);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .lede{font-size:18px;color:var(--muted);max-width:34rem;margin:0 0 26px}
+  .cta-row{display:flex;flex-wrap:wrap;gap:12px;align-items:center}
+  .phone-stage{position:relative;display:flex;justify-content:center}
+  .phone{position:relative;width:min(320px,84vw);aspect-ratio:320/545;border:11px solid #10131a;border-radius:44px;overflow:hidden;background:#fff;box-shadow:0 34px 80px rgba(12,20,37,.22);z-index:2}
+  .phone img{width:100%;height:100%;object-fit:cover;object-position:top}
+  .phone-glow{position:absolute;inset:auto;width:340px;height:340px;border-radius:50%;background:radial-gradient(circle,rgba(174,232,31,.35),rgba(255,77,141,.14) 55%,transparent 70%);top:8%;z-index:1}
+  .badge{position:absolute;z-index:3;background:#fff;border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);padding:10px 14px;font-size:13px;font-weight:700;display:flex;gap:9px;align-items:center;animation:floaty 5.5s ease-in-out infinite}
+  .badge .pulse{width:9px;height:9px;border-radius:50%;background:#22b573;animation:pulse 1.8s ease-in-out infinite}
+  @keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(34,181,115,.35)}50%{box-shadow:0 0 0 6px rgba(34,181,115,0)}}
+  @keyframes floaty{0%,100%{transform:translateY(0)}50%{transform:translateY(-7px)}}
+  .badge.b1{top:9%;left:0}
+  .badge.b2{bottom:10%;right:0;animation-delay:1.4s}
+  @media (max-width:940px){ .badge.b1{left:-4px} .badge.b2{right:-4px} }
+
+  /* ---------- facts ---------- */
+  .facts{border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:#fff}
+  .facts .wrap{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;padding:30px 20px}
+  @media (max-width:940px){ .facts .wrap{grid-template-columns:repeat(2,1fr)} }
+  .fact b{display:block;font-size:30px;line-height:1.1;letter-spacing:-.01em}
+  .fact b em{font-style:normal;color:var(--green)}
+  .fact span{color:var(--muted);font-size:13.5px}
+
+  /* ---------- sections ---------- */
+  section.blk{padding:76px 0}
+  section.alt{background:var(--alt);border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+  h2{font-size:clamp(27px,3.2vw,37px);line-height:1.14;margin:0 0 12px;letter-spacing:-.015em}
+  .sub{color:var(--muted);font-size:16.5px;max-width:47rem;margin:0 0 36px}
+  .steps{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
+  @media (max-width:1020px){ .steps{grid-template-columns:repeat(2,1fr)} }
+  @media (max-width:560px){ .steps{grid-template-columns:1fr} }
+  .step{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;box-shadow:0 4px 18px rgba(12,20,37,.04);transition:transform .18s ease, box-shadow .18s ease}
+  .step:hover{transform:translateY(-3px);box-shadow:var(--shadow)}
+  .step .n{width:34px;height:34px;border-radius:10px;background:var(--black);color:#fff;font-weight:800;display:flex;align-items:center;justify-content:center;margin-bottom:13px}
+  .step h3,.cap h3{margin:0 0 7px;font-size:16.5px}
+  .step p,.cap p{margin:0;color:var(--muted);font-size:14.5px}
+  .caps{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+  @media (max-width:1020px){ .caps{grid-template-columns:repeat(2,1fr)} }
+  @media (max-width:560px){ .caps{grid-template-columns:1fr} }
+  .cap{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;box-shadow:0 4px 18px rgba(12,20,37,.04);transition:transform .18s ease, box-shadow .18s ease}
+  .cap:hover{transform:translateY(-3px);box-shadow:var(--shadow)}
+  .cap .ic{font-size:23px;margin-bottom:10px}
+  .checklist{list-style:none;margin:0;padding:0}
+  .checklist li{padding:10px 0 10px 30px;position:relative;border-bottom:1px solid var(--line);color:var(--muted);font-size:15px}
+  .checklist li:last-child{border-bottom:0}
+  .checklist li::before{content:"✓";position:absolute;left:2px;color:#5da30a;font-weight:800}
+  .checklist li b{color:var(--ink)}
+
+  /* ---------- product pictures ---------- */
+  .shots{display:grid;grid-template-columns:1.5fr 1fr;gap:22px;align-items:start}
+  @media (max-width:940px){ .shots{grid-template-columns:1fr} }
+  .browser-frame{background:#fff;border:1px solid var(--line);border-radius:18px;overflow:hidden;box-shadow:var(--shadow)}
+  .browser-bar{display:flex;align-items:center;gap:7px;padding:10px 14px;border-bottom:1px solid var(--line);background:var(--alt)}
+  .browser-bar .d{width:11px;height:11px;border-radius:50%}
+  .browser-bar .url{margin-left:8px;background:#fff;border:1px solid var(--line);border-radius:8px;font-size:12.5px;color:var(--muted);padding:3px 11px;font-weight:600}
+  .caption{color:var(--muted);font-size:13.5px;margin-top:11px;text-align:center}
+  .phones{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  @media (max-width:520px){ .phones{grid-template-columns:1fr} }
+  .mini-phone{border:8px solid #10131a;border-radius:32px;overflow:hidden;background:#fff;box-shadow:0 22px 50px rgba(12,20,37,.16);aspect-ratio:300/511}
+  .mini-phone img{width:100%;height:100%;object-fit:cover;object-position:top}
+  pre{background:#0c1425;border-radius:16px;padding:20px;overflow-x:auto;font-size:13px;line-height:1.6;color:#d7e6ff;box-shadow:var(--shadow)}
+  .devlinks{display:flex;flex-wrap:wrap;gap:12px;margin-top:20px}
+  .countries{display:flex;flex-wrap:wrap;gap:9px}
+  .countries span{border:1px solid var(--line);background:#fff;border-radius:999px;padding:7px 15px;font-size:14px;font-weight:600;box-shadow:0 2px 8px rgba(12,20,37,.04)}
+  details{background:#fff;border:1px solid var(--line);border-radius:14px;padding:17px 21px;margin-bottom:12px;box-shadow:0 3px 12px rgba(12,20,37,.03)}
+  summary{font-weight:700;cursor:pointer;font-size:16px}
+  details p{color:var(--muted);margin:10px 0 2px;font-size:15px}
+
+  footer{border-top:1px solid var(--line);background:var(--alt);padding:46px 0 34px}
+  .foot{display:grid;grid-template-columns:1.4fr 1fr 1fr 1fr;gap:28px}
+  @media (max-width:940px){ .foot{grid-template-columns:1fr 1fr} }
+  .foot h4{margin:0 0 12px;font-size:13px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+  .foot a{display:block;color:var(--muted);padding:4px 0;font-size:14.5px}
+  .foot a:hover{color:var(--ink)}
+  .foot .brand img{width:34px;height:34px}
+  .fineprint{color:var(--muted);font-size:13px;border-top:1px solid var(--line);margin-top:30px;padding-top:18px;display:flex;flex-wrap:wrap;gap:8px 22px;justify-content:space-between}
+
+  /* ---------- reveal animation ---------- */
+  .rv{opacity:0;transform:translateY(20px);transition:opacity .7s ease, transform .7s ease}
+  .rv.in{opacity:1;transform:none}
+  @media (prefers-reduced-motion: reduce){
+    .rv{opacity:1;transform:none;transition:none}
+    .blob,.badge{animation:none}
+    html{scroll-behavior:auto}
+  }
 </style>
 </head>
 <body>
-<main>
-  <div class="brand">Nova Inc</div>
-  <h1>KYC</h1>
-  <p class="lede"><strong>Know Your Customer, built our way.</strong> An identity
-  verification platform for businesses that need to confirm a person is who
-  they claim to be — before giving them an account, money, or access.</p>
 
-  <div class="status"><span class="dot"></span> Live at kyc.novamail.store</div>
-
-  <div class="grid">
-    <section class="card">
-      <h2>What is live</h2>
-      <ul>
-        <li>Tenant API keys with strict test/live separation</li>
-        <li>Phone-only hosted flow with a live camera document scanner</li>
-        <li>Automatic capture — the scanner must detect a real document first</li>
-        <li>Automatic decisions in the standard path</li>
-        <li>Document classification, multi-pass OCR, MRZ and barcode cross-checks</li>
-        <li>Continuous face tracking, face match and active liveness</li>
-        <li>Screen/forgery evidence, deepfake signals, VPN/proxy hard gate</li>
-        <li>Proof of address, sanctions screening and ongoing monitoring</li>
-        <li>KYB business verification and reusable verified credentials</li>
-        <li>Review console for audit, exceptions and required dispositions</li>
-      </ul>
-    </section>
-    <section class="card">
-      <h2>Honest limits</h2>
-      <ul>
-        <li>KYB has <strong>no live government registry connection</strong> yet — it is format validation, document evidence and reviewer confirmation, labelled as such.</li>
-        <li>Liveness is an <strong>active movement challenge</strong>. It is not passive liveness and carries no iBeta or ISO certification.</li>
-        <li>Face and liveness accuracy benchmarks (FAR/FRR) are Phase 4 work; no benchmark number is claimed yet.</li>
-        <li>Webhook delivery is one signed attempt, logged. Retries and replay are not built yet.</li>
-        <li>The service is reached through a Cloudflare tunnel; final Cloudflare-native hosting is Phase 4 work.</li>
-      </ul>
-    </section>
+<header>
+  <div class="wrap nav">
+    <button class="burger" id="burger" aria-label="Open menu">☰</button>
+    <a class="brand" href="/"><img src="/public/img/nova-logo.jpg" alt="Nova Inc logo"><span>Nova KYC<small>by Nova Inc</small></span></a>
+    <nav>
+      <a href="#product">Product</a>
+      <a href="#how">How it works</a>
+      <a href="#capabilities">Capabilities</a>
+      <a href="#trust">Trust &amp; security</a>
+      <a href="#developers">Developers</a>
+      <a href="#faq">FAQ</a>
+    </nav>
+    <div class="spacer"></div>
+    <a class="btn ghost small desk" href="/console">Review console</a>
+    <a class="btn primary small desk" href="/dashboard">Open dashboard</a>
   </div>
+</header>
 
-  <section class="card">
-    <h2>Access</h2>
-    <p>Tenant teams work cases in the review console. Applicant verification
-    links are created per session by a tenant through the API and look like
-    <code>/flow/&lt;token&gt;</code>.</p>
-    <div class="links">
-      <a class="btn primary" href="/console">Open the review console</a>
-      <a class="btn" href="/healthz">Service health</a>
+<div id="overlay"></div>
+<aside id="drawer" aria-hidden="true">
+  <div class="drawer-head">
+    <img src="/public/img/nova-logo.jpg" alt="Nova Inc logo">
+    <div class="t">Nova KYC<small>by Nova Inc</small></div>
+    <button id="drawer-close" aria-label="Close menu">✕</button>
+  </div>
+  <div class="drawer-body">
+    <div class="grp">Explore</div>
+    <a href="#product"><span class="tick"></span>The product</a>
+    <a href="#how"><span class="tick"></span>How it works</a>
+    <a href="#capabilities"><span class="tick"></span>Capabilities</a>
+    <a href="#live"><span class="tick"></span>See it live</a>
+    <a href="#trust"><span class="tick"></span>Trust &amp; security</a>
+    <a href="#countries"><span class="tick"></span>Launch coverage</a>
+    <a href="#faq"><span class="tick"></span>FAQ</a>
+    <div class="grp">Platform</div>
+    <a href="/dashboard"><span class="tick p"></span>Tenant dashboard</a>
+    <a href="/console"><span class="tick p"></span>Review console</a>
+    <div class="grp">Developers</div>
+    <a href="https://github.com/kilomene/KYC/blob/main/docs/INTEGRATION.md"><span class="tick"></span>Integration guide</a>
+    <a href="https://github.com/kilomene/KYC/blob/main/docs/API.md"><span class="tick"></span>API reference</a>
+    <a href="https://github.com/kilomene/KYC/tree/main/sdk"><span class="tick"></span>JavaScript SDK</a>
+    <a href="https://github.com/kilomene/KYC"><span class="tick"></span>GitHub repository</a>
+  </div>
+  <div class="drawer-health">
+    <div class="h">Platform status</div>
+    <span class="status" id="drawer-status"><span class="dot"></span><span id="drawer-status-text">Checking…</span></span>
+  </div>
+  <div class="drawer-foot">A <b>Nova</b> company — Nova Inc.</div>
+</aside>
+
+<div class="hero" id="product">
+  <div class="blob g"></div><div class="blob p"></div>
+  <div class="wrap hero-grid">
+    <div class="rv in">
+      <span class="eyebrow"><span class="dot"></span>Nova Inc · Identity Verification</span>
+      <h1>Identity verification that reads <span class="grad">the document itself</span> — not a form.</h1>
+      <p class="lede">Nova KYC verifies real people for platforms that onboard them: a live camera scan of their identity document, a selfie matched against the document's own portrait, an active liveness check, fraud intelligence and screening — ending in a fully automatic decision. No name-and-date-of-birth forms. The document is the source of truth.</p>
+      <div class="cta-row">
+        <a class="btn primary" href="/dashboard">Open the dashboard</a>
+        <a class="btn ghost" href="#live">See the product live</a>
+        <span class="status" id="live-status"><span class="dot"></span><span id="live-status-text">Checking platform status…</span></span>
+      </div>
     </div>
-  </section>
+    <div class="phone-stage rv in">
+      <div class="phone-glow"></div>
+      <div class="phone"><img src="/public/img/shot-flow-scan.png" alt="The live Nova KYC verification flow: choosing the document to scan" width="1170" height="1992"></div>
+      <div class="badge b1"><span class="pulse"></span>Live document scanner</div>
+      <div class="badge b2">Decision: <span style="color:#5da30a">automatic</span></div>
+    </div>
+  </div>
+</div>
 
-  <footer>KYC is a Nova Inc product. No certification, partnership, or
-  capability is claimed here unless it has been built, tested, and measured.</footer>
-</main>
+<div class="facts">
+  <div class="wrap">
+    <div class="fact rv"><b><span data-count="16">0</span></b><span>launch countries with per-country document templates</span></div>
+    <div class="fact rv"><b><span data-count="3">0</span></b><span>verification levels, from document-only to enhanced screening</span></div>
+    <div class="fact rv"><b><span data-count="0">0</span><em> forms</em></b><span>identity is read from the document — never typed by the user</span></div>
+    <div class="fact rv"><b><span data-count="9">0</span></b><span>capability layers checking every verification</span></div>
+  </div>
+</div>
+
+<section class="blk" id="live">
+  <div class="wrap">
+    <h2 class="rv">See it live — the real product</h2>
+    <p class="sub rv">No mock-ups. These are screenshots of Nova KYC itself, taken from the running platform: what an applicant sees on their phone, and what your team sees in the tenant dashboard.</p>
+    <div class="shots">
+      <div class="rv">
+        <div class="browser-frame">
+          <div class="browser-bar"><span class="d" style="background:#ff5f57"></span><span class="d" style="background:#febc2e"></span><span class="d" style="background:#28c840"></span><span class="url">kyc.novamail.store/dashboard</span></div>
+          <img src="/public/img/shot-dashboard.png" alt="The Nova KYC tenant dashboard: usage, invoices and webhook endpoints" width="1280" height="900" loading="lazy">
+        </div>
+        <p class="caption">The tenant dashboard — usage, invoices, webhook endpoints and sessions, from your own API key.</p>
+      </div>
+      <div class="phones">
+        <div class="rv">
+          <div class="mini-phone"><img src="/public/img/shot-flow-1.png" alt="The Nova KYC flow's consent screen" width="1170" height="1992" loading="lazy"></div>
+          <p class="caption">Consent first — nothing is collected until the person agrees.</p>
+        </div>
+        <div class="rv">
+          <div class="mini-phone"><img src="/public/img/shot-flow-scan.png" alt="The Nova KYC flow: choosing the document to scan" width="1170" height="1992" loading="lazy"></div>
+          <p class="caption">The applicant only picks a document — the scanner reads everything else.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="blk alt" id="how">
+  <div class="wrap">
+    <h2 class="rv">How it works</h2>
+    <p class="sub rv">One hosted flow on the applicant's phone — your product creates a session, sends the person to it, and receives the outcome. Desktop visitors are handed off to their phone by QR code automatically.</p>
+    <div class="steps">
+      <div class="step rv"><div class="n">1</div><h3>Create a session</h3><p>Your server creates an applicant and a verification session through the API, and receives a private flow link that expires on its own.</p></div>
+      <div class="step rv"><div class="n">2</div><h3>The person scans</h3><p>Live camera only — the document is captured automatically when it fills the frame, with zoom and four-corner framing. Voice guidance talks the person through every step, in a natural human voice.</p></div>
+      <div class="step rv"><div class="n">3</div><h3>Selfie + liveness</h3><p>A selfie is matched against the portrait printed on the document, with continuous face tracking; then a server-issued movement challenge proves a live person — not a photo, not a replay.</p></div>
+      <div class="step rv"><div class="n">4</div><h3>Decision, delivered</h3><p>The engine decides automatically — approved, rejected, or flagged with reasons. Your server learns the outcome instantly by signed webhook, or by polling the API.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="blk" id="capabilities">
+  <div class="wrap">
+    <h2 class="rv">Capabilities</h2>
+    <p class="sub rv">Every layer below runs on every verification at its level. Nothing is a placeholder: if a check cannot be performed, the platform fails closed and says why — it never guesses a pass.</p>
+    <div class="caps">
+      <div class="cap rv"><div class="ic">📷</div><h3>Live document scanner</h3><p>Camera-only capture (no gallery uploads, except the regulated NIN-slip path), fully automatic shutter, orientation freedom, and reads that must agree across multiple independent passes before they are believed.</p></div>
+      <div class="cap rv"><div class="ic">🪪</div><h3>Document-sourced identity</h3><p>Per-country, per-document templates extract the name, number, dates and portrait; MRZ and barcode payloads cross-check the printed text. Disagreement means rejection, not a shrug.</p></div>
+      <div class="cap rv"><div class="ic">🧑‍🤝‍🧑</div><h3>Face verification</h3><p>The live selfie is compared with the document's own portrait while a face track holds identity continuity across the whole capture — a swap mid-flow breaks the check.</p></div>
+      <div class="cap rv"><div class="ic">🎭</div><h3>Active liveness</h3><p>Server-issued head-movement challenges, analysed for genuine motion and presentation-attack signals; the harness is evaluated against ISO-style PAD metrics.</p></div>
+      <div class="cap rv"><div class="ic">🕸️</div><h3>Fraud intelligence</h3><p>Duplicate documents and faces are detected across attempts using privacy-preserving hashed indexes — raw values are never stored for matching — alongside velocity and coordinated-abuse signals.</p></div>
+      <div class="cap rv"><div class="ic">🛡️</div><h3>Screening &amp; risk</h3><p>Sanctions and watchlist screening, VPN/proxy hard-blocking with IP-country cross-checks against the document, and a risk engine that prices every signal into the decision.</p></div>
+      <div class="cap rv"><div class="ic">🏢</div><h3>Business verification</h3><p>KYB records with people and documents, plus authoritative registry checks where a live registry source is connected — and an honest “not configured” where one is not.</p></div>
+      <div class="cap rv"><div class="ic">🎫</div><h3>Reusable credentials</h3><p>An approved verification can issue a signed, claims-only credential the person can present to other businesses on the platform — proof without re-sharing documents.</p></div>
+      <div class="cap rv"><div class="ic">🏠</div><h3>Proof of address</h3><p>Level-2 flows add a live-scanned proof-of-address document, checked for recency and consistency with the verified identity.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="blk alt" id="trust">
+  <div class="wrap">
+    <h2 class="rv">Built to be trusted — and to prove it</h2>
+    <p class="sub rv">Trust is not a slogan here; it is the engineering posture of the whole platform.</p>
+    <div class="caps" style="grid-template-columns:repeat(2,1fr)">
+      <div class="cap rv"><h3>How your data is protected</h3>
+        <ul class="checklist">
+          <li><b>Encrypted at rest.</b> Every stored document and biometric capture is AES-256-GCM encrypted, with a sealed, recoverable master-key backup.</li>
+          <li><b>Secrets never sit in the open.</b> API keys and webhook secrets are hashed or shown exactly once; tenant data is isolated and cross-tenant access is tested to 404.</li>
+          <li><b>Erasure is real.</b> A subject-erasure request deletes stored media and nulls personal fields, and records that it did so.</li>
+        </ul>
+      </div>
+      <div class="cap rv"><h3>How decisions stay honest</h3>
+        <ul class="checklist">
+          <li><b>Fail closed, always.</b> Missing capability, unreadable data, or a provider that is not configured produces a refusal with a named reason — never a silent pass.</li>
+          <li><b>A complete audit trail.</b> Every meaningful action — reads, decisions, deletions — is written to an audit log that survives even tenant removal.</li>
+          <li><b>Honest health.</b> The status on this page reads the platform's real capability-aware health endpoint — if a critical engine is down, it says so. Watch it in the menu.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="blk" id="developers">
+  <div class="wrap">
+    <h2 class="rv">For developers</h2>
+    <p class="sub rv">Two keys per tenant (test and live), a hosted flow so you never touch raw biometrics, signed webhooks, and a zero-dependency JavaScript SDK. Test mode runs the full pipeline and is always free.</p>
+    <pre class="rv"><code>// Create a verification in four lines
+const applicant = await kyc.createApplicant({ country: 'NG' });
+const session   = await kyc.createSession({ applicantId: applicant.id, level: 1 });
+// Send the user to the hosted flow:
+redirect('https://kyc.novamail.store' + session.flow_url);
+// Get the decision by signed webhook — or poll kyc.getSession(session.id)</code></pre>
+    <div class="devlinks rv">
+      <a class="btn primary" href="/dashboard">Tenant dashboard</a>
+      <a class="btn ghost" href="https://github.com/kilomene/KYC/blob/main/docs/INTEGRATION.md">Integration guide</a>
+      <a class="btn ghost" href="https://github.com/kilomene/KYC/blob/main/docs/API.md">API reference</a>
+      <a class="btn ghost" href="https://github.com/kilomene/KYC/tree/main/sdk">JavaScript SDK</a>
+      <a class="btn ghost" href="https://github.com/kilomene/KYC">GitHub repository</a>
+    </div>
+  </div>
+</section>
+
+<section class="blk alt" id="countries">
+  <div class="wrap">
+    <h2 class="rv">Launch coverage</h2>
+    <p class="sub rv">Passports are supported for every launch country, alongside each country's own identity documents — Nigeria's voter's card, driver's licence and NIN documents among them.</p>
+    <div class="countries rv">
+      <span>Nigeria</span><span>United Kingdom</span><span>United States</span><span>Canada</span><span>Australia</span><span>Germany</span><span>Ghana</span><span>Kenya</span><span>South Africa</span><span>India</span><span>Philippines</span><span>Singapore</span><span>United Arab Emirates</span><span>France</span><span>Netherlands</span><span>Ireland</span>
+    </div>
+  </div>
+</section>
+
+<section class="blk" id="faq">
+  <div class="wrap">
+    <h2 class="rv">Questions, answered plainly</h2>
+    <p class="sub rv"></p>
+    <details class="rv"><summary>Why are there no name and date-of-birth forms?</summary><p>Because typed identity is the weakest link in verification — people mistype, and fraudsters type whatever they like. Nova KYC reads identity from the document itself and asks the person only to confirm what was read. If a read is wrong, the correction path is a better scan, not an edit box.</p></details>
+    <details class="rv"><summary>What does the person being verified need?</summary><p>A phone with a camera and their physical identity document. The flow is phone-first by design; someone who opens the link on a desktop is shown a QR code to continue on their phone. Voice guidance is built into the flow itself.</p></details>
+    <details class="rv"><summary>What happens when a scan is bad?</summary><p>The flow coaches in real time — face presence, framing, lighting, and a closer scan when the document's printed photo is small — and the read-back shows exactly what was read before anything is submitted. Decisions name their reasons, and capture-quality failures come with plain retry guidance.</p></details>
+    <details class="rv"><summary>Where do documents and selfies go?</summary><p>They are stored encrypted on the platform, visible only to the tenant that collected them, and never travel in webhooks or credentials (those carry claims and outcomes only). Subject erasure deletes the media and nulls the personal fields.</p></details>
+    <details class="rv"><summary>Is it automatic, or does a human review?</summary><p>Automatic. The standard path has no manual review: the engine approves genuine verifications and rejects invalid ones with named reason codes. Cases the engine elevates carry their signals with them for the tenant's own review console.</p></details>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="foot">
+      <div>
+        <a class="brand" href="/" style="margin-bottom:12px"><img src="/public/img/nova-logo.jpg" alt="Nova Inc logo"><span>Nova KYC<small>by Nova Inc</small></span></a>
+        <p style="color:var(--muted);font-size:14.5px;max-width:20rem">The identity verification platform of Nova Inc — built in the open, engineered to fail closed, and presented honestly.</p>
+      </div>
+      <div>
+        <h4>Platform</h4>
+        <a href="/dashboard">Tenant dashboard</a>
+        <a href="/console">Review console</a>
+        <a href="#how">How it works</a>
+        <a href="#capabilities">Capabilities</a>
+      </div>
+      <div>
+        <h4>Developers</h4>
+        <a href="https://github.com/kilomene/KYC/blob/main/docs/INTEGRATION.md">Integration guide</a>
+        <a href="https://github.com/kilomene/KYC/blob/main/docs/API.md">API reference</a>
+        <a href="https://github.com/kilomene/KYC/tree/main/sdk">JavaScript SDK</a>
+        <a href="https://github.com/kilomene/KYC">GitHub</a>
+      </div>
+      <div>
+        <h4>Company</h4>
+        <a href="https://novamail.store">Nova Inc</a>
+        <a href="https://payments.novamail.store">Nova Payments</a>
+        <a href="https://exchange.novamail.store">Agent Exchange</a>
+        <a href="#trust">Trust &amp; security</a>
+      </div>
+    </div>
+    <div class="fineprint">
+      <span>© Nova Inc. Nova KYC is a Nova Inc product.</span>
+      <span id="foot-status">Status: checking…</span>
+    </div>
+  </div>
+</footer>
+
+<script>
+  // ---- side drawer ----
+  var drawer = document.getElementById('drawer'), overlay = document.getElementById('overlay');
+  function setDrawer(open){
+    drawer.classList.toggle('open', open); overlay.classList.toggle('open', open);
+    drawer.setAttribute('aria-hidden', open ? 'false' : 'true');
+  }
+  document.getElementById('burger').addEventListener('click', function(){ setDrawer(true); });
+  document.getElementById('drawer-close').addEventListener('click', function(){ setDrawer(false); });
+  overlay.addEventListener('click', function(){ setDrawer(false); });
+  drawer.querySelectorAll('a').forEach(function(a){ a.addEventListener('click', function(){ setDrawer(false); }); });
+  document.addEventListener('keydown', function(e){ if (e.key === 'Escape') setDrawer(false); });
+
+  // ---- reveal on scroll ----
+  var io = new IntersectionObserver(function(es){
+    es.forEach(function(e){ if (e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold: .12});
+  document.querySelectorAll('.rv').forEach(function(el){ io.observe(el); });
+
+  // ---- animated counters ----
+  var cio = new IntersectionObserver(function(es){
+    es.forEach(function(e){
+      if (!e.isIntersecting) return; cio.unobserve(e.target);
+      var target = +e.target.dataset.count, t0 = null;
+      function tick(ts){
+        if (!t0) t0 = ts;
+        var p = Math.min((ts - t0) / 900, 1);
+        e.target.textContent = Math.round(target * (0.2 + 0.8 * p) * (p === 1 ? 1 : 1)) && Math.round(target * p);
+        if (p < 1) requestAnimationFrame(tick); else e.target.textContent = target;
+      }
+      if (target === 0) { e.target.textContent = '0'; return; }
+      requestAnimationFrame(tick);
+    });
+  }, {threshold: .5});
+  document.querySelectorAll('[data-count]').forEach(function(el){ cio.observe(el); });
+
+  // ---- live, honest status: real capability-aware health endpoint ----
+  fetch('/healthz').then(function(r){ return r.json().then(function(j){ return {ok: r.ok && j.ok}; }); })
+    .then(function(s){
+      [['live-status','live-status-text'], ['drawer-status','drawer-status-text']].forEach(function(pair){
+        var pill = document.getElementById(pair[0]);
+        pill.classList.add(s.ok ? 'ok' : 'bad');
+        document.getElementById(pair[1]).textContent = s.ok ? 'Platform operational' : 'Platform degraded';
+      });
+      document.getElementById('foot-status').textContent = s.ok ? 'Status: operational' : 'Status: degraded';
+    })
+    .catch(function(){
+      document.getElementById('live-status-text').textContent = 'Status unavailable';
+      document.getElementById('drawer-status-text').textContent = 'Status unavailable';
+      document.getElementById('foot-status').textContent = 'Status: unavailable';
+    });
+</script>
 </body>
 </html>
