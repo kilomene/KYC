@@ -584,7 +584,7 @@ def make_handler(db: DB, data_dir: str):
             if raw_path.startswith("/voice/") and name.endswith(".mp3"):
                 fp = os.path.join(PUBLIC_DIR, "voice", name)
             elif (raw_path.startswith("/img/") or raw_path.startswith("/public/img/")) and \
-                    name.rsplit(".", 1)[-1].lower() in ("webp", "png", "jpg", "jpeg", "svg", "gif"):
+                    name.rsplit(".", 1)[-1].lower() in ("webp", "png", "jpg", "jpeg", "svg", "gif", "mp4", "webm"):
                 fp = os.path.join(PUBLIC_DIR, "img", name)
             else:
                 fp = os.path.join(PUBLIC_DIR, name)
@@ -597,6 +597,8 @@ def make_handler(db: DB, data_dir: str):
             if _ext in ("webp", "png", "jpg", "jpeg", "svg", "gif"):
                 ctype = {"webp": "image/webp", "png": "image/png", "jpg": "image/jpeg",
                          "jpeg": "image/jpeg", "svg": "image/svg+xml", "gif": "image/gif"}[_ext]
+            if _ext in ("mp4", "webm"):
+                ctype = "video/mp4" if _ext == "mp4" else "video/webm"
             with open(fp, "rb") as f: data = f.read()
             # HTML pages are never cached: the hosted flow must always run
             # the exact page version that matches the server's endpoints
@@ -604,7 +606,21 @@ def make_handler(db: DB, data_dir: str):
             # server did not have yet, mid-ship — owner's live test hit it).
             # Voice clips are immutable per key and cache hard.
             hdrs = {"Cache-Control": "no-store"} if ctype == "text/html" else \
-                   {"Cache-Control": "public, max-age=86400"} if ctype in ("audio/mpeg",) or ctype.startswith("image/") else None
+                   {"Cache-Control": "public, max-age=86400"} if ctype in ("audio/mpeg",) or ctype.startswith(("image/", "video/")) else None
+            if ctype.startswith("video/"):
+                # Byte-range support: iOS Safari refuses <video> without
+                # it. Serve the requested slice with a 206.
+                hdrs = dict(hdrs or {}); hdrs["Accept-Ranges"] = "bytes"
+                rng = (self.headers.get("Range") or "").strip()
+                m = re.match(r"bytes=(\d*)-(\d*)$", rng)
+                if m:
+                    total = len(data)
+                    start = int(m.group(1)) if m.group(1) else 0
+                    end = int(m.group(2)) if m.group(2) else total - 1
+                    end = min(end, total - 1)
+                    if start > end: return self._err(416, "range not satisfiable")
+                    hdrs["Content-Range"] = f"bytes {start}-{end}/{total}"
+                    return self._send(206, data[start:end + 1], ctype, headers=hdrs)
             self._send(200, data, ctype, headers=hdrs)
 
         def _session_view(self, s):
