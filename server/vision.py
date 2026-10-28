@@ -145,6 +145,96 @@ def _prep_variants(path):
             pass
     return variants
 
+
+def enhanced_rendition(path):
+    """Vision sharpening (2026-10-28): a contrast/sharpness-enhanced
+    rendition of the READING image — CLAHE local-contrast on the
+    luminance, gentle denoise, unsharp mask. Phone captures of real
+    documents routinely arrive flat, glared or slightly soft; the
+    fortified reader runs this as one more independent pass so its
+    text joins the corroboration pool (and can win on confidence).
+    Returns a temp PNG path (caller deletes) or None."""
+    if cv2 is None or not path:
+        return None
+    try:
+        img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            return None
+        img = cv2.fastNlMeansDenoising(img, None, 8, 7, 21)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        img = clahe.apply(img)
+        blur = cv2.GaussianBlur(img, (0, 0), 3)
+        img = cv2.addWeighted(img, 1.5, blur, -0.5, 0)
+        fd, tmp = tempfile.mkstemp(suffix=".png")
+        os.close(fd)
+        cv2.imwrite(tmp, img)
+        return tmp
+    except Exception:
+        return None
+
+
+def super_resolved_rendition(path):
+    """Neural super-resolution (FSRCNN-small x3, opencv-contrib
+    dnn_superres; model in models/, fetched at recovery time) for
+    LOW-RESOLUTION captures only — long side < 1200px, where print
+    sits below the readers' comfort zone. Returns a temp PNG path
+    (caller deletes) or None when the model/engine is unavailable
+    or the capture is already large enough that SR would only add
+    cost and hallucinated edges."""
+    if cv2 is None or not path:
+        return None
+    model = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         "models", "fsrcnn_small_x3.pb")
+    if not os.path.exists(model) or not hasattr(cv2, "dnn_superres"):
+        return None
+    try:
+        img = cv2.imread(path)
+        if img is None:
+            return None
+        if max(img.shape[:2]) >= 1200:
+            return None
+        sr = cv2.dnn_superres.DnnSuperResImpl_create()
+        sr.readModel(model)
+        sr.setModel("fsrcnn", 3)
+        up = sr.upsample(img)
+        fd, tmp = tempfile.mkstemp(suffix=".png")
+        os.close(fd)
+        cv2.imwrite(tmp, up)
+        return tmp
+    except Exception:
+        return None
+
+
+def quality_report(path):
+    """Per-capture quality gate (2026-10-28): objective sharpness /
+    exposure / size metrics for one stored image. blur_score is the
+    Laplacian variance (higher = sharper; < 60 reads as soft on
+    document photos), glare_frac the share of near-white clipped
+    pixels, dark_frac the share of near-black. The grade is a
+    coarse coaching signal, never a decision input on its own."""
+    out = {"blur_score": None, "glare_frac": None, "dark_frac": None,
+           "long_side": None, "grade": "unknown"}
+    if cv2 is None or not path:
+        return out
+    try:
+        img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            return out
+        import numpy as _np
+        out["blur_score"] = round(float(cv2.Laplacian(img, cv2.CV_64F).var()), 1)
+        out["glare_frac"] = round(float(_np.mean(img > 248)), 4)
+        out["dark_frac"] = round(float(_np.mean(img < 12)), 4)
+        out["long_side"] = int(max(img.shape[:2]))
+        if out["blur_score"] < 60 or out["glare_frac"] > 0.25:
+            out["grade"] = "poor"
+        elif out["blur_score"] < 150 or out["glare_frac"] > 0.10:
+            out["grade"] = "fair"
+        else:
+            out["grade"] = "good"
+    except Exception:
+        pass
+    return out
+
 def _mrz_band_text(path, exe):
     """Dedicated MRZ-zone pass. Full-page segmentation consistently
     skips the MRZ lines on bordered documents (measured 2026-10-26:
@@ -489,6 +579,12 @@ def read_document_text(path, expect_mrz=True):
     variants = _prep_variants(path)
     if not variants:
         variants = [("raw", path)]
+    # Vision sharpening (2026-10-28): the enhanced rendition joins
+    # as one more independent pass — its text enters the same
+    # winner logic and the pass-text corroboration pool.
+    _enh = enhanced_rendition(path)
+    if _enh:
+        variants = variants + [("enhanced", _enh)]
     passes = []
     try:
         # The passes are independent tesseract subprocess runs —
@@ -580,6 +676,78 @@ def ocr_words(path, force_tiles=False):
             _OCR_WORDS_CACHE.clear()
         _OCR_WORDS_CACHE[_key] = _result
     return _result
+
+
+def _box_iou(a, b):
+    """IoU of two fractional (x0, y0, x1, y1) boxes."""
+    try:
+        ix0, iy0 = max(a[0], b[0]), max(a[1], b[1])
+        ix1, iy1 = min(a[2], b[2]), min(a[3], b[3])
+        iw, ih = max(0.0, ix1 - ix0), max(0.0, iy1 - iy0)
+        inter = iw * ih
+        area_a = max(0.0, a[2] - a[0]) * max(0.0, a[3] - a[1])
+        area_b = max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
+        union = area_a + area_b - inter
+        return inter / union if union > 0 else 0.0
+    except Exception:
+        return 0.0
+
+
+def _norm_token(t):
+    return "".join(c for c in str(t or "").upper() if c.isalnum())
+
+
+def merge_word_streams(tess_words, paddle_words):
+    """THE UNIFIED STREAM (owner's order, 2026-10-28: the two OCR
+    engines "become one... a very strong family"). Merge the
+    Tesseract and PaddleOCR word streams into ONE stream the
+    extraction brain consumes natively — zones, labels, rows and
+    band geometry now run on both engines' evidence at once.
+
+    Rules (conservative; the brain's corroboration gates downstream
+    remain the arbiters of truth):
+      * Identical normalised token at the same place (IoU >= 0.4):
+        one token, the higher confidence, src = both engines — a
+        cross-engine sighting of the same print.
+      * DIFFERENT tokens claiming the same place (IoU >= 0.5): keep
+        the higher-confidence token only. Two rival tokens at one
+        spot would otherwise fuse into phantom rows/names; the
+        loser's text still reaches the brain via the pass texts.
+      * Everything else passes through, tagged with its engine.
+    Returns a new list; inputs are not mutated."""
+    merged = []
+    for w in tess_words or []:
+        nw = dict(w)
+        nw.setdefault("src", "tesseract")
+        merged.append(nw)
+    for pw in paddle_words or []:
+        pnorm = _norm_token(pw.get("text"))
+        placed = False
+        for mw in merged:
+            iou = _box_iou(mw.get("box") or (), pw.get("box") or ())
+            if iou < 0.4:
+                continue
+            if _norm_token(mw.get("text")) == pnorm:
+                mw["conf"] = max(float(mw.get("conf") or 0),
+                                  float(pw.get("conf") or 0))
+                mw["src"] = "tesseract+paddle"
+                placed = True
+                break
+            if iou >= 0.5:
+                # Rival claim on the same print: the stronger
+                # sighting holds the place.
+                if float(pw.get("conf") or 0) > float(mw.get("conf") or 0):
+                    keep = dict(pw)
+                    keep.setdefault("src", "paddle")
+                    mw.clear()
+                    mw.update(keep)
+                placed = True
+                break
+        if not placed:
+            nw = dict(pw)
+            nw.setdefault("src", "paddle")
+            merged.append(nw)
+    return merged
 
 
 def _ocr_words_uncached(path, force_tiles=False):
@@ -1056,8 +1224,12 @@ def _decode_barcodes(path):
     2x upscale (small codes in hand-held photos — the California
     back's PDF417 sits in a corner at a fraction of the frame).
     Results dedupe on (format, text); the ladder stops at the
-    first rendition that finds anything."""
-    if zxingcpp is None or not path or Image is None:
+    first rendition that finds anything. When zxing finds nothing
+    (or is absent), two OpenCV decoder arms take their turn on the
+    same renditions (2026-10-28 vision sharpening — a decoder
+    ensemble: cv2.barcode for 1D/PDF417-class codes, WeChatQRCode
+    for hard QR codes when its models are present)."""
+    if not path or Image is None:
         return []
     try:
         base = Image.open(path)
@@ -1078,6 +1250,8 @@ def _decode_barcodes(path):
             pass
     seen, out = set(), []
     for im in renditions:
+        if zxingcpp is None:
+            break
         try:
             for r in zxingcpp.read_barcodes(im):
                 # zxing-cpp renders the AAMVA separator bytes of
@@ -1100,6 +1274,58 @@ def _decode_barcodes(path):
                 out.append({"format": key[0], "text": key[1][:2000]})
         except Exception:
             continue
+        if out:
+            break
+    if out or cv2 is None:
+        return out
+    # --- OpenCV decoder arms (zxing found nothing) ---
+    import numpy as _np
+    _models = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models")
+    _wechat = None
+    try:
+        _wq = [os.path.join(_models, f) for f in
+               ("wechat_detect.prototxt", "wechat_detect.caffemodel",
+                "wechat_sr.prototxt", "wechat_sr.caffemodel")]
+        if all(os.path.exists(p) for p in _wq) and hasattr(cv2, "wechat_qrcode"):
+            _wechat = cv2.wechat_qrcode.WeChatQRCode(*_wq)
+    except Exception:
+        _wechat = None
+    _bdet = None
+    try:
+        if hasattr(cv2, "barcode"):
+            _bdet = cv2.barcode.BarcodeDetector()
+    except Exception:
+        _bdet = None
+    for im in renditions:
+        try:
+            arr = cv2.cvtColor(_np.array(im), cv2.COLOR_RGB2BGR)
+        except Exception:
+            continue
+        if _bdet is not None:
+            try:
+                _ok, _infos, _types, _pts = _bdet.decodeMulti(arr)
+                if _ok:
+                    for _txt, _typ in zip(_infos or [], _types or []):
+                        if _txt:
+                            _txt = _txt.replace("<LF>", "\n").replace("<CR>", "\r") \
+                                       .replace("<RS>", "\x1e").replace("<GS>", "\x1d")
+                            key = (str(_typ), _txt)
+                            if key not in seen:
+                                seen.add(key)
+                                out.append({"format": key[0], "text": key[1][:2000]})
+            except Exception:
+                pass
+        if _wechat is not None:
+            try:
+                _infos, _pts = _wechat.detectAndDecode(arr)
+                for _txt in _infos or []:
+                    if _txt:
+                        key = ("QRCode", _txt)
+                        if key not in seen:
+                            seen.add(key)
+                            out.append({"format": "QRCode", "text": _txt[:2000]})
+            except Exception:
+                pass
         if out:
             break
     return out
