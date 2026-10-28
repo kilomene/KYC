@@ -116,24 +116,21 @@ def check_face_track(video_path=None, extra_image_paths=None,
     if not FACE.models_present():
         return {"status": "error", "findings": {"error": "face_models_not_fetched"}, "reason_codes": ["model_missing"]}
     records = []
+    vinfo = {}
     if video_path:
-        cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened():
+        # Full-duration, orientation-corrected sampling (FACE.video_
+        # frames) — the old first-N sampling judged a 9s clip on its
+        # first second whenever the container's frame count lied, and
+        # never corrected a sideways recording (owner session 14).
+        try:
+            vframes, vinfo = FACE.video_frames(video_path, max_frames)
+        except Exception:
             return {"status": "error", "findings": {"error": "video_unreadable"}, "reason_codes": ["face_track_video_unreadable"]}
-        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-        step = max(1, total // max_frames) if total > 0 else 1
-        i = 0
-        while len(records) < max_frames:
-            ok, frame = cap.read()
-            if not ok:
-                break
-            if i % step == 0:
-                try:
-                    records.append(_frame_record(frame))
-                except Exception:
-                    records.append(None)
-            i += 1
-        cap.release()
+        for frame in vframes:
+            try:
+                records.append(_frame_record(frame))
+            except Exception:
+                records.append(None)
     for p in (extra_image_paths or []):
         if not p:
             continue
@@ -146,5 +143,7 @@ def check_face_track(video_path=None, extra_image_paths=None,
         return {"status": "not_run", "findings": {"reason": "no_video_or_images"}, "reason_codes": ["face_track_not_run"]}
     res, _agg = build_track(records, pass_threshold, margin)
     res["findings"] = {**res["findings"], "method": "yunet+sface_continuous_track",
+                       "video_total_frames": vinfo.get("total_frames"),
+                       "video_rotation_degrees": vinfo.get("rotation_degrees"),
                        "sources": {"video": bool(video_path), "extra_images": len(extra_image_paths or [])}}
     return res
