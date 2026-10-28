@@ -1558,6 +1558,7 @@ async function probePresence(video){
 }
 const PRESENCE_COPY = {
   no_face_seen: 'We can\'t see your face yet — face the camera and fill the oval with your face.',
+  angle_or_light: 'We can see you, but not clearly enough to measure your face. Hold the phone at eye level, and face a light source — don\'t stand with a window or bright sky behind you.',
   move_closer: 'Your face is small in the frame — move closer until it fills the oval.',
   centre_your_face: 'Centre your face inside the oval.',
   frame_unreadable: 'Still looking for your face…'
@@ -1634,11 +1635,14 @@ function recordLiveness(stream){
   if(moves[0]) VOICE.say('lv_turn_' + moves[0], true);
   if(moves[1]) setTimeout(() => { if(lvBusy) VOICE.say('lv_turn_' + moves[1], true); }, 4200);
   let rec;
-  // Best available quality: the rPPG pulse analysis (Phase 4 WS2) needs
-  // a longer, less-crushed clip than the old ~4.5 s default — record
-  // ~9 s at the highest bitrate the browser accepts.
+  // The rPPG pulse analysis needs a longer, less-crushed clip than
+  // the old ~4.5 s default — record ~9 s. The bitrate is capped at
+  // 1.2 Mbps on purpose: the server analyses frames at <=1024 px, so
+  // more bits buy nothing, and the old 2.5 Mbps setting produced
+  // ~2.7 MB clips that hit the tunnel's request-size cap (HTTP 413,
+  // owner session 14). 9 s at 1.2 Mbps is ~1.35 MB — safely across.
   try{
-    const opts = {videoBitsPerSecond: 2500000};
+    const opts = {videoBitsPerSecond: 1200000};
     if(window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported('video/webm;codecs=vp9'))
       opts.mimeType = 'video/webm;codecs=vp9';
     rec = new MediaRecorder(stream, opts);
@@ -1648,12 +1652,47 @@ function recordLiveness(stream){
   }
   const chunks = [];
   rec.ondataavailable = e => chunks.push(e.data);
+  // Mid-recording presence watch: the start gate proves the face is
+  // measurable at second 0, but a take can drift out of the
+  // detector's reach (phone tilted down, bright sky behind) and
+  // produce 9 seconds the server cannot judge at all (owner session
+  // 14). Probe the production detector during the take; two
+  // consecutive misses stop it, discard it, and coach the fix — an
+  // immediate guided retake instead of a silent failure at submit.
+  let lvAborted = false, lvAbortGuidance = null, lvLost = 0;
+  const lvWatch = setInterval(async () => {
+    if(rec.state !== 'recording'){ clearInterval(lvWatch); return; }
+    const p = await probePresence($('lv-video'));
+    if(!p) return;                 // probe service hiccup: no verdict
+    if(p.face_present){ lvLost = 0; return; }
+    lvLost += 1;
+    lvAbortGuidance = p.guidance;
+    if(lvLost >= 2){
+      lvAborted = true;
+      clearInterval(lvWatch);
+      if(rec.state !== 'inactive') rec.stop();
+    }
+  }, 1600);
   rec.onstop = async () => {
+    clearInterval(lvWatch);
     stopCam();
+    if(lvAborted){
+      msg('I lost sight of your face during that take — let\'s retake it. ' + (PRESENCE_COPY[lvAbortGuidance] || ''), true);
+      lvBusy = false; enterLivenessStep();
+      return;
+    }
+    const blob = new Blob(chunks, {type: rec.mimeType || 'video/webm'});
+    // Never send a clip the tunnel would refuse (its request cap is
+    // ~2.8 MB): a plain retake beats a raw HTTP 413 on the screen.
+    if(blob.size > 2600000){
+      msg('That recording came out too large to send — let\'s retake it.', true);
+      lvBusy = false; enterLivenessStep();
+      return;
+    }
     try{
       const fd = new FormData();
       fd.append('capture_meta', JSON.stringify({method:'live_camera', client_signals: clientSignals()}));
-      fd.append('video', new Blob(chunks, {type: rec.mimeType || 'video/webm'}), 'liveness.webm');
+      fd.append('video', blob, 'liveness.webm');
       await api('POST', '/v1/flow/liveness', fd, true, true);
       info.liveness_uploaded = true; VOICE.say('lv_done', true); msg('Liveness recorded.'); nextStep();
     }catch(e){ msg(e.message, true); lvBusy = false; enterLivenessStep(); }
@@ -1765,7 +1804,7 @@ const RESULT_COACH = [
   [['face_mismatch', 'face_match_unclear'], 'Your selfie did not clearly match the photo on your document. Next time: bright, even light, face the camera straight on, and use a closer, sharper scan of the document so its printed photo is bigger.'],
   [['face_track_identity_break', 'face_track_low_presence'], 'Keep your face in the frame the whole time — looking away, or anything covering your face, breaks the check.'],
   [['liveness_face_absent', 'liveness_static_replay', 'liveness_challenge_incomplete', 'liveness_movement_unclear', 'liveness_too_few_frames'], 'During the live check, keep your face inside the oval for the whole recording and follow each head movement slowly, one at a time.'],
-  [['document_photo_small', 'portrait_not_found'], 'The photo on your document was hard to use — a closer, flatter scan of the document, filling the frame, reads best.']
+  [['document_photo_small', 'portrait_not_found', 'document_portrait_weak_reference', 'document_portrait_not_detected_rescan'], 'The photo printed on your document was too small for the system to compare faces reliably — a closer scan of the document, filling the whole frame with it, makes the printed photo bigger.']
 ];
 function renderSubmitOutcome(st, credential, reasons){
   $('out').innerHTML = '';
@@ -1819,7 +1858,25 @@ $('btn-submit').onclick = async () => {
       return;
     }
     renderSubmitOutcome(r.status, r.credential, (r.decision && r.decision.reason_codes) || []);
-  }catch(e){ msg(e.message, true); } };
+  }catch(e){
+    // A transient failure here (connection cut, 502/503/504) does NOT
+    // mean the submit failed: the tunnel caps a single request far
+    // below the decision pass's runtime, so the server may well have
+    // claimed the session and be deciding right now (owner session
+    // 14: the decision landed while the phone showed a 502). Fall
+    // into the same polling loop the 202 path uses — it renders the
+    // decision when it lands, and if the pass truly never started
+    // it hands the submit button back. Only a real 4xx refusal is
+    // shown as an error.
+    const transient = !e.status || e.status === 502 || e.status === 503 || e.status === 504;
+    if(transient){
+      $('out').innerHTML = '';
+      show('s-status'); $('status').textContent = 'Processing… your verification is being checked. This can take a minute — keep this page open.';
+      pollSubmitOutcome();
+      return;
+    }
+    msg(e.message, true);
+  } };
 $('btn-revoke').onclick = async () => {
   try{ await api('POST', '/v1/flow/credential/revoke', {}); $('cred').style.display = 'none'; msg('Credential revoked.'); }catch(e){ msg(e.message, true); } };
 </script>
