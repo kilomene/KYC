@@ -401,10 +401,20 @@ def make_handler(db: DB, data_dir: str):
         def _get(self, p):
             if p == "/" or p == "/index.html": return self._static("index.html")
             if p == "/console": return self._static("console.html")
+            if p == "/dashboard": return self._static("dashboard.html")
             if p.startswith("/flow/"): return self._static("flow.html")
             if p.startswith("/voice/"): return self._static(p)
             if p.startswith("/public/"): return self._static(p[len("/public/"):])
-            if p == "/healthz": return self._send(200, {"ok": True})
+            if p == "/healthz":
+                # Capability-aware health (2026-10-27): HTTP 200 from
+                # a process whose OCR binary was wiped by a VM
+                # replacement is a LIE — every document read errors
+                # while the watchdog sees green. Probe the critical
+                # binary and answer 503 so the recovery hook fires.
+                import shutil as _shutil_h
+                if not _shutil_h.which("tesseract"):
+                    return self._send(503, {"ok": False, "missing": ["tesseract"]})
+                return self._send(200, {"ok": True})
             if p == "/v1/platform/metrics":
                 # WS5 queue/ops visibility for the platform operator
                 # (same fail-closed gate as tenant bootstrap).
@@ -732,8 +742,91 @@ def make_handler(db: DB, data_dir: str):
             return self._err(404, "not found")
 
         def _delete(self, p):
+            # Platform tenant deletion (developer layer, 2026-10-27):
+            # operator-only, confirm-gated. Removes the tenant's
+            # OPERATIONAL data (keys, sessions graph, applicants,
+            # businesses, fraud rows, stored media) and RETAINS the
+            # platform record: audit_log, deletions, invoices and
+            # usage_events stay, so the financial/audit trail of a
+            # removed tenant survives its removal.
+            mp = re.match(r"^/v1/platform/tenants/([\w-]+)$", p)
+            if mp:
+                import hmac as _hmac
+                _tok = os.environ.get("KYC_PLATFORM_ADMIN_TOKEN") or ""
+                _given = self.headers.get("X-Platform-Admin") or ""
+                if not _tok or not _hmac.compare_digest(_given, _tok):
+                    return self._err(403, "platform admin token required", "platform_admin_required")
+                target = mp.group(1)
+                trow = db.one("SELECT * FROM tenants WHERE id=?", (target,))
+                if not trow: return self._err(404, "tenant not found")
+                b = self._json()
+                if (b or {}).get("confirm") != target:
+                    return self._err(422, "confirmation required: send {\"confirm\": \"<tenant_id>\"}")
+                counts = {}
+                biz_ids = [r["id"] for r in db.all("SELECT id FROM businesses WHERE tenant_id=?", (target,))]
+                file_paths = []
+                for r in db.all("SELECT storage_path, back_storage_path FROM documents WHERE tenant_id=?", (target,)):
+                    file_paths += [r["storage_path"], r["back_storage_path"]]
+                for r in db.all("SELECT storage_path FROM biometric_captures WHERE tenant_id=?", (target,)):
+                    file_paths.append(r["storage_path"])
+                if biz_ids:
+                    for r in db.all("SELECT storage_path FROM business_documents WHERE business_id IN (%s)"
+                                     % ",".join("?" * len(biz_ids)), tuple(biz_ids)):
+                        file_paths.append(r["storage_path"])
+                    for tbl in ("business_people", "business_documents"):
+                        cur = db.execute(f"DELETE FROM {tbl} WHERE business_id IN (%s)"
+                                         % ",".join("?" * len(biz_ids)), tuple(biz_ids))
+                        counts[tbl] = cur.rowcount
+                for tbl in ("api_keys", "webhook_deliveries", "webhook_endpoints",
+                            "consents", "documents", "biometric_captures", "checks",
+                            "decisions", "cases", "credentials", "screening_hits",
+                            "monitoring_alerts", "fraud_index", "flow_configs",
+                            "tenant_users", "sessions", "applicants", "businesses"):
+                    try:
+                        cur = db.execute(f"DELETE FROM {tbl} WHERE tenant_id=?", (target,))
+                        counts[tbl] = cur.rowcount
+                    except Exception:
+                        counts[tbl] = None   # table absent in this schema vintage
+                try:
+                    cur = db.execute("DELETE FROM tenant_quotas WHERE tenant_id=?", (target,))
+                    counts["tenant_quotas"] = cur.rowcount
+                except Exception:
+                    counts["tenant_quotas"] = None
+                files_removed = 0
+                for rel in file_paths:
+                    if rel:
+                        fp = os.path.join(data_dir, rel)
+                        if os.path.isfile(fp):
+                            try: os.remove(fp); files_removed += 1
+                            except OSError: pass
+                import shutil as _shutil
+                tdir = os.path.join(data_dir, "files", target)
+                if os.path.isdir(tdir): _shutil.rmtree(tdir, ignore_errors=True)
+                db.execute("DELETE FROM tenants WHERE id=?", (target,))
+                db.execute("INSERT INTO deletions(tenant_id,target_type,target_id,kind,detail,at) VALUES(?,?,?,?,?,?)",
+                           (target, "tenant", target, "tenant_delete",
+                            json.dumps({"counts": counts, "files_removed": files_removed}), now_iso()))
+                db.audit("platform", "operator", target, "tenant.delete", "tenant", target,
+                         metadata={"counts": counts, "files_removed": files_removed})
+                return self._send(200, {"deleted": target, "counts": counts,
+                                        "files_removed": files_removed,
+                                        "retained": ["audit_log", "deletions", "invoices", "usage_events"]})
             t = self._tenant()
             if not t: return self._err(401, "bad, revoked, or missing API key")
+            tid, env = t["tenant_id"], t["env"]
+            # Webhook endpoint self-service (developer layer): a
+            # tenant can remove its OWN endpoint; its deliveries go
+            # with it. Other tenants' endpoints are invisible here.
+            mw = re.match(r"^/v1/webhooks/([\w-]+)$", p)
+            if mw:
+                ep = db.one("SELECT * FROM webhook_endpoints WHERE id=? AND tenant_id=? AND env=?",
+                            (mw.group(1), tid, env))
+                if not ep: return self._err(404, "endpoint not found")
+                cur = db.execute("DELETE FROM webhook_deliveries WHERE endpoint_id=?", (ep["id"],))
+                db.execute("DELETE FROM webhook_endpoints WHERE id=?", (ep["id"],))
+                db.audit("tenant", tid, tid, "webhook.delete", "webhook_endpoint", ep["id"],
+                         metadata={"url": ep["url"], "deliveries_removed": cur.rowcount})
+                return self._send(200, {"deleted": ep["id"], "deliveries_removed": cur.rowcount})
             m = re.match(r"^/v1/applicants/([\w-]+)$", p)
             if not m: return self._err(404, "not found")
             tid, env = t["tenant_id"], t["env"]
