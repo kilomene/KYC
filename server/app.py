@@ -1538,6 +1538,17 @@ def make_handler(db: DB, data_dir: str):
                 _paddle = _f_paddle.result()
             ocr_text = ocr.get("text", "")
             mrz_check = C.check_mrz(ocr_text)
+            if not entry.get("mrz"):
+                # This document type carries no MRZ (registry fact —
+                # licences, ID cards, NIN slips): "not found" is not
+                # an inconclusive search, the check does not exist
+                # for this type. Recorded not_applicable so it can
+                # neither gate the decision nor masquerade as one
+                # (2026-10-28, owner session 15: a slip could never
+                # clear a required-MRZ reading before this).
+                mrz_check = {"status": "not_applicable",
+                             "findings": {"reason": "document_type_has_no_mrz"},
+                             "reason_codes": []}
             parsed = mrz_check.get("parsed")
             # UNIFIED READ: the extraction brain consumes the
             # MERGED stream — both engines' words in one stream —
