@@ -32,7 +32,13 @@ from . import face as FACE
 
 DIRECTIONS = ("left", "right", "up", "down")
 MIN_FACE_RATIO = 0.8       # face must be present in >= 80% of sampled frames
-MOVE_THRESHOLD = 0.045     # normalised centre displacement that counts as a movement
+MOVE_THRESHOLD = 0.045     # normalised centre displacement that counts as a movement (horizontal)
+MOVE_THRESHOLD_Y = 0.025   # vertical: a look up/down rotates the head far more than it
+                           # translates the box centre — measured on the owner's genuine
+                           # session-15 take: full left excursion 0.105 of frame width,
+                           # full up excursion 0.030 of frame height, against a detector
+                           # centre jitter of ~0.003. 0.025 sits ~8x above the noise and
+                           # just under the genuine excursion; horizontal stays 0.045.
 STATIC_CENTRE_RANGE = 0.01  # below this total centre range = no real movement
 STATIC_PIX_RANGE = 0.5      # below this std of frame pixel-std = frozen image
 
@@ -43,17 +49,20 @@ def new_challenge(rng=None):
     return {"movements": dirs, "version": 1}
 
 def _movement_made(centres, direction, start_idx):
-    """Scan centres (list of (cx, cy)) from start_idx for a displacement of
-    >= MOVE_THRESHOLD in `direction`. Returns (made, end_idx)."""
+    """Scan centres (list of (cx, cy)) from start_idx for a displacement
+    in `direction` — >= MOVE_THRESHOLD horizontally, >= MOVE_THRESHOLD_Y
+    vertically (see the constants: pitch barely translates the centre).
+    Returns (made, end_idx)."""
     if len(centres) < 2:
         return False, start_idx
     axis = 0 if direction in ("left", "right") else 1
+    threshold = MOVE_THRESHOLD if axis == 0 else MOVE_THRESHOLD_Y
     want_negative = direction in ("left", "up")  # image coords: left/up decrease cx/cy
     ref = centres[start_idx][axis]  # displacement is measured from the segment start
     for i in range(start_idx, len(centres)):
         v = centres[i][axis]
         disp = (ref - v) if want_negative else (v - ref)
-        if disp >= MOVE_THRESHOLD:
+        if disp >= threshold:
             return True, i
     return False, start_idx
 
