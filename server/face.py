@@ -37,10 +37,13 @@ def models_present():
     return all(os.path.isfile(os.path.join(MODELS_DIR, f)) and os.path.getsize(os.path.join(MODELS_DIR, f)) > 100_000
                for f in (YUNET_FILE, SFACE_FILE))
 
-def _detector(width, height):
-    key = ("yunet", width, height)
+PRODUCTION_THRESHOLD = 0.6   # YuNet score the platform judges by
+RELAXED_THRESHOLD = 0.35     # video-presence rescue only (see video_frames/liveness)
+
+def _detector(width, height, thr=PRODUCTION_THRESHOLD):
+    key = ("yunet", width, height, thr)
     if key not in _cache:
-        _cache[key] = cv2.FaceDetectorYN_create(os.path.join(MODELS_DIR, YUNET_FILE), "", (width, height), 0.6, 0.3, 5000)
+        _cache[key] = cv2.FaceDetectorYN_create(os.path.join(MODELS_DIR, YUNET_FILE), "", (width, height), thr, 0.3, 5000)
     return _cache[key]
 
 def _recognizer():
@@ -71,9 +74,11 @@ def similarity_decision(sim, pass_threshold=DEFAULT_THRESHOLD, margin=DEFAULT_MA
 
 MAX_DETECT_DIM = 1024  # see below: YuNet degrades measurably above this
 
-def detect_faces(img):
+def detect_faces(img, thr=PRODUCTION_THRESHOLD):
     """YuNet detection on a BGR image array. Returns list of face rows
-    (largest first) or [] when no face is found.
+    (largest first) or [] when no face is found. `thr` defaults to the
+    production score threshold; a lower value exists ONLY for the
+    video-presence rescue in liveness (never for identity).
 
     WS2 measurement (benchmarks/BIOMETRICS.md): on multi-megapixel
     stills YuNet's boxes shrink and drift as the input grows, and
@@ -97,7 +102,7 @@ def detect_faces(img):
         work = cv2.resize(img, (max(1, int(w * scale)), max(1, int(h * scale))),
                           interpolation=cv2.INTER_AREA)
     wh, ww = work.shape[:2]
-    det = _detector(ww, wh)
+    det = _detector(ww, wh, thr)
     _, faces = det.detect(work)
     if faces is None or len(faces) == 0:
         return []
@@ -113,9 +118,89 @@ def detect_faces(img):
         out.append(np.array(f, dtype=np.float32) if np is not None else f)
     return sorted(out, key=lambda f: f[2] * f[3], reverse=True)
 
-def largest_face(img):
-    faces = detect_faces(img)
+def largest_face(img, thr=PRODUCTION_THRESHOLD):
+    faces = detect_faces(img, thr=thr)
     return faces[0] if faces else None
+
+_ROTATIONS = ((0, None), (90, cv2.ROTATE_90_CLOCKWISE),
+              (180, cv2.ROTATE_180), (270, cv2.ROTATE_90_COUNTERCLOCKWISE))
+
+def _vote_rotation(frames):
+    """Pick the ONE rotation that makes the sampled frames upright:
+    most strict detections wins, then highest total detector score.
+    Phone recordings have a single fixed orientation, so one vote
+    covers the whole clip. Returns the degrees (0/90/180/270)."""
+    best_deg, best_key = 0, None
+    for deg, code in _ROTATIONS:
+        hits, score = 0, 0.0
+        for fr in frames[:6]:
+            img = fr if code is None else cv2.rotate(fr, code)
+            f = largest_face(img)
+            if f is not None:
+                hits += 1
+                score += float(f[14])
+        key = (hits, round(score, 3))
+        if best_key is None or key > best_key:
+            best_deg, best_key = deg, key
+    return best_deg
+
+def video_frames(video_path, max_frames=30):
+    """Sample frames evenly across a video's FULL duration, upright.
+
+    Returns (frames, info) with info {total_frames, rotation_degrees}.
+
+    Two field failures drive this (owner session 14, 2026-10-28):
+      * MediaRecorder WebM carries a garbage CAP_PROP_FRAME_COUNT (a
+        huge negative number), and first-N-sequential sampling judged
+        a 9-second performance on its first second. When the reported
+        count is implausible the real count is measured with a grab()
+        pass, and the samples are spread across the whole clip.
+      * The same recording stored its opening sideways (the sensor
+        frame is landscape while the phone is held portrait), and no
+        stage corrected orientation. One rotation is voted from the
+        sampled frames and applied to all of them, so movement and
+        identity analysis work in the upright frame the user saw.
+    Raises ValueError("video_unreadable") when the file won't open.
+    """
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise ValueError("video_unreadable")
+    reported = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+    plausible = reported > 0 and (fps <= 0 or reported / max(fps, 1.0) <= 3600.0)
+    total = reported
+    if not plausible:
+        total = 0
+        while cap.grab():
+            total += 1
+        cap.release()
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            raise ValueError("video_unreadable")
+    if total <= 0:
+        cap.release()
+        return [], {"total_frames": 0, "rotation_degrees": 0}
+    if total <= max_frames:
+        targets = set(range(total))
+    else:
+        targets = sorted({int(round(i * (total - 1) / float(max_frames - 1)))
+                          for i in range(max_frames)})
+        targets = set(targets)
+    frames = []
+    i = 0
+    while len(frames) < len(targets):
+        ok, fr = cap.read()
+        if not ok:
+            break
+        if i in targets:
+            frames.append(fr)
+        i += 1
+    cap.release()
+    deg = _vote_rotation(frames) if frames else 0
+    if deg:
+        code = dict(_ROTATIONS)[deg]
+        frames = [cv2.rotate(fr, code) for fr in frames]
+    return frames, {"total_frames": total, "rotation_degrees": deg}
 
 _DNN_FACE_NET = None
 
@@ -196,6 +281,34 @@ def extract_face_feature(path):
     if face is None:
         return None, None, None  # no face found (distinct from an error)
     return face_feature(work, face), face, None
+
+WEAK_REFERENCE_MAX_PX = 80.0  # see face_box_stats
+
+def face_box_stats(path):
+    """(width_px, width_share, score) of the largest face in the
+    image's work space, or None when no face is detected.
+
+    This is the face-match REFERENCE-quality measure. Calibration on
+    genuine documents (2026-10-28, warped renditions): strong
+    references — CA driver's licence 123px, Canada passport 122px,
+    NY ID 230px; weak references — the owner's NIN slip 56px, NG
+    digital NIN card 75px, FRSC licence far-shot 72px, INEC PVC
+    far-shot 12px. SFace aligns every face to 112x112, so a sub-80px
+    reference is upscaled ~2x before embedding: a genuine holder's
+    similarity is measurably depressed (the owner's slip matches his
+    own live track at ~0.21 against the 0.363 threshold) while an
+    impostor's stays low — a match still identifies, a non-match
+    barely excludes. Below WEAK_REFERENCE_MAX_PX a would-be face-match
+    FAIL is therefore recorded as unclear (weak reference), never as
+    a mismatch; passes stand exactly as measured."""
+    img = cv2.imread(path)
+    if img is None:
+        return None
+    work = work_image(img)
+    face = largest_face(work)
+    if face is None:
+        return None
+    return float(face[2]), float(face[2]) / work.shape[1], float(face[14])
 
 def _error(reason, detail):
     return {"status": "error", "findings": {"error": detail}, "reason_codes": [reason]}
