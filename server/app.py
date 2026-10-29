@@ -1428,11 +1428,16 @@ def make_handler(db: DB, data_dir: str):
             return {"status": "fail", "reason_codes": ["nin_number_mismatch"],
                     "findings": {"claimed_provided": True, "extracted_present": True, "match": False}}
 
-        def _read_payload(self, s, doc, tid):
+        def _read_payload(self, s, doc, tid, _stash=None):
             """The read-back payload for /v1/flow/document/process —
             the exact body the synchronous handler used to return,
-            computed on the read job's worker thread."""
+            computed on the read job's worker thread. When _stash (the
+            job dict) is given, the full _read_document result is kept
+            on it so the submit pipeline can reuse this read instead
+            of paying the whole dual-engine read a second time."""
             read = self._read_document(doc, always_read=True)
+            if _stash is not None:
+                _stash["read"] = read
             ident = read["identity"]
             entry = read["entry"]
             missing = IDENTITY.missing_read_fields(ident, entry)
@@ -1465,7 +1470,7 @@ def make_handler(db: DB, data_dir: str):
             side-effect-free apart from the audit row and the
             persisted doc_* merge, so a later poll may restart it."""
             try:
-                job["payload"] = self._read_payload(s, doc, tid)
+                job["payload"] = self._read_payload(s, doc, tid, _stash=job)
             except Exception:
                 traceback.print_exc()
                 job["error"] = "read_failed"
@@ -2091,7 +2096,7 @@ def make_handler(db: DB, data_dir: str):
                         _READ_JOBS.pop(_k, None)
                     job = {"done": threading.Event(), "payload": None,
                            "error": None, "started": _time.time(),
-                           "claim_fp": _claim_fp}
+                           "claim_fp": _claim_fp, "read": None}
                     _READ_JOBS[doc["id"]] = job
                     threading.Thread(target=self._read_job_worker,
                                      args=(s, doc, tid, job), daemon=True,
@@ -2323,7 +2328,33 @@ def make_handler(db: DB, data_dir: str):
                 # run through _read_document — the same reader the
                 # flow's read-back endpoint uses, so what the applicant
                 # was shown is exactly what the decision reads.
-                doc_read = self._read_document(doc)
+                # READ REUSE (2026-10-29, owner session 18): the
+                # read-back the applicant already sat through ran this
+                # exact reader on this exact document minutes earlier
+                # and its job keeps the full result — re-running it at
+                # submit made the applicant pay the ~40-60s dual-engine
+                # read TWICE (the session-18 decision took ~102s, most
+                # of it the repeated read). Reuse is fenced: only a
+                # completed job, only when the typed-claim fingerprint
+                # still matches (a corrected claim pops the job at the
+                # claim endpoint AND mismatches here), and never for a
+                # framing failure (the submit fail-fast read is cheap
+                # and its shallow shape is what the framing-failed
+                # branch is written against). API-direct submits with
+                # no read-back job read fresh, exactly as before.
+                doc_read = None
+                _rjob = _READ_JOBS.get(doc["id"])
+                if _rjob is not None and _rjob.get("read") is not None \
+                        and _rjob["done"].is_set() \
+                        and _rjob["read"]["framing"]["status"] != "fail":
+                    try:
+                        _cm_r = json.loads(doc["capture_meta"] or "{}")
+                    except Exception:
+                        _cm_r = {}
+                    if str(_cm_r.get("claimed_number") or "") == (_rjob.get("claim_fp") or ""):
+                        doc_read = _rjob["read"]
+                if doc_read is None:
+                    doc_read = self._read_document(doc)
                 record("document_framing", doc_read["framing"], provider="opencv-framing")
                 framing_failed = results.get("document_framing", {}).get("status") == "fail"
                 if framing_failed:
@@ -2495,7 +2526,7 @@ def make_handler(db: DB, data_dir: str):
                                 # the raw frame.
                                 portrait_path = FRAMING.warped_rendition(front_path) or front_path
                                 portrait_source = "warped" if portrait_path != front_path else "raw"
-                                doc_feat, doc_face, ferr = FACE.extract_face_feature(portrait_path)
+                                doc_feat, doc_face, ferr, doc_enh = FACE.extract_document_portrait_feature(portrait_path)
                                 if ferr:
                                     record("face_match", ferr, provider="yunet-sface")
                                 elif doc_face is None:
@@ -2507,7 +2538,7 @@ def make_handler(db: DB, data_dir: str):
                                     sim = FACE.cosine_similarity(doc_feat, agg)
                                     mstatus, mreasons = FACE.similarity_decision(sim, cfg["face_pass_threshold"], cfg["face_margin"])
                                     findings = {"similarity": round(float(sim), 4), "method": "document_vs_track_median_embedding",
-                                                "portrait_source": portrait_source,
+                                                "portrait_source": portrait_source, "portrait_enhancement": doc_enh,
                                                 "track_frames": track["findings"].get("frames_with_face")}
                                     # Reference-quality gate (2026-10-28,
                                     # owner sessions 13-14): when the
