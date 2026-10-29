@@ -144,7 +144,42 @@ def _vote_rotation(frames):
             best_deg, best_key = deg, key
     return best_deg
 
+import threading as _threading
+
+_VIDEO_FRAMES_CACHE = {}
+_VIDEO_FRAMES_LOCK = _threading.Lock()
+
+
 def video_frames(video_path, max_frames=30):
+    """Sample frames evenly across a video's FULL duration, upright.
+
+    Memoised per file (path + size + mtime + max_frames): a submit
+    runs liveness, face track and deepfake over the SAME clip, and
+    each used to pay the full decode + rotation vote again (owner
+    session 17, 2026-10-29: ~2 minutes of decision time on a 2-core
+    box, much of it re-decoding one 9-second video). The cache holds
+    at most 2 clips; callers must not mutate the returned frames.
+    """
+    try:
+        st = os.stat(video_path)
+        key = (os.path.abspath(video_path), st.st_size, st.st_mtime_ns, max_frames)
+    except OSError:
+        key = None
+    if key is not None:
+        with _VIDEO_FRAMES_LOCK:
+            hit = _VIDEO_FRAMES_CACHE.get(key)
+        if hit is not None:
+            return hit
+    result = _video_frames_uncached(video_path, max_frames)
+    if key is not None:
+        with _VIDEO_FRAMES_LOCK:
+            _VIDEO_FRAMES_CACHE[key] = result
+            while len(_VIDEO_FRAMES_CACHE) > 2:
+                _VIDEO_FRAMES_CACHE.pop(next(iter(_VIDEO_FRAMES_CACHE)))
+    return result
+
+
+def _video_frames_uncached(video_path, max_frames=30):
     """Sample frames evenly across a video's FULL duration, upright.
 
     Returns (frames, info) with info {total_frames, rotation_degrees}.
