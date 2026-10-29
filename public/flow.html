@@ -447,6 +447,7 @@ const GUIDANCE = {
   face_far:     {text: 'Move closer.', voice: 'Move closer.'},
   face_unstable:{text: 'Hold still…', voice: 'Hold still.'},
   face_hold:    {text: 'Face centred — hold still, capturing…', voice: 'Hold still.'},
+  face_confirm: {text: 'Face found — hold still, checking…', voice: 'Hold still.'},
   face_captured:{voice: 'Captured.'},
   lv_wait:      {text: 'Put your face in the oval…', voice: 'Place your face in the circle.'},
   lv_record:    {text: 'Recording — follow the instruction now…'},
@@ -1105,6 +1106,49 @@ function evaluateFace(fr){
   if(fr.diff > 7) return {state:'face_unstable'};
   return {state:'face_hold', ok:true};
 }
+// ------------- selfie gate: the SERVER detector judges geometry -------------
+// evaluateFace's geometry verdicts come from a skin-colour heuristic:
+// widthFrac measures every skin-toned column in the oval band — a lit
+// room's warm walls, ears, neck and shoulders included. On the owner's
+// live session 16 (2026-10-29) it read a correctly-framed, oval-filling
+// face as "too close" and ordered "move back" forever — the face only
+// got smaller while the background kept the measurement pinned — while
+// the server's real detector (the presence probe running alongside)
+// said the framing was fine. Two judges disagreed and the weaker one
+// held the veto. The selfie gate now works like the liveness gate:
+// the client keeps the LIGHT verdicts (dark / bright / no skin mass —
+// things a pixel heuristic judges well), and GEOMETRY belongs to the
+// production detector's presence verdicts. Timed escapes mirror the
+// liveness gate so a genuine user can never be trapped: the uploaded
+// selfie is still judged server-side at decision time, so capture
+// coaching is a coach, never a wall.
+let selfieProbe = null;          // last presence verdict {face_present, guidance, at}
+let selfieClientOkSince = null;  // continuous well-lit client face since (ms)
+function evaluateSelfie(fr){
+  const fm = faceMetrics(fr);
+  if(fr.mean < 45 || fm.bandMean < 55){ selfieClientOkSince = null; return {state:'face_dark'}; }
+  if(fr.glareRatio > 0.30){ selfieClientOkSince = null; return {state:'face_bright'}; }
+  if(!fm.present){ selfieClientOkSince = null; return {state:'face_none'}; }
+  if(selfieClientOkSince === null) selfieClientOkSince = performance.now();
+  if(fr.diff > 7) return {state:'face_unstable'};
+  const now = performance.now();
+  const p = selfieProbe;
+  if(p && now - p.at <= 4500){
+    if(p.guidance === 'move_closer') return {state:'face_far'};
+    if(p.guidance === 'move_back') return {state:'face_close'};
+    if(p.guidance === 'centre_your_face') return {state:'face_centre'};
+    if(p.face_present && p.guidance === 'ok') return {state:'face_hold', ok:true};
+  }
+  // Escape: 25 s of a continuous, well-lit, client-visible face with no
+  // server "ok" (probe unreachable, or a face the probe cannot measure
+  // at this angle) — capture anyway; the decision engine judges the
+  // still. Actionable geometry verdicts above still win: a user told
+  // "move closer" can fix it, and the escape never overrides them
+  // while they are fresh.
+  if(now - selfieClientOkSince >= 25000) return {state:'face_hold', ok:true};
+  if(p && now - p.at <= 4500 && !p.face_present) return {state:'face_none'};
+  return {state:'face_confirm'};
+}
 function drawQuad(poly, corners, ok){
   if(!poly) return;
   if(!corners){ poly.setAttribute('points', ''); poly.style.opacity = '0'; return; }
@@ -1522,7 +1566,7 @@ const selfieScanner = makeAutoScanner({
   maxDim: 1280,
   video: $('selfie-video'), frameEl: $('selfie-oval'), poly: null, progressEl: $('selfie-progress'),
   guide: selfieGuide, capturedKey: 'face_captured', burst: 4,
-  evaluate: evaluateFace,
+  evaluate: evaluateSelfie,
   onCapture: async (blob, burst) => {
     const fd = new FormData();
     fd.append('capture_meta', JSON.stringify({method:'live_camera', client_signals: clientSignals()}));
@@ -1533,11 +1577,14 @@ const selfieScanner = makeAutoScanner({
   }
 });
 // ---------------- server-verdict face coaching ----------------
-// The client heuristics gate capture; the PRODUCTION detector has
-// the final word on whether a usable face is in frame. A probe
-// sends ONE live frame to /v1/flow/presence (nothing is stored)
-// and the answer drives specific coaching copy. Probes never block
-// capture: they coach alongside the existing auto-scanner.
+// The PRODUCTION detector has the final word on whether a usable
+// face is in frame. A probe sends ONE live frame to
+// /v1/flow/presence (nothing is stored). On the selfie step the
+// verdict GATES capture geometry (evaluateSelfie) and drives the
+// coaching copy below; on the liveness step it confirms the face
+// before recording starts. Timed client-evidence escapes on both
+// steps keep a genuine user un-trappable when the probe cannot
+// measure a face the client can plainly see.
 let _presenceBusy = false;
 async function probePresence(video){
   if(_presenceBusy) return null;
@@ -1560,6 +1607,7 @@ const PRESENCE_COPY = {
   no_face_seen: 'We can\'t see your face yet — face the camera and fill the oval with your face.',
   angle_or_light: 'We can see you, but not clearly enough to measure your face. Hold the phone at eye level, and face a light source — don\'t stand with a window or bright sky behind you.',
   move_closer: 'Your face is small in the frame — move closer until it fills the oval.',
+  move_back: 'You are very close — move back until your whole face fits inside the oval.',
   centre_your_face: 'Centre your face inside the oval.',
   frame_unreadable: 'Still looking for your face…'
 };
@@ -1572,12 +1620,15 @@ function coachFromPresence(el, p){
 
 function enterSelfieStep(){
   show('s-selfie');
+  selfieProbe = null; selfieClientOkSince = null;
   selfieScanner.start('user').catch(()=>{ camRetry = enterSelfieStep; });
-  // Coach with the server's verdict while the auto-scanner works.
+  // The server's verdict gates the capture geometry (evaluateSelfie)
+  // and coaches alongside it.
   const coachTimer = setInterval(async () => {
     if(!$('s-selfie').classList.contains('on') || info.selfie_uploaded){ clearInterval(coachTimer); return; }
     const p = await probePresence($('selfie-video'));
     if(p && !$('s-selfie').classList.contains('on')) return;
+    if(p) selfieProbe = {face_present: !!p.face_present, guidance: p.guidance, at: performance.now()};
     coachFromPresence($('selfie-coach'), p);
   }, 1500);
 }
