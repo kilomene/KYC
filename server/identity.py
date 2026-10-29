@@ -40,9 +40,67 @@ merged into one identity, with an explicit trust order:
 Every returned field records which source it came from, so the case
 shows WHY the identity says what it says.
 """
+import re
+
 from . import checks as C
 
 IDENTITY_SOURCES = ("declared", "document")
+
+
+def corroborate_name_tokens(value, witness_groups):
+    """Drop adopted-name tokens that only ONE reading engine ever saw.
+
+    `witness_groups` is a list of token iterables, one per INDEPENDENT
+    reading family (e.g. all Tesseract evidence in one group, all
+    Paddle evidence in another). A token survives when at least two
+    groups witnessed it — as a whole token, or, for tokens of 4+
+    letters, inside a fused token (Paddle systematically fuses
+    'Name:VALUE' into one token on form documents).
+
+    Why (owner session 16, 2026-10-29): the adopted given names came
+    back 'ZENAS OLATUNDE SSR SAK' — both real names plus two stamp
+    glyphs that rode the printed name line. Each stray was seen by
+    exactly one engine ('SSR' Tesseract-only, 'SAK' Paddle-only);
+    every real name token was seen by both. Ink-verification cannot
+    separate them (the stamp IS ink on the line); cross-engine
+    corroboration can.
+
+    Conservative by construction: single-token values are untouched
+    (a surname stands or falls whole), with fewer than two witness
+    groups nothing is dropped (no corroboration exists to appeal
+    to), and if dropping would empty the value the original stands.
+    """
+    if not value:
+        return value
+    toks = str(value).split()
+    if len(toks) < 2:
+        return value
+    groups = []
+    for g in witness_groups or []:
+        norm = set()
+        for t in g or []:
+            nt = re.sub(r"[^A-ZÀ-Þ]", "", str(t).upper())
+            if nt:
+                norm.add(nt)
+        if norm:
+            groups.append(norm)
+    if len(groups) < 2:
+        return value
+
+    def _witnessed(tok):
+        nt = re.sub(r"[^A-ZÀ-Þ]", "", str(tok).upper())
+        if not nt:
+            return 0
+        n = 0
+        for g in groups:
+            if nt in g or (len(nt) >= 4 and any(nt in w for w in g if len(w) > len(nt))):
+                n += 1
+        return n
+
+    kept = [t for t in toks if _witnessed(t) >= 2]
+    if not kept or len(kept) == len(toks):
+        return value
+    return " ".join(kept)
 
 
 def _ext(fields, name):
