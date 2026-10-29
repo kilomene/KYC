@@ -875,3 +875,68 @@ test_autodecision, test_phase2 green; test_nin_slip_upload 18/18;
 full suite 486 tests, sole failure the known environmental
 German-labels fixture. Thresholds unchanged (face 0.363,
 PASS_SCORE 70, MIN_FACE_RATIO 0.8).
+
+## Session-18 incident fixes (2026-10-29, owner's live test)
+
+Session 18 rejected again on liveness_face_absent — on a SHARP,
+well-lit take (sharpness median 75.3; the owner followed the light
+coaching and recorded outdoors). Frame-level review found the real
+root cause, three layers up from every previous fix: the flow
+recorded the camera's RAW sensor stream — a sideways, landscape,
+low-held buffer — while the user performed to the upright framed
+preview, and the live probes coached off the preview. Coach and
+verdict were judging two different pictures (sessions 14, 17 and
+18 are all this one split wearing different clothes: bad geometry,
+degradation, rotation). His selfie from the same session — captured
+from the preview through a canvas — is upright and detects
+instantly. Fixes:
+
+1. **The recorder records what the user sees** (public/flow.html
+   recordLiveness): the liveness video is captured from a canvas
+   drawing the preview element (upright, framed exactly as coached,
+   <=1024px, the same draw path whose stills pass the selfie step),
+   via captureStream + MediaRecorder; the raw stream remains only
+   as a fallback where canvas capture is unavailable.
+   capture_meta.recording_source records which produced each take
+   ('framed_canvas' | 'raw_stream'). Verified in a real Chromium:
+   page loads error-free, canvas-stream MediaRecorder constructs.
+2. **Document portrait enhancement** (server/face.py
+   extract_document_portrait_feature): the face-match portrait read
+   runs on a CLAHE-normalised, 2x-upscaled rendition of the warp,
+   falling back to the plain read when the enhanced one finds no
+   face. Measured on the owner's session-18 slip vs his live track:
+   0.369 -> 0.441 (crosses the pass margin; was near-threshold
+   unclear). Impostor controls (NG PVC, CA DL, another holder's NIN
+   slip vs his track): <=0.035 — no similarity inflation. His older,
+   weaker slip captures stay low (~0.15-0.20) and keep routing to
+   review: enhancement recovers print contrast, it does not
+   manufacture matches.
+3. **Submit reuses the read-back's read** (server/app.py): the
+   read job now stashes its full _read_document result; the decision
+   pipeline reuses it when the job completed, the typed-claim
+   fingerprint still matches, and framing did not fail. The
+   applicant no longer pays the ~40-60s dual-engine document read
+   twice (session 18: ~102s decision, most of it the repeated
+   read). API-direct submits without a read-back read fresh.
+4. **OCR winner selection** (server/vision.py read_document_text):
+   a pass that read 0 chars at 95.0 tesseract confidence (the
+   enhanced rendition blanked the slip's faint print) could win the
+   (confidence, chars) ordering over plain 442 / adaptive 779
+   chars, and the OCR check declared ocr_low_text over a fully-read
+   document. Text-bearing passes (>=10 chars) now form the winner
+   pool whenever one exists; pass_texts still carries every pass
+   for extraction. His session-18 slip: ocr check pass, plain,
+   442 chars.
+
+Composite proof on his real evidence (not a promise): session-18
+checks with liveness + face track re-run on a properly recorded
+clip (his session-15 take: both PASS under current code, track
+29/29 frames) and face match at the enhanced 0.441 PASS — the
+engine decides needs_review (the remaining unclears are the
+standing review class: authenticity corroboration gate, rPPG
+unanalysable, velocity from his own repeated testing), NOT
+rejected. Thresholds unchanged (face 0.363, PASS_SCORE 70,
+MIN_FACE_RATIO 0.8). Tests: test_session18_fixes 5/5 (winner
+selection, portrait-helper contract, read-reuse integration,
+framed-canvas markers); full suite 491 tests, sole failure the
+known environmental German-labels fixture.
