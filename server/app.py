@@ -1524,18 +1524,70 @@ def make_handler(db: DB, data_dir: str):
             # pair costs the slower of the two). Extraction then
             # consumes both.
             from concurrent.futures import ThreadPoolExecutor as _TPE
-            with _TPE(max_workers=3) as _pool:
-                _f_ocr = _pool.submit(C.check_ocr, front_path, expect_mrz=bool(entry.get("mrz")))
-                _f_words = _pool.submit(VISION.ocr_words, front_path)
-                # Second engine (PaddleOCR) reads in parallel — the
-                # unified dual-engine family (owner's order,
-                # 2026-10-28). read_words returns None on ANY
-                # failure/unavailability and the pipeline then runs
-                # exactly as the single-engine build did.
-                _f_paddle = _pool.submit(OCR2.read_words, front_path)
-                ocr = _f_ocr.result()
-                _words = _f_words.result()
-                _paddle = _f_paddle.result()
+            def _evidence():
+                # One full acquisition of the reading evidence: the
+                # text passes and both engines' word streams, read
+                # concurrently (2026-10-27 speed programme), merged
+                # into the unified stream, and extracted.
+                with _TPE(max_workers=3) as _pool:
+                    _f_ocr = _pool.submit(C.check_ocr, front_path, expect_mrz=bool(entry.get("mrz")))
+                    _f_words = _pool.submit(VISION.ocr_words, front_path)
+                    # Second engine (PaddleOCR) reads in parallel —
+                    # the unified dual-engine family (owner's order,
+                    # 2026-10-28). read_words returns None on ANY
+                    # failure/unavailability and the pipeline then
+                    # runs exactly as the single-engine build did.
+                    _f_paddle = _pool.submit(OCR2.read_words, front_path)
+                    _ocr = _f_ocr.result()
+                    _w = _f_words.result()
+                    _pad = _f_paddle.result()
+                _pw, _pt = _pad if _pad else (None, None)
+                _xw = VISION.merge_word_streams(_w, _pw) if _pw else _w
+                _xt = list(_ocr.get("pass_texts") or [])
+                if _pt:
+                    _xt = _xt + [_pt]
+                _ext = FIELDTEMPLATES.extract_fields(
+                    front_path, doc["issuing_country"], doc["kind"],
+                    ocr_text=_ocr.get("text", ""), words=_xw, ocr_texts=_xt)
+                return _ocr, _w, _pad, _ext
+            def _name_weakness(_ext):
+                # How weakly the NAME was read: a missing name field
+                # counts 2, a name sourced from the plain-text scan
+                # (the weakest witness) counts 1, and a lone given
+                # name beside a present surname counts 1 (two-cell
+                # names — FIRST + MIDDLE — adopted from one cell).
+                _ff = (_ext.get("findings") or {}).get("fields") or {}
+                _score = 0
+                for _f in ("surname", "given_names"):
+                    _e = _ff.get(_f) or {}
+                    if not _e.get("value"):
+                        _score += 2
+                    elif _e.get("source") == "text":
+                        _score += 1
+                if len(str((_ff.get("given_names") or {}).get("value") or "").split()) == 1 \
+                        and (_ff.get("surname") or {}).get("value"):
+                    _score += 1
+                return _score
+            ocr, _words, _paddle, extraction = _evidence()
+            if _name_weakness(extraction) > 0:
+                # Evidence re-acquisition (owner sessions 16+17,
+                # 2026-10-29): every tesseract subprocess runs with a
+                # 60s timeout, and under the live session's own CPU
+                # contention (presence probes, uploads, Paddle
+                # inference on a 2-core box) a pass can return a
+                # degraded word stream — the name then collapses to
+                # the text scan's fragment while uncontended runs of
+                # the SAME photo read it in full. The arbitration
+                # witnesses drink from the same stream, so they cannot
+                # rescue it. One fresh acquisition — new OCR runs,
+                # not a re-extraction — is adopted wholesale when it
+                # reads the name strictly stronger.
+                try:
+                    _ocr2, _w2, _pad2, _ext2 = _evidence()
+                    if _name_weakness(_ext2) < _name_weakness(extraction):
+                        ocr, _words, _paddle, extraction = _ocr2, _w2, _pad2, _ext2
+                except Exception:
+                    pass
             ocr_text = ocr.get("text", "")
             mrz_check = C.check_mrz(ocr_text)
             if not entry.get("mrz"):
@@ -1559,9 +1611,10 @@ def make_handler(db: DB, data_dir: str):
             _xtexts = list(ocr.get("pass_texts") or [])
             if _ptext:
                 _xtexts = _xtexts + [_ptext]
-            extraction = FIELDTEMPLATES.extract_fields(front_path, doc["issuing_country"], doc["kind"],
-                                                       ocr_text=ocr_text, words=_xwords,
-                                                       ocr_texts=_xtexts)
+            # `extraction` was produced inside _evidence() from these
+            # same streams (and possibly re-acquired stronger); the
+            # streams are recomputed here only for the arbitration
+            # witnesses and the corroboration trim below.
             fields = (extraction.get("findings") or {}).get("fields") or {}
             # Cross-engine arbitration: when the unified read leaves
             # the identity triad incomplete, consult each engine's
