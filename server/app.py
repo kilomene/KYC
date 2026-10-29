@@ -1570,7 +1570,17 @@ def make_handler(db: DB, data_dir: str):
             # never silently resolved.
             cross_engine = {"engines": ["tesseract", "paddle"] if _paddle else ["tesseract"],
                             "disagreements": [], "adopted": {}}
-            if _paddle and not OCR2.triad_complete(OCR2.extraction_fields(extraction)):
+            # The witnesses are also consulted when the triad is
+            # complete but a NAME came from the weakest source (the
+            # plain-text scan) or the given names are a single token:
+            # a two-cell name (FIRST + MIDDLE) adopted from one cell
+            # is complete-looking but partial — owner session 16,
+            # 2026-10-29: the unified read adopted the middle name
+            # alone while the Tesseract witness held the full name.
+            _weak_name = any((fields.get(_f) or {}).get("source") == "text"
+                             for _f in ("surname", "given_names")) or (
+                             len(str((fields.get("given_names") or {}).get("value") or "").split()) == 1)
+            if _paddle and (not OCR2.triad_complete(OCR2.extraction_fields(extraction)) or _weak_name):
                 try:
                     _t_ext = FIELDTEMPLATES.extract_fields(
                         front_path, doc["issuing_country"], doc["kind"],
@@ -1588,6 +1598,24 @@ def make_handler(db: DB, data_dir: str):
                 except Exception:
                     pass
             ident = IDENTITY.derive_document_identity(fields, parsed, uploaded, ocr_text=ocr_text)
+            # Witness corroboration on the adopted names: tokens only
+            # ONE engine family ever saw (stamp glyphs riding the
+            # printed name line) are dropped — see
+            # identity.corroborate_name_tokens (session 16).
+            try:
+                _g_tess = [w.get("text", "") for w in (_words or [])]
+                for _t in [ocr_text] + list(ocr.get("pass_texts") or []):
+                    if _t:
+                        _g_tess.extend(str(_t).split())
+                _g_pad = [w.get("text", "") for w in (_pwords or [])]
+                if _ptext:
+                    _g_pad.extend(str(_ptext).split())
+                for _slot in ("first_name", "last_name"):
+                    if ident.get(_slot):
+                        ident[_slot] = IDENTITY.corroborate_name_tokens(
+                            ident[_slot], [_g_tess, _g_pad])
+            except Exception:
+                pass
             merged = {"doc_first_name": ident["first_name"] or doc["doc_first_name"],
                       "doc_last_name": ident["last_name"] or doc["doc_last_name"],
                       "doc_dob": ident["dob"] or doc["doc_dob"],
@@ -1864,8 +1892,22 @@ def make_handler(db: DB, data_dir: str):
                 _cy = (_fy + _fh / 2) / _h if _h else 0.0
                 _size = _fw / _w if _w else 0.0
                 _centred = 0.2 <= _cx <= 0.8 and 0.15 <= _cy <= 0.85
+                # Too close is a REAL verdict only from this detector:
+                # the face box is clipped by the frame edge (forehead
+                # or chin cut off) or the face fills >85% of the frame
+                # width. A normal oval-filling selfie (0.3-0.6) is
+                # "ok" — the client skin heuristic's old "too close"
+                # reading trapped a correctly-framed user in a
+                # move-back loop (owner session 16, 2026-10-29).
+                _clipped = (_fx <= 0.005 * _w or _fy <= 0.005 * _h
+                            or (_fx + _fw) >= 0.995 * _w or (_fy + _fh) >= 0.995 * _h)
                 if _size < 0.18:
                     _g = "move_closer"
+                elif _size > 0.85 or (_clipped and _size > 0.55):
+                    # Clipping only means "too close" when the face
+                    # is also large — a modest face resting on the
+                    # frame edge is a centring problem, not distance.
+                    _g = "move_back"
                 elif not _centred:
                     _g = "centre_your_face"
                 else:
