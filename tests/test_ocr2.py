@@ -96,6 +96,37 @@ class TestArbitrate(unittest.TestCase):
         self.assertNotIn("number", adopted)  # merged already holds it
         self.assertEqual(len(dis), 1)  # conflict still surfaced
 
+    def test_superset_witness_repairs_partial_given_names(self):
+        # Owner session 16 (2026-10-29): the unified read adopted the
+        # middle name alone ('OLATUNDE', from the text scan) while the
+        # Tesseract witness held the full two-cell name. The strict
+        # superset witness is adopted over the fragment.
+        adopted, dis = ocr2.arbitrate(
+            {"surname": "AYANSIPE", "given_names": "OLATUNDE"},
+            {"surname": "AYANSIPE", "given_names": "ZENAS OLATUNDE"},
+            {"surname": "AYANSIPE", "given_names": "NAMEZENAS NAMEOLATUNDE SAK"})
+        self.assertEqual(adopted.get("given_names"),
+                         ("ZENAS OLATUNDE", "tesseract_superset"))
+        self.assertTrue(any(d.get("resolution") == "superset_witness_adopted"
+                            for d in dis))
+
+    def test_subset_witness_does_not_shrink_merged(self):
+        # The merged read legitimately carries MORE than one engine
+        # saw; a subset witness must not shrink it.
+        adopted, _ = ocr2.arbitrate(
+            {"surname": "AYANSIPE", "given_names": "ZENAS OLATUNDE SSR SAK"},
+            {"surname": "AYANSIPE", "given_names": "ZENAS OLATUNDE"},
+            {"surname": "AYANSIPE", "given_names": "ZENAS OLATUNDE SSR SAK"})
+        self.assertNotIn("given_names", adopted)
+
+    def test_superset_must_pass_plausibility(self):
+        # A superset built from document furniture is not a name.
+        adopted, _ = ocr2.arbitrate(
+            {"given_names": "OLATUNDE"},
+            {"given_names": "FEDERAL REPUBLIC OLATUNDE"},
+            {})
+        self.assertNotIn("given_names", adopted)
+
     def test_extraction_fields_shape(self):
         ext = {"findings": {"fields": {
             "surname": {"value": "AYANSIPE", "source": "label"},
