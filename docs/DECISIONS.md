@@ -821,3 +821,57 @@ document gains corroboration + selfie-gate marker tests (35/35).
 Full suite: 483 tests, sole failure the known environmental
 German-labels fixture (this VM's tesseract build). Thresholds
 unchanged (face 0.363, PASS_SCORE 70).
+
+## Session-17 incident fixes (2026-10-29, owner's live test)
+
+Session 17 rejected on a single hard fail — liveness_face_absent —
+and the slip read-back AGAIN showed the middle name alone. Three
+separate root causes, three repairs:
+
+1. **Degraded video is not an absent face** (server/liveness.py).
+   His recorded clip's frames median Laplacian variance 6.0 (his
+   measurable session-15 clip: 39.0; his sharp session-14 clip:
+   257.7) — the take was ~27x softer than his own selfie from the
+   same session, and YuNet found a strict face in 1/90 densely
+   sampled frames at ANY rotation (0/90/180/270) and ANY threshold
+   (0.6/0.35/0.25). Rotation, threshold, and CLAHE enhancement were
+   each tested and exonerated; the frames carry no measurable face
+   detail. Yet the verdict asserted "face absent" — a fraud-grade
+   hard fail. extract_features now records per-frame sharpness;
+   analyse_features, at the absent branch, returns unclear
+   [liveness_video_unmeasurable] when the median sharpness of
+   actually-measured frames is under UNMEASURABLE_SHARPNESS = 15.0
+   (calibration above, >2x margin both sides). A sharp faceless
+   video still fails as absent. His session-17 clip under the fix:
+   unclear, sharpness median 6.3 — which under the rule-6 split
+   routes to needs_review, not rejection. Session 17's recorded
+   decision stands as history.
+2. **Evidence re-acquisition for weak name reads** (server/app.py
+   _read_document). Offline, session 17's photo reads the full name
+   cleanly; live, it collapsed to the text scan's middle-name cell —
+   again. The differentiator is contention: every tesseract
+   subprocess runs with a 60s timeout, and under the live session's
+   own load (presence probes, uploads, Paddle inference, 2 cores)
+   the word stream can arrive degraded; the arbitration witnesses
+   read the SAME degraded streams, so the session-16 superset rescue
+   had nothing clean to adopt. The evidence acquisition (OCR passes
+   + both word streams + merge + extraction) is now one function;
+   when the name reads weak (missing field, 'text' source, or a
+   lone given name beside a surname) it runs ONCE more, fresh, and
+   the stronger acquisition is adopted wholesale. Proven on his
+   session-17 photo through the real _read_document: surname
+   AYANSIPE, given names ZENAS OLATUNDE. Cost is paid only by weak
+   reads; the common path is untouched.
+3. **One decode per clip per submit** (server/face.py). video_frames
+   is memoised per (path, size, mtime, max_frames), 2-entry cache:
+   liveness, face track, and deepfake consumers in one submit no
+   longer each pay the full WebM decode + rotation vote. Decision
+   time on session 17 was ~114s; this removes the duplicated
+   decodes (the remaining time is genuine analysis on 2 cores).
+
+Tests: test_video_sampling gains the unmeasurable/sharp-absent
+pair + the memoisation test (17/17); test_facetrack,
+test_autodecision, test_phase2 green; test_nin_slip_upload 18/18;
+full suite 486 tests, sole failure the known environmental
+German-labels fixture. Thresholds unchanged (face 0.363,
+PASS_SCORE 70, MIN_FACE_RATIO 0.8).
