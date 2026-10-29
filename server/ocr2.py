@@ -29,6 +29,7 @@ Design contract:
     (ConvertPirAttribute2RuntimeAttribute, measured 2026-10-28).
 """
 import os
+import re
 import threading
 
 _OCR = None
@@ -218,6 +219,41 @@ def arbitrate(merged_fields, tess_fields, paddle_fields):
                 elif p_ok and not t_ok:
                     adopted[f] = (pv, "paddle_arbitrated")
                 continue
+        if mv and f in ("surname", "given_names"):
+            # Superset rescue (owner session 16, 2026-10-29): the
+            # unified read can be COMPLETE but PARTIAL — it adopted
+            # one cell of a two-cell name (the middle name alone,
+            # source 'text') while a single-engine witness read the
+            # full name from its labels. A witness whose name tokens
+            # STRICTLY CONTAIN the merged value's tokens, and which
+            # passes the name plausibility screen, is adopted over
+            # the fragment; the tightest superset wins, Tesseract
+            # breaks ties. A subset witness changes nothing (the
+            # merged read may legitimately carry more than one
+            # engine saw), and junk a superset carries is handled
+            # downstream by witness corroboration (identity.py).
+            def _toks(v):
+                return set(re.findall(r"[A-ZÀ-Þ]{2,}", str(v).upper()))
+            _mt = _toks(mv)
+            _sup = []
+            for _wv, _prov in ((tv, "tesseract_superset"), (pv, "paddle_superset")):
+                if _wv:
+                    _wt = _toks(_wv)
+                    if _mt and _mt < _wt:
+                        _sup.append((len(_wt) - len(_mt), 0 if _prov.startswith("tesseract") else 1, _wv, _prov))
+            if _sup:
+                _sup.sort(key=lambda c: (c[0], c[1]))
+                try:
+                    from . import app as _app
+                    _ok = _app._name_plausible(_sup[0][2])
+                except Exception:
+                    _ok = False
+                if _ok:
+                    adopted[f] = (_sup[0][2], _sup[0][3])
+                    disagreements.append({"field": f, "merged": mv,
+                                          "tesseract": tv, "paddle": pv,
+                                          "resolution": "superset_witness_adopted"})
+                    continue
         if mv:
             continue  # the unified brain's value stands
         if tv and pv and _values_agree(f, tv, pv):
