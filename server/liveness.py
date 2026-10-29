@@ -41,6 +41,17 @@ MOVE_THRESHOLD_Y = 0.025   # vertical: a look up/down rotates the head far more 
                            # just under the genuine excursion; horizontal stays 0.045.
 STATIC_CENTRE_RANGE = 0.01  # below this total centre range = no real movement
 STATIC_PIX_RANGE = 0.5      # below this std of frame pixel-std = frozen image
+UNMEASURABLE_SHARPNESS = 15.0  # median per-frame Laplacian variance below
+                           # which a clip is objectively degraded: the
+                           # detector had nothing measurable to find.
+                           # Calibration on the owner's real clips
+                           # (2026-10-29): the unmeasurable session-17
+                           # take medians 6.0 (face found in 1/90 frames
+                           # at any rotation or threshold); his
+                           # measurable session-15 take medians 39.0;
+                           # the sharp-but-bad-geometry session-14 take
+                           # medians 257.7. 15 sits between with >2x
+                           # margin on both sides.
 
 def new_challenge(rng=None):
     """A fresh challenge: two distinct directions, in order."""
@@ -87,6 +98,27 @@ def analyse_features(features, challenge):
     findings["face_ratio"] = round(ratio, 3)
     findings["strict_face_ratio"] = round(len(strict_faces) / n, 3)
     if ratio < MIN_FACE_RATIO:
+        # Absent, or merely unmeasurable? "Face absent" asserts the
+        # person was NOT there — a fraud-grade claim that hard-fails
+        # the session. When the frames themselves are objectively
+        # degraded (median sharpness under UNMEASURABLE_SHARPNESS),
+        # the detector had nothing measurable to find and the honest
+        # verdict is unclear: the session-17 take (median 6.0) was
+        # hard-rejected as absent while the same session's selfie —
+        # sharp, instantly detected — proved a live face in front of
+        # the same camera minutes apart. A SHARP faceless video (a
+        # wall, a ceiling) still fails as absent: its frames carry
+        # measurable detail and no face is in it. Sharpness must be
+        # actually measured (features from extract_features carry
+        # it); legacy features without it keep the historical fail.
+        sharp = sorted(float(f["sharp"]) for f in features
+                       if isinstance(f.get("sharp"), (int, float)))
+        if len(sharp) >= (n + 1) // 2:
+            med_sharp = sharp[len(sharp) // 2]
+            findings["frame_sharpness_median"] = round(med_sharp, 1)
+            if med_sharp < UNMEASURABLE_SHARPNESS:
+                return {"status": "unclear", "findings": findings,
+                        "reason_codes": ["liveness_video_unmeasurable"]}
         return {"status": "fail", "findings": findings, "reason_codes": ["liveness_face_absent"]}
     centres = [(float(f["cx"]), float(f["cy"])) for f in faces]
     xs = [c[0] for c in centres]; ys = [c[1] for c in centres]
@@ -143,7 +175,7 @@ def extract_features(video_path, max_frames=30, _meta=None):
     frames, vinfo = FACE.video_frames(video_path, max_frames)
     if _meta is not None:
         _meta.update(vinfo)
-    raw = []      # (strict_face_or_None, relaxed_face_or_None, pix_std, h, w)
+    raw = []      # (strict_face_or_None, relaxed_face_or_None, pix_std, sharp, h, w)
     for frame in frames:
         grey = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         h, w = frame.shape[:2]
@@ -151,7 +183,11 @@ def extract_features(video_path, max_frames=30, _meta=None):
         relaxed = None
         if strict is None:
             relaxed = FACE.largest_face(frame, thr=FACE.RELAXED_THRESHOLD)
-        raw.append((strict, relaxed, float(grey.std()), h, w))
+        # Per-frame sharpness (Laplacian variance): the objective
+        # evidence for the unmeasurable-vs-absent distinction in
+        # analyse_features. Cheap on frames already decoded.
+        sharp = float(cv2.Laplacian(grey, cv2.CV_64F).var())
+        raw.append((strict, relaxed, float(grey.std()), sharp, h, w))
     n = len(raw)
     has_strict = any(r[0] is not None for r in raw)
     accepted_weak = [False] * n
@@ -177,7 +213,7 @@ def extract_features(video_path, max_frames=30, _meta=None):
             if raw[i][0] is None and raw[i][1] is None:
                 next_ok = False
     features = []
-    for i, (strict, relaxed, pix_std, h, w) in enumerate(raw):
+    for i, (strict, relaxed, pix_std, sharp, h, w) in enumerate(raw):
         face = strict
         is_strict = strict is not None
         if face is None and accepted_weak[i]:
@@ -185,12 +221,12 @@ def extract_features(video_path, max_frames=30, _meta=None):
             is_strict = False
         if face is None:
             features.append({"face": False, "strict": False, "cx": 0.0, "cy": 0.0,
-                             "size": 0.0, "pix_std": pix_std})
+                             "size": 0.0, "pix_std": pix_std, "sharp": sharp})
         else:
             cx = (face[0] + face[2] / 2) / w; cy = (face[1] + face[3] / 2) / h
             features.append({"face": True, "strict": is_strict, "cx": float(cx),
                              "cy": float(cy), "size": float(face[2] / w),
-                             "pix_std": pix_std})
+                             "pix_std": pix_std, "sharp": sharp})
     return features
 
 def check_liveness(video_path, challenge):
