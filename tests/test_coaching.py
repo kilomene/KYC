@@ -62,6 +62,31 @@ class TestPresence(unittest.TestCase):
                 st, r = _probe(srv, token)
                 self.assertEqual(r["guidance"], "centre_your_face")
 
+    def test_move_back_only_when_genuinely_too_close(self):
+        # Owner session 16 (2026-10-29): "move back" must come from
+        # the REAL detector and only for a genuinely too-close face —
+        # a huge face, or a large face clipped by the frame edge. A
+        # normal oval-filling face (the session's own geometry) is ok.
+        with Server() as srv:
+            _, key, _ = make_tenant(srv)
+            token = _flow(srv, key)
+            # huge, centred -> move_back
+            with mock.patch.object(FACE, "largest_face", return_value=(24, 60, 432, 360)):
+                st, r = _probe(srv, token)
+                self.assertEqual(r["guidance"], "move_back")
+            # large and clipped at the top -> move_back
+            with mock.patch.object(FACE, "largest_face", return_value=(96, 0, 300, 300)):
+                st, r = _probe(srv, token)
+                self.assertEqual(r["guidance"], "move_back")
+            # normal oval-filling face, nothing clipped -> ok
+            with mock.patch.object(FACE, "largest_face", return_value=(110, 90, 275, 300)):
+                st, r = _probe(srv, token)
+                self.assertEqual(r["guidance"], "ok")
+            # modest face resting on the edge -> centring, not distance
+            with mock.patch.object(FACE, "largest_face", return_value=(0, 120, 190, 200)):
+                st, r = _probe(srv, token)
+                self.assertEqual(r["guidance"], "centre_your_face")
+
     def test_presence_stores_nothing(self):
         import sqlite3
         with Server() as srv:
