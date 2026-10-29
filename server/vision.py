@@ -619,7 +619,20 @@ def read_document_text(path, expect_mrz=True):
     elif valids:
         winner, why = max(valids, key=lambda p: p["confidence"]), "valid MRZ, highest confidence"
     else:
-        winner, why = max(passes, key=lambda p: (p["confidence"], p["chars"])), "highest word confidence"
+        # An empty pass must never win on confidence alone: tesseract
+        # reports ~95% mean word confidence for reading NOTHING off a
+        # rendition whose contrast step blanked the print (owner
+        # session 18, 2026-10-29: the enhanced pass scored 0 chars at
+        # 95.0 confidence and beat plain 442 chars / adaptive 779
+        # chars, so the OCR check declared "low text" over a document
+        # the battery had in fact read fully). Passes that actually
+        # read something form the candidate pool whenever one exists;
+        # pass_texts below still carries EVERY pass for extraction.
+        readable = [p for p in passes if p["chars"] >= 10]
+        pool = readable if readable else passes
+        winner, why = max(pool, key=lambda p: (p["confidence"], p["chars"])), "highest word confidence"
+        if readable and len(pool) != len(passes):
+            why += " among text-bearing passes"
     text = winner["text"]
     # MRZ band merge: if the full-page winner carries no MRZ but the
     # dedicated band pass found MRZ lines, append those lines (only
