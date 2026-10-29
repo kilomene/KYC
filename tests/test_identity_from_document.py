@@ -483,5 +483,64 @@ class TestAdoptionRepairEndToEnd(unittest.TestCase):
             self.assertEqual(after["identity_document_id"], up["document_id"])
 
 
+class TestCorroborateNameTokens(unittest.TestCase):
+    """Witness corroboration (owner session 16, 2026-10-29): adopted
+    name tokens only ONE engine family ever saw are stamp debris,
+    not name parts; tokens both families saw are the name."""
+
+    TESS = ["Surname:", "AYANSIPE", "Name:", "ZENAS", "OLATUNDE", "SSR",
+            "ZENAS", "SS"]  # words + pass tokens of the Tesseract family
+    PADDLE = ["Surname:", "AYANSIPE", "NameZENAS", "Name:OLATUNDE", "SAK"]
+
+    def test_stamp_glyphs_dropped_real_names_kept(self):
+        self.assertEqual(
+            I.corroborate_name_tokens("ZENAS OLATUNDE SSR SAK", [self.TESS, self.PADDLE]),
+            "ZENAS OLATUNDE")
+
+    def test_single_witness_group_trims_nothing(self):
+        self.assertEqual(
+            I.corroborate_name_tokens("ZENAS OLATUNDE SSR SAK", [self.TESS]),
+            "ZENAS OLATUNDE SSR SAK")
+
+    def test_single_token_value_untouched(self):
+        self.assertEqual(
+            I.corroborate_name_tokens("AYANSIPE", [self.TESS, self.PADDLE]),
+            "AYANSIPE")
+
+    def test_fully_corroborated_value_untouched(self):
+        self.assertEqual(
+            I.corroborate_name_tokens("ZENAS OLATUNDE", [self.TESS, self.PADDLE]),
+            "ZENAS OLATUNDE")
+
+    def test_never_empties_the_value(self):
+        self.assertEqual(
+            I.corroborate_name_tokens("QZX WVU", [self.TESS, self.PADDLE]),
+            "QZX WVU")
+
+
+class TestSelfieGateMarkers(unittest.TestCase):
+    """The selfie capture gate (flow.html): geometry belongs to the
+    server presence verdict via evaluateSelfie — the skin-heuristic
+    geometry vetoes that trapped the owner in a move-back loop
+    (session 16) must not gate the selfie scanner again."""
+
+    @classmethod
+    def setUpClass(cls):
+        path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "public", "flow.html")
+        with open(path, encoding="utf-8") as fh:
+            cls.html = fh.read()
+
+    def test_selfie_scanner_uses_server_verdict_gate(self):
+        self.assertIn("function evaluateSelfie(fr)", self.html)
+        self.assertIn("evaluate: evaluateSelfie,", self.html)
+
+    def test_move_back_copy_exists_for_server_verdict(self):
+        self.assertIn("move_back: 'You are very close", self.html)
+
+    def test_timed_escape_present(self):
+        self.assertIn("selfieClientOkSince >= 25000", self.html)
+
+
 if __name__ == "__main__":
     unittest.main()
