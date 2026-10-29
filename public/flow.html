@@ -1686,20 +1686,57 @@ function recordLiveness(stream){
   if(moves[0]) VOICE.say('lv_turn_' + moves[0], true);
   if(moves[1]) setTimeout(() => { if(lvBusy) VOICE.say('lv_turn_' + moves[1], true); }, 4200);
   let rec;
+  // RECORD WHAT THE USER SEES. The camera's raw stream is the
+  // sensor's own buffer: on a phone held in portrait it arrives
+  // sideways and wider/lower than the framed preview, so the server
+  // was judging a different picture from the one the user performed
+  // to (owner sessions 14/17/18: coaching said "looking good" off the
+  // preview while the recorded buffer was rotated and low — the
+  // liveness leg failed all three times on geometry, never on the
+  // person). The recording is therefore taken from a canvas drawing
+  // the preview element itself — upright, framed exactly as coached,
+  // the same draw path whose stills pass the selfie step — and the
+  // raw stream remains only as a fallback for browsers without
+  // canvas capture. The server records which source produced a take
+  // in capture_meta.recording_source.
+  const lvVideo = $('lv-video');
+  let recSrc = stream, recCanvas = null, drawTimer = null, recSourceKind = 'raw_stream';
+  try{
+    if(lvVideo.videoWidth && lvVideo.videoHeight && HTMLCanvasElement.prototype.captureStream){
+      recCanvas = document.createElement('canvas');
+      const lvScale = Math.min(1, 1024 / Math.max(lvVideo.videoWidth, lvVideo.videoHeight));
+      recCanvas.width = Math.round(lvVideo.videoWidth * lvScale);
+      recCanvas.height = Math.round(lvVideo.videoHeight * lvScale);
+      const rx = recCanvas.getContext('2d');
+      const drawLv = () => { try{ rx.drawImage(lvVideo, 0, 0, recCanvas.width, recCanvas.height); }catch(e){} };
+      drawLv();
+      drawTimer = setInterval(drawLv, 33);
+      recSrc = recCanvas.captureStream(30);
+      recSourceKind = 'framed_canvas';
+    }
+  }catch(e){ recSrc = stream; recSourceKind = 'raw_stream'; if(drawTimer){ clearInterval(drawTimer); drawTimer = null; } }
   // The rPPG pulse analysis needs a longer, less-crushed clip than
   // the old ~4.5 s default — record ~9 s. The bitrate is capped at
   // 1.2 Mbps on purpose: the server analyses frames at <=1024 px, so
   // more bits buy nothing, and the old 2.5 Mbps setting produced
   // ~2.7 MB clips that hit the tunnel's request-size cap (HTTP 413,
   // owner session 14). 9 s at 1.2 Mbps is ~1.35 MB — safely across.
-  try{
-    const opts = {videoBitsPerSecond: 1200000};
-    if(window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported('video/webm;codecs=vp9'))
-      opts.mimeType = 'video/webm;codecs=vp9';
-    rec = new MediaRecorder(stream, opts);
-  }catch(e){
-    try{ rec = new MediaRecorder(stream); }
-    catch(e2){ $('lv-hint').textContent = 'This browser cannot record the liveness video.'; stopCam(); return; }
+  const recOpts = {videoBitsPerSecond: 1200000};
+  if(window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported('video/webm;codecs=vp9'))
+    recOpts.mimeType = 'video/webm;codecs=vp9';
+  try{ rec = new MediaRecorder(recSrc, recOpts); }
+  catch(e){
+    try{ rec = new MediaRecorder(recSrc); }
+    catch(e2){
+      if(recSrc !== stream){
+        try{ rec = new MediaRecorder(stream, recOpts); recSourceKind = 'raw_stream'; }
+        catch(e3){ try{ rec = new MediaRecorder(stream); recSourceKind = 'raw_stream'; }catch(e4){} }
+      }
+    }
+  }
+  if(!rec){
+    if(drawTimer) clearInterval(drawTimer);
+    $('lv-hint').textContent = 'This browser cannot record the liveness video.'; stopCam(); return;
   }
   const chunks = [];
   rec.ondataavailable = e => chunks.push(e.data);
@@ -1726,6 +1763,7 @@ function recordLiveness(stream){
   }, 1600);
   rec.onstop = async () => {
     clearInterval(lvWatch);
+    if(drawTimer) clearInterval(drawTimer);
     stopCam();
     if(lvAborted){
       msg('I lost sight of your face during that take — let\'s retake it. ' + (PRESENCE_COPY[lvAbortGuidance] || ''), true);
@@ -1742,7 +1780,7 @@ function recordLiveness(stream){
     }
     try{
       const fd = new FormData();
-      fd.append('capture_meta', JSON.stringify({method:'live_camera', client_signals: clientSignals()}));
+      fd.append('capture_meta', JSON.stringify({method:'live_camera', recording_source: recSourceKind, client_signals: clientSignals()}));
       fd.append('video', blob, 'liveness.webm');
       await api('POST', '/v1/flow/liveness', fd, true, true);
       info.liveness_uploaded = true; VOICE.say('lv_done', true); msg('Liveness recorded.'); nextStep();
