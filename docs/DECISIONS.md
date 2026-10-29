@@ -757,3 +757,67 @@ test_checks rewrites the unclear doctrine test to the new rule and
 adds the face_match rescan case (25/25). Thresholds unchanged:
 face match 0.363, PASS_SCORE 70; the track's floor/pass-line still
 derive from the face-match threshold and margin.
+
+## Session-16 incident fixes (2026-10-29, owner's live test + order "fix that")
+
+Session 16 (owner's NIN-slip retest) surfaced two defects, neither in
+the decision engine: the selfie step trapped him in a "move back"
+loop, and the slip read-back showed his name wrong (middle name
+first, first name dropped).
+
+1. **Selfie framing authority** (public/flow.html, server/app.py).
+   The selfie auto-capture gate was the client skin-colour heuristic
+   (evaluateFace): its widthFrac measures every skin-toned column in
+   the oval band — lit walls, ears, neck, shoulders — and read a
+   correctly-framed, oval-filling face as "too close" (face_close at
+   widthFrac > 0.74) FOREVER, while the server presence probe (real
+   YuNet detector) simultaneously reported the framing fine. The
+   weaker judge held the veto. The selfie gate now mirrors the
+   liveness gate's architecture (evaluateSelfie): the client keeps
+   the light verdicts (dark / bright / no skin mass / unstable),
+   GEOMETRY belongs to the production detector's presence verdicts
+   (fresh ≤ 4.5 s), and a 25 s continuous-client-face escape
+   guarantees no genuine user can be trapped — the uploaded selfie
+   is still judged server-side at decision time. The presence
+   endpoint gains an honest move_back: face width > 0.85 of frame,
+   or a large face (> 0.55) clipped by the frame edge. A modest
+   edge-touching face stays centre_your_face (existing test pins
+   this). PRESENCE_COPY gains the move_back line.
+2. **Name assembly stability** (server/ocr2.py, server/app.py,
+   server/identity.py). Both engines are individually deterministic
+   on the slip (proven 3× each); the instability lived in which
+   extraction path the unified read landed on under contention: the
+   good runs adopt the label-joined "ZENAS OLATUNDE" (plus stamp
+   glyphs), the degraded run adopted the text scan's "OLATUNDE" —
+   the middle-name cell alone — and because the identity triad was
+   technically complete, cross-engine arbitration never fired.
+   Three repairs:
+   a. **Arbitration trigger** (app.py): witnesses are now consulted
+      also when a name field's unified source is 'text' (weakest)
+      or the given names are a single token.
+   b. **Superset adoption** (ocr2.arbitrate): for surname /
+      given_names, a witness whose name tokens STRICTLY contain the
+      merged value's, and which passes the plausibility screen, is
+      adopted over the fragment (tightest superset wins, Tesseract
+      breaks ties; subset witnesses never shrink a merged value).
+      The flip case resolves to the Tesseract witness's full name.
+   c. **Witness corroboration trim** (identity.corroborate_name_
+      tokens, applied in app.py to the adopted identity): a name
+      token survives only if at least two independent engine
+      families witnessed it (whole token, or inside a fused token
+      for 4+ letters — Paddle fuses 'Name:VALUE'). "ZENAS OLATUNDE
+      SSR SAK" → "ZENAS OLATUNDE": 'SSR' was Tesseract-only, 'SAK'
+      Paddle-only stamp glyphs on the name line; every real token
+      was dual-witnessed. Conservative guards: single-token values
+      untouched, <2 witness groups trims nothing, never empties.
+   Proof on the owner's own session-16 photo (local only): the
+   adopted identity now reads surname AYANSIPE, given names
+   "ZENAS OLATUNDE" exactly; the session-16 document row's stored
+   name was the broken read and stands as the incident record.
+
+Tests: test_ocr2 gains the superset trio (16/16); test_coaching
+gains the move_back geometry cases (5/5); test_identity_from_
+document gains corroboration + selfie-gate marker tests (35/35).
+Full suite: 483 tests, sole failure the known environmental
+German-labels fixture (this VM's tesseract build). Thresholds
+unchanged (face 0.363, PASS_SCORE 70).
