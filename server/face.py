@@ -317,6 +317,44 @@ def extract_face_feature(path):
         return None, None, None  # no face found (distinct from an error)
     return face_feature(work, face), face, None
 
+
+def extract_document_portrait_feature(path):
+    """-> (feature, face_row, error_dict, enhancement) for a DOCUMENT
+    image (normally the warped rendition).
+
+    Printed portraits are small, low-contrast halftone photographs.
+    A CLAHE contrast normalisation of the rendition followed by a 2x
+    upscale measurably strengthens the genuine holder's embedding —
+    owner session 18 (2026-10-29): 0.369 plain vs 0.441 enhanced
+    against his own live track, crossing the pass margin — while
+    impostor portraits measured the same day stay at ~0.03 (NG PVC,
+    CA DL, another holder's NIN slip, each vs his track): the step
+    recovers print contrast, it does not manufacture similarity.
+    When the enhanced read finds no face (CLAHE can also wash a
+    portrait out — the PVC control lost detection), the plain
+    rendition is read instead and the enhancement tag says so.
+    The face row is in the ENHANCED image's coordinates when the
+    enhanced read wins; callers use it for presence only (reference
+    size is measured on the plain rendition by face_box_stats)."""
+    feat, face, err = None, None, None
+    try:
+        img = cv2.imread(path) if path else None
+        if img is not None:
+            lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+            l_ch, a_ch, b_ch = cv2.split(lab)
+            cl = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(l_ch)
+            enh = cv2.cvtColor(cv2.merge((cl, a_ch, b_ch)), cv2.COLOR_LAB2BGR)
+            enh = cv2.resize(enh, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+            work = work_image(enh)
+            face = largest_face(work)
+            if face is not None:
+                return face_feature(work, face), face, None, "clahe_up2"
+    except Exception:
+        feat, face, err = None, None, None
+    feat, face, err = extract_face_feature(path)
+    return feat, face, err, "none"
+
+
 WEAK_REFERENCE_MAX_PX = 80.0  # see face_box_stats
 
 def face_box_stats(path):
@@ -357,7 +395,7 @@ def check_face_match(doc_path, selfie_path, pass_threshold=DEFAULT_THRESHOLD, ma
     if not doc_path or not selfie_path:
         return {"status": "not_run", "findings": {"reason": "document_or_selfie_missing"}, "reason_codes": ["face_match_not_run"]}
     try:
-        doc_feat, doc_face, err = extract_face_feature(doc_path)
+        doc_feat, doc_face, err, doc_enh = extract_document_portrait_feature(doc_path)
         if err: return err
         if doc_face is None:
             return {"status": "unclear", "findings": {"face_in_document": False}, "reason_codes": ["no_face_in_document"]}
@@ -371,5 +409,6 @@ def check_face_match(doc_path, selfie_path, pass_threshold=DEFAULT_THRESHOLD, ma
     status, reasons = similarity_decision(sim, pass_threshold, margin)
     return {"status": status,
             "findings": {"similarity": round(float(sim), 4), "pass_threshold": pass_threshold, "margin": margin,
-                         "method": "yunet+sface_cosine", "face_in_document": True, "face_in_selfie": True},
+                         "method": "yunet+sface_cosine", "face_in_document": True, "face_in_selfie": True,
+                         "portrait_enhancement": doc_enh},
             "reason_codes": reasons}
