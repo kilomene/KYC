@@ -53,6 +53,17 @@ class TestVideoFrames(unittest.TestCase):
         with self.assertRaises(ValueError):
             FACE.video_frames("/nonexistent/nope.webm", 30)
 
+    def test_video_frames_memoised_per_file(self):
+        # One submit runs liveness + face track (+ deepfake) over
+        # the same clip; the decode + rotation vote is paid once.
+        with tempfile.TemporaryDirectory() as td:
+            p = os.path.join(td, "clip.mp4")
+            _write_video(p, n=30)
+            frames1, info1 = FACE.video_frames(p, 10)
+            frames2, info2 = FACE.video_frames(p, 10)
+            self.assertIs(frames1, frames2)
+            self.assertEqual(info1, info2)
+
     @unittest.skipUnless(FACE.models_present(), "face models not fetched")
     def test_face_box_stats_none_on_blank(self):
         img = np.zeros((240, 320, 3), np.uint8)
@@ -62,9 +73,9 @@ class TestVideoFrames(unittest.TestCase):
             self.assertIsNone(FACE.face_box_stats(p))
 
 
-def _feat(face=True, strict=True, cx=0.5, cy=0.5, pix=10.0):
+def _feat(face=True, strict=True, cx=0.5, cy=0.5, pix=10.0, sharp=None):
     return {"face": face, "strict": strict, "cx": cx, "cy": cy,
-            "size": 0.3, "pix_std": pix}
+            "size": 0.3, "pix_std": pix, "sharp": sharp}
 
 
 class TestAnalyseWeakPresence(unittest.TestCase):
@@ -97,6 +108,28 @@ class TestAnalyseWeakPresence(unittest.TestCase):
         r = LV.analyse_features(feats, {"movements": ["left"]})
         self.assertEqual(r["status"], "fail", r)
         self.assertIn("liveness_face_absent", r["reason_codes"])
+
+    def test_degraded_sparse_faces_are_unmeasurable_not_absent(self):
+        # Owner session 17 (2026-10-29): the take's frames median
+        # sharpness 6.0 — objectively degraded — and the detector
+        # found a face in ~3% of frames. "Absent" is a fraud-grade
+        # claim this evidence cannot carry; the verdict is unclear.
+        feats = ([_feat(True, True, sharp=6.0)]
+                 + [_feat(False, False, sharp=5.0)] * 9)
+        r = LV.analyse_features(feats, {"movements": ["left", "up"]})
+        self.assertEqual(r["status"], "unclear", r)
+        self.assertIn("liveness_video_unmeasurable", r["reason_codes"])
+        self.assertEqual(r["findings"]["frame_sharpness_median"], 5.0)
+
+    def test_sharp_sparse_faces_still_fail_absent(self):
+        # A SHARP faceless video (a wall, a ceiling) has measurable
+        # detail and no face in it: absent stands.
+        feats = ([_feat(True, True, sharp=120.0)]
+                 + [_feat(False, False, sharp=140.0)] * 9)
+        r = LV.analyse_features(feats, {"movements": ["left"]})
+        self.assertEqual(r["status"], "fail", r)
+        self.assertIn("liveness_face_absent", r["reason_codes"])
+        self.assertEqual(r["findings"]["frame_sharpness_median"], 140.0)
 
     def test_vertical_movement_uses_vertical_threshold(self):
         # The session-15 shape: a genuine look-UP moves the centre
